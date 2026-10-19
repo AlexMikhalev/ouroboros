@@ -340,7 +340,7 @@ def test_migrated_region_markers_do_not_swallow_unmigrated_surfaces() -> None:
     assert ".updates-status" in region
     assert ".updates-restore-row" in region
     # Dashboard -> Storage (#1418) was written on the scale; its slice stays guarded.
-    assert ".storage-row-label" in region
+    assert ".storage-place-label" in region
     # Chat migrated on 2026-09-01 (frontend sprint, Q1=B): page chrome,
     # transcript/bubbles/live cards/composer, and the structured-delivery +
     # quiz-card slice, executor chip now included.
@@ -349,10 +349,15 @@ def test_migrated_region_markers_do_not_swallow_unmigrated_surfaces() -> None:
     assert ".chat-live-title" in region
     assert ".chat-live-executor-chip" in region
     assert ".chat-quiz-card" in region
+    # The Skills page (Installed, Browse, Sources, the detail sheet and its
+    # dialogs) migrated with the skill-sources redesign; its region stays guarded.
+    assert ".skills-installed-card" in region
+    assert ".skills-head-card" in region
+    assert ".skills-source-row" in region
     # Unmigrated neighbours stay out until their own pass. (`.log-entry` and
     # `.evo-runtime-pill` are NOT in this list: the shared status-tone rules
     # inside the chat region legitimately name them as co-selectors.)
-    for selector in (".skills-card", ".marketplace-card", ".widgets-card", ".evo-runtime-card"):
+    for selector in (".widgets-card", ".evo-runtime-card"):
         assert selector not in region, (
             f"{selector} is an unmigrated surface; a marker crept over it"
         )

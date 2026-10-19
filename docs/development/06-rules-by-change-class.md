@@ -20,7 +20,7 @@ Enforcement: CHECKLISTS items 11(g) and 13 (`tool_registration`); `tests/test_to
 - Review, grants, dependency readiness, desired enablement and actual execution are independent facts: a dependency or load failure never rewrites the review verdict, and an unchanged reviewed snapshot resumes via its free replay. Skill-review convergence keys on the lifecycle's group `review_round` (`snapshot_attempt` is display only).
 - UI, CLI commands and task tools call the shared operation owners. Actor identity is host-derived: an owner-only action needs a real member chat/quiz/mailbox source naming the exact skill, revision and items; a synthetic reference creates no permission, and Repair implies neither grant-all, attestation nor deletion.
 - Test the real installed script/tool/HTTP/widget/companion after review and prerequisites, repeat after corrections, inspect a widget screenshot. Execution receipts name the dispatched revision and are not PASS.
-- A bundled payload change bumps that skill's manifest version; a change to seed reconciliation semantics invalidates the `native_seed.json` receipt's schema (ARCHITECTURE §2), and the receipt never replaces review/grant binding to installed bytes (`tests/test_native_seed_receipt.py`: unchanged boot without payload work, upgrades/downgrades, dirty source, partial-failure recovery).
+- A bundled payload change bumps that skill's manifest version; a change to seed reconciliation semantics invalidates the `native_seed.json` receipt's schema (ARCHITECTURE §2), and the receipt never replaces review/grant binding to installed bytes (`tests/test_builtin_skill_platforms.py`: unchanged boot without payload work, new versions, dirty source, failed phases).
 
 Mechanism: ARCHITECTURE §13; §6 "Skills and extensions". Enforcement: `tests/test_skill_payload_binding.py`, `tests/test_skill_lifecycle_actions.py`; `tests/test_review_cycles_gates.py` pins the replay fingerprint; UI lane `tests/test_ui_smoke_skill_lifecycle.py`.
 
@@ -115,9 +115,9 @@ Enforcement: `tests/test_body_adoption.py` with `tests/test_body_candidate.py`. 
 
 ### Runtime cleanup and retention
 
-- Age-based GC of disposable runtime artifacts shares one owner knob, `OUROBOROS_GC_RETENTION_DAYS` (default and clamp: ARCHITECTURE §7), and the `ouroboros/retention.py` helpers (`age_cutoff`, `clamp_retention_days`, `get_gc_retention_days`); no hand-rolled cutoff math. Prune functions keep an explicit `retention_days=` parameter whose default resolution alone reads the knob; `server.py` wires startup prunes.
+- Age-based GC of disposable runtime artifacts shares one owner knob, `OUROBOROS_GC_RETENTION_DAYS` (default and clamp: ARCHITECTURE §7), and the `ouroboros/retention.py` helpers (`age_cutoff`, `clamp_retention_days`, `get_gc_retention_days`); no hand-rolled cutoff math. Prune functions keep an explicit `retention_days=` parameter whose default alone reads the knob; `server_maintenance.py` schedules them.
 - A subsystem needing its own lifetime passes explicit `retention_days=`; an owner-settable one is an ordinary `OUROBOROS_<SUBSYSTEM>_RETENTION_DAYS` in `SETTINGS_DEFAULTS` clamped by `clamp_retention_days`. Never restore the consolidated keys or keep a knob that deletes nothing.
-- Durable artifacts are not age-pruned: genesis projects (`OUROBOROS_SUBAGENT_PROJECTS_ROOT`) and forensic observability blobs (kept compressed indefinitely, never deleted or counted).
+- Durable artifacts are not age-pruned: genesis projects (`OUROBOROS_SUBAGENT_PROJECTS_ROOT`) and forensic observability blobs (packed, never deleted or counted).
 - Review continuations are recovery state, not disposable GC: archive a record (collision-safe move, never delete) only when its owner task is settled, it stayed un-resumed past `task_continuation.RETIRE_SETTLED_CONTINUATION_AFTER_DAYS` and no recorded obligation is open; any uncertainty or move error keeps the live record.
 
 Enforcement: `tests/test_phase3c_observability_gc.py` (knob and cutoff math), `tests/test_observability_retention.py` (preserve indefinitely); the continuation archive rule is review-only.

@@ -222,79 +222,18 @@ export function preflightFindingText(finding) {
     return `Preflight failed — ${shown}${parts.length > 3 ? ` (+${parts.length - 3} more)` : ''}`;
 }
 
-export function topReviewFinding(entity) {
-    const findings = Array.isArray(entity?.review_findings) ? entity.review_findings : [];
-    if (!findings.length) return '';
-    const first = findings[0] || {};
-    const more = findings.length > 1 ? ` (+${findings.length - 1} more)` : '';
-    const preflight = preflightFindingText(first);
-    if (preflight) return `${preflight}${more}`;
-    const label = first.item || first.check || first.title || 'finding';
-    const verdict = first.verdict || first.severity || '';
-    const reason = first.reason || first.message || '';
-    return `${`${verdict ? `${verdict} ` : ''}${label}: ${reason}`.trim()}${more}`;
-}
-
-export function renderHubCard(item, {
-    pending = null,
-    installed = null,
-    lifecycle,
-    primaryHtml = '',
-    secondaryHtml = '',
-    badgesHtml = '',
-    metaHtml = '',
-    official = false,
-} = {}) {
-    const slug = item.slug;
-    const working = Boolean(pending) && pending.failed !== true;
-    const spinner = working ? '<span class="marketplace-working-spinner" aria-hidden="true"></span>' : '';
-    const lifecycleHint = lifecycle?.hint
-        ? `<div class="marketplace-card-state-hint">${escapeHtmlAttr(lifecycle.hint)}</div>`
-        : '';
-    // The local copy's own version only; the catalog version is the title's fact.
-    const status = installed
-        ? `<span class="skills-status-chip skills-status-ok">Installed${installed.version ? ` v${escapeHtmlAttr(installed.version)}` : ''}</span>`
-        : '';
-    return `
-        <article class="${working ? 'marketplace-card is-working' : 'marketplace-card'}" data-slug="${escapeHtmlAttr(slug)}">
-            <div class="marketplace-card-head">
-                <div class="marketplace-card-title">
-                    <strong>${escapeHtmlAttr(item.display_name || slug)}</strong>
-                    <span class="muted">${escapeHtmlAttr(slug)} · v${escapeHtmlAttr(item.latest_version || '—')}</span>
-                </div>
-                <div class="marketplace-card-badges">
-                    ${official ? '<span class="skills-badge skills-badge-ok">official</span>' : ''}
-                    ${status}
-                    ${badgesHtml}
-                </div>
-            </div>
-            <div class="marketplace-card-body">${escapeHtmlAttr(item.summary || item.description || '')}</div>
-            <div class="marketplace-card-state marketplace-state-${escapeHtmlAttr(lifecycle?.tone || 'muted')}">
-                <strong>${spinner}${escapeHtmlAttr(lifecycle?.label || '')}</strong>
-                ${lifecycleHint}
-            </div>
-            ${metaHtml ? `<div class="marketplace-card-meta muted">${metaHtml}</div>` : ''}
-            <div class="marketplace-card-actions">
-                <div class="marketplace-primary-action">${primaryHtml}</div>
-                ${secondaryHtml ? `<div class="marketplace-secondary-actions">${secondaryHtml}</div>` : ''}
-            </div>
-        </article>
-    `;
-}
-
 /**
- * One quiet line of OuroborosHub submission history (the hub_sync
- * `submission` facts), shared by the installed card's details and the hub
- * card's disclosure. It states what this installation submitted — never
- * ownership, a merge or an open pull request — and an unsafe receipt URL
- * stays plain text without hiding the other facts.
+ * One quiet line of publication history (what this installation sent), shown
+ * in an installed card's details. It states what was submitted — never
+ * ownership, a merge or an open pull request — and an unsafe receipt URL stays
+ * plain text without hiding the other facts.
  */
 export function renderSubmissionHistory(submission) {
     if (!submission || typeof submission !== 'object') return '';
     const parts = [submission.version ? `Submitted v${escapeHtmlAttr(submission.version)}` : 'Submitted'];
     const pr = submission.pr_number !== null ? `PR #${escapeHtmlAttr(String(submission.pr_number))}` : 'Pull request';
     const href = safeExternalHrefAttr(submission.pr_url);
-    if (href) parts.push(`<a href="${href}" target="_blank" rel="noopener noreferrer">${pr}</a>`);
+    if (href) parts.push(`<a href="${href}" target="_blank" rel="noopener noreferrer" data-skill-external>${pr} ↗</a>`);
     else if (submission.pr_number !== null) parts.push(pr);
     if (submission.local_differs) parts.push('Local files differ from the submitted copy');
     return parts.join(' · ');

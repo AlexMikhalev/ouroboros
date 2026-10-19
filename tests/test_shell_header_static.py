@@ -29,8 +29,7 @@ def test_docked_header_hides_a_title_the_sidebar_names_and_an_empty_bar():
     assert "font-size: var(--type-section)" in title and "font-weight: 500" in title
     assert "white-space: nowrap" in title and "text-overflow: ellipsis" in title
     assert ".app-page-icon" not in css and "app-page-description" not in css
-    lede = _rule(css, ".app-page-lede {")
-    assert "var(--type-body)" in lede and "var(--text-secondary)" in lede
+    assert ".app-page-lede" not in css, "a page has no caption line"
 
 
 def test_stack_header_is_one_row_of_at_most_56px_with_restart_and_budget_inside_the_menu():
@@ -82,3 +81,19 @@ def test_main_title_is_the_registry_label_and_the_panel_bar_keeps_its_hooks():
     room_work = _read("web/modules/room_work.js")
     assert "panel?.querySelector?.('.project-panel-bar')" in room_work
     assert "bar?.querySelector('.app-page-title-row')" in room_work
+
+
+def test_the_status_word_clips_past_its_line_so_descenders_stay_whole():
+    # The word ellipsizes (overflow hidden); its clip box reaches past the line and the margin gives the room back,
+    # so the tail of g, p or y is never cut ("Working" lost its g).
+    badge = _rule(_read("web/room_work.css"), ".rw-trigger .status-badge {")
+    assert "overflow: hidden" in badge and "text-overflow: ellipsis" in badge
+    assert "padding-block: 0.15em" in badge and "margin-block: -0.15em" in badge
+
+
+def test_the_desktop_title_band_keeps_an_empty_header_as_a_plain_strip():
+    css = _read("web/style.css")
+    band = _rule(css, ':root[data-window-chrome="integrated"][data-layout="docked"] .app-page-header[data-empty] {')
+    assert "display: block" in band and "height: var(--window-chrome-top)" in band and "padding: 0" in band
+    # Outside the desktop window an empty header still takes no room.
+    assert "display: none" in _rule(css, 'html[data-layout="docked"] .app-page-header[data-empty] {')

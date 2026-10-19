@@ -176,11 +176,15 @@ def test_skills_and_widgets_use_inner_scroll_regions():
 
 
 def test_sidebar_is_three_zones_with_the_projects_list_as_the_one_scroller():
-    """The sidebar is a pinned head (Main Chat), the Projects list as the ONE scroller (it takes the free
-    height, no inner cap, no outer scroll wrapper) and a pinned foot (docs/DESIGN.md "Shell", plan P4).
+    """The sidebar is a pinned head (Main Chat), the Projects list as the ONE scroller (no inner cap, no outer
+    scroll wrapper) and the tools right after it: the Projects zone is as tall as its rows and shrinks to scroll
+    them, so free room stays under the last row, never between the zones (docs/DESIGN.md "Shell").
     A too-short window falls back to the whole column scrolling with the head sticky."""
     css = _read("web/style.css")
     html = _read("web/index.html")
+    zone = css.split("\n.nav-projects {", 1)[1].split("}", 1)[0]
+    assert "flex: 0 1 auto" in zone and "min-height: 0" in zone, zone
+    assert "flex: 1 1 auto" not in zone, "a zone that takes the free height leaves a hole when the list is short"
     rule = css.split("\n.nav-projects-list {", 1)[1].split("}", 1)[0]  # the base rule, not the short-window fallback
     assert "flex: 1 1 auto" in rule and "min-height: 0" in rule and "overflow-y: auto" in rule, rule
     assert "overscroll-behavior: contain" in rule and "max-height" not in rule, rule
@@ -199,14 +203,15 @@ def test_sidebar_is_three_zones_with_the_projects_list_as_the_one_scroller():
     for page in ("files", "skills", "widgets", "dashboard", "settings"):
         assert f"id: '{page}'," in pages_js and "zone: 'foot'" in pages_js.split(f"id: '{page}',", 1)[1].split("}", 1)[0]
     assert "Utilities" not in html and "nav-section-label" not in html
-    # A finger gets 44px rows, ⋯ and +; the version reads at the meta size; unread is crimson, never red or a glow.
+    # A finger gets 44px rows, ⋯ and +; the version reads at the meta size; unread is a red dot in a soft ring.
     assert "#primary-sidebar { --nav-item-h: 44px; --nav-control-h: 44px; }" in css
     version = css.split("#nav-version {", 1)[1].split("}", 1)[0]
     assert "font-size: var(--type-meta)" in version and "opacity" not in version
     dot = css.split(".nav-unread-dot {", 1)[1].split("}", 1)[0]
-    assert "background: var(--accent)" in dot and "box-shadow" not in dot
-    # Working dots are the crimson live ink; the row's ⋯ is the shell's one More glyph, never a text copy.
-    assert '.nav-activity-marker[data-state="working"] span { background: var(--accent); }' in css
+    assert "background: var(--red)" in dot and "box-shadow: 0 0 0 2px var(--accent-18)" in dot
+    # Working dots take the row's ink, so they never out-shout the name; the row's ⋯ is the shell's one More glyph.
+    assert ".nav-activity-marker.chat-live-typing span { background: currentColor; }" in css
+    assert '.nav-activity-marker[data-state="working"] span { background' not in css
     app_js = _read("web/app.js")
     assert "kebab.innerHTML = SHELL_ICONS.more;" in app_js and "kebab.textContent = '⋯'" not in app_js
     assert "navProjectsToggle?.classList.toggle('active'" not in _read("web/app.js")

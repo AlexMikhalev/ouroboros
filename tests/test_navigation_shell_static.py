@@ -44,7 +44,7 @@ def test_navigation_shell_replaces_legacy_rail_selectors():
             "web/style.css",
             "web/modules/page_icons.js",
             "web/modules/skills.js",
-            "web/modules/marketplace.js",
+            "web/modules/skill_browse.js",
         )
     )
     assert "#nav-rail" not in combined
@@ -63,7 +63,9 @@ def test_navigation_state_and_mobile_drawer_are_first_class():
     assert "#primary-sidebar.open" in css
     assert ".nav-drawer-backdrop" in css
     assert ".mobile-nav-toggle" in css
-    assert "grid-template-columns: var(--sidebar-width) minmax(0, 1fr) auto;" in css
+    assert "grid-template-columns: var(--sidebar-width) minmax(0, 1fr);" in css
+    assert "#app > #divider { display: none; }" in css
+    assert "#content {\n    grid-column: 2;" in css
     # One client-side route, read once on load and validated against the DOM
     # rather than a duplicated page list; never written back on navigation
     # (the desktop shell and the Telegram mini app have no address bar).
@@ -93,11 +95,16 @@ def test_page_header_is_shared_foundation_for_top_pages():
     assert "trailingHtml" in header_js
     # Actual toolbar class composition/escaping is exercised by page_header.test.js.
     assert "'app-page-toolbar'" in header_js and "'app-page-actions'" in header_js
-    # One row: leading (☰) · title (with the room's status) · toolbar/trailing. A description is the page's
-    # first quiet paragraph after the header and a tab strip its own strip, so the row stays one row (P5).
+    # One row: leading (☰) · title (with the room's status) · toolbar/trailing; a tab strip is its own strip, so
+    # the row stays one row (P5). A page has no caption line: its sidebar row and its tabs name it.
     assert 'grid-template-areas: "leading title toolbar";' in css
     assert '"tabs tabs tabs"' not in css
-    assert "app-page-lede" in header_js and "app-page-description" not in header_js
+    assert "app-page-lede" not in header_js and "app-page-description" not in header_js
+    assert "description" not in header_js.split("export function renderPageHeader(", 1)[1].split(") {", 1)[0]
+    for rel in ("web/modules/dashboard.js", "web/modules/settings_ui.js", "web/modules/skills.js", "web/modules/widgets.js"):
+        page = _read(rel)
+        header_call = page.split("renderPageHeader({", 1)[1].split("})", 1)[0]
+        assert "description:" not in header_call, f"{rel} passes a caption line to its header"
     assert "app-page-icon" not in header_js and "app-page-icon" not in css
     # The Project panel's bar is the same component, rendered by app.js; index.html keeps no hand-written bar.
     html = _read("web/index.html")

@@ -1000,3 +1000,67 @@ def _collect_pending_row(root: Any, request: Any, slot: Any, row: dict, usage_ct
     return _row_actor(slot, operation_id, row, state="custody_lost", reason=(
         "The review worker ended without a retained producer outcome; its API outcome is unknown "
         "and is never re-sent.")), UNAVAILABLE
+
+
+# --- dead controllers' liveness pointers, through the existing maintenance pass --------
+
+def retire_dead_review_pointers_softly(drive_root: Any, *, stop: Optional[Callable[[], bool]] = None) -> None:
+    """The maintenance hook: one fail-soft pass that never stops the sweep around it."""
+    try:
+        report = retire_dead_review_pointers(drive_root, stop=stop)
+        if report.get("retired"):
+            log.info("Dead review operation pointers retired: %s", report)
+    except Exception:
+        log.warning("Dead review operation pointer retirement failed", exc_info=True)
+
+
+def retire_dead_review_pointers(drive_root: Any, *, stop: Optional[Callable[[], bool]] = None) -> Dict[str, Any]:
+    """Remove the open review-operation pointers nobody live will close, for ended tasks.
+
+    Runs inside the existing off-loop maintenance pass, after this process's closed operations
+    retried their own failed final pointer (``local_reviews_settled``; no history scan). An open
+    pointer only proves liveness (the evidence packer keeps its task's loose files for a session
+    reader, ``obligations.review_collection_pending``) and its controller removes it at close.
+    Once the task's actor has ended and the pointer's controller is proven dead (or is this
+    process without a registration) it is removed, never settled; a live or unverifiable
+    controller keeps it. The retired task acceptance's pointers are such pointers too: nothing
+    settles them any more."""
+    from ouroboros.store import StoreError
+    from ouroboros.task_results import load_task_result
+    from ouroboros.task_store import review_collection_candidates
+
+    local_reviews_settled()
+    root = pathlib.Path(drive_root)
+    report: Dict[str, Any] = {"retired": []}
+    for task_id in review_collection_candidates(root, stop=stop):
+        if stop is not None and stop():
+            break
+        try:
+            row = load_task_result(root, task_id) or {}
+        except (OSError, ValueError, StoreError):
+            continue
+        if not _actor_ended(root, task_id, row):
+            continue
+        for owner_id, entry in list((row.get(OPERATIONS_FIELD) or {}).items()):
+            if not isinstance(entry, dict) or entry.get("control_only") or entry.get("state") not in _OPEN_STATES:
+                continue
+            with _LOCK:
+                registered = owner_id in _LIVE
+            controller = ("dead" if not registered and entry.get("controller") == controller_identity()
+                          else controller_state(entry.get("controller")))
+            if controller == "dead" and _mark_operation(root, task_id, owner_id, None, from_states=_OPEN_STATES):
+                report["retired"].append({"task_id": task_id, "owner_id": owner_id})
+    return report
+
+
+def _actor_ended(root: pathlib.Path, task_id: str, row: Dict[str, Any]) -> bool:
+    """Canonical completion or a positively ended actor drain; unknown is not ended. The maintenance
+    pass has no live context, so it reads the row's own child binding (file copyback may keep the
+    canonical row running after the solve loop ended)."""
+    from ouroboros.owner_mailbox import mailbox_drain_ended
+    from ouroboros.task_results import _TRULY_TERMINAL_STATUSES
+    from ouroboros.task_status import _child_drive_candidates
+
+    if str(row.get("status") or "") in _TRULY_TERMINAL_STATUSES:
+        return True
+    return mailbox_drain_ended(next(iter(_child_drive_candidates(row)), root), task_id)

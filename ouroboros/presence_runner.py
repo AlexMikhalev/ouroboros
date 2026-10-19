@@ -1307,7 +1307,11 @@ def run_presence_turn(
                 raise ValueError("Presence start record was not bound to this event")
         except (OSError, ValueError, StoreError) as exc:
             raise PresenceTurnError("presence_start_unwritable", "source_event_id", turn_ref=task_id) from exc
-        events = agent.handle_task(task)
+        try:
+            events = agent.handle_task(task)
+        except BaseException:  # its executor ended without a terminal: record that end, never a re-run
+            _notify_unresolved_turn(Path(drive_root), task_id)
+            raise
         # The model can have a draft reply before every allowed route refuses quota, and the
         # terminal write can fail after the start barrier. The durable terminal cause, not that
         # draft or the presence_result envelope, determines whether the transport may
