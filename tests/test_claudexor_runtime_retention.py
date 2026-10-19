@@ -68,6 +68,16 @@ def test_unpinned_versions_go_running_and_pinned_stay_and_young_staging_waits(cx
     assert (cx / PINNED / "lib" / "index.js").is_file() and (cx / "4.1.1-bbbbbbbbbbbb" / "lib").is_dir()
 
 
+def test_a_newer_engine_kept_over_a_lower_pin_keeps_its_tree(cx, monkeypatch):
+    """A planned downgrade keeps the newer engine serving (server_restart): both trees stay."""
+    (cx / "4.3.1-ffffffffffff" / "lib").mkdir(parents=True)
+    monkeypatch.setattr("ouroboros.claudexor_daemon.owned_engine_version", lambda: "4.3.1")
+    report = retention.prune_unpinned_runtimes()
+    assert "4.3.1-ffffffffffff" in _names(cx) and PINNED in _names(cx)
+    assert sorted(report["removed"]) == ["3.9.0-dddddddddddd", "4.0.0-eeeeeeeeeeee", "4.1.1-bbbbbbbbbbbb",
+                                         "4.1.1-cccccccccccc", "claudexor-3.9.0.tar.gz"], report
+
+
 def test_an_unproven_serving_version_removes_nothing(cx, monkeypatch):
     before = _names(cx)
     monkeypatch.setattr("ouroboros.claudexor_daemon.owned_engine_version", lambda: "")
