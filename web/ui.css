@@ -13,6 +13,7 @@
     --wizard-rgb: 11, 9, 16;
     --code-bg: #121016;
     --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    --control-disabled-opacity: 0.55;
     --bg-primary: #0d0b0f;
     --bg-secondary: #1a1520;
     --bg-card: rgba(var(--neutral-rgb), 0.06);
@@ -412,7 +413,7 @@
 
 .btn:disabled {
     cursor: not-allowed;
-    opacity: 0.55;
+    opacity: var(--control-disabled-opacity);
     transform: none;
     box-shadow: none;
 }
