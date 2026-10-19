@@ -486,7 +486,7 @@ def test_schedule_followup_reports_a_missed_table_lock_as_a_typed_refusal(tmp_pa
 
 
 def test_schedule_followup_surfaces_a_corrupt_store_as_the_typed_refusal(tmp_path):
-    """The lenient cap read tolerates a corrupt table, the strict upsert refuses
+    """The lenient pending read tolerates a corrupt table, the strict upsert refuses
     it; that refusal must reach the caller typed, not as FOLLOWUP_PERSIST_FAILED."""
     from supervisor.queue import list_scheduled_tasks
 
