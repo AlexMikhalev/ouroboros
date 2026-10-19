@@ -1165,7 +1165,7 @@ def payload_capture_git_env(exec_root: Path):
         env["GIT_INDEX_FILE"] = str(index)
         yield env
     finally:
-        shutil.rmtree(control, ignore_errors=True)
+        _force_rmtree(control)  # the capture's git objects are read-only; a plain rmtree leaves them on Windows
 
 
 def _reproduce_confined_link(target_root: Path, src_link: Path, dest_link: Path) -> bool:
