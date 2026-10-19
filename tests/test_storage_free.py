@@ -517,9 +517,14 @@ def test_a_stuck_trash_entry_is_retried_whenever_the_child_runs(tmp_path, monkey
     """A released handle changes neither the entry's inode nor its time (Windows, an antivirus
     scan), so the entry stays honestly stuck and is no reason to spawn the child; the child still
     retries it whenever it runs for another job, and then it is removed."""
-    from ouroboros import maintenance
+    from ouroboros import maintenance, maintenance_jobs
 
     root, owner, released = _stuck_trash_entry(tmp_path, monkeypatch)
+    # Still held: the child's retry walks the entry again but commits nothing (the store does not move,
+    # so no job that waits on a store write is re-armed by it).
+    revision, row = maintenance._store_facts(root)["revision"], maintenance_jobs.job(root, "custody_trash")
+    assert maintenance.run_job(root, "custody_trash") == {"state": "failed", "items": 0}
+    assert maintenance._store_facts(root)["revision"] == revision and maintenance_jobs.job(root, "custody_trash") == row
     monkeypatch.setattr(task_custody, "_remove_entry", released)  # the hold is gone; nothing in the entry changed
     assert "custody_trash" not in maintenance.due(root)
     assert owner.projection(root)["run"]["stuck"] == 1

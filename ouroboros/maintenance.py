@@ -136,12 +136,15 @@ def _trash_due(root: pathlib.Path, row: Dict[str, Any], facts: Dict[str, Any], c
 
 def _trash_run(root: pathlib.Path, should_stop: Callable[[], bool]) -> Dict[str, Any]:
     """Delete the moved drives (each was custodied under the queue lock before its move; nothing
-    serves or references it), so a child drive's tree is removed off the serving process."""
+    serves or references it), so a child drive's tree is removed off the serving process. The row is
+    written only when something changed: a retry that leaves the same entries stuck commits nothing."""
     from ouroboros.task_custody import remove_custody_trash
 
     report = remove_custody_trash(root, stop=should_stop)
     state = "failed" if report["stuck"] else "done"
-    maintenance_jobs.record(root, "custody_trash", state=state, stuck=report["stuck"], removed=report["removed"])
+    row = maintenance_jobs.job(root, "custody_trash") or {}
+    if report["removed"] or (row.get("state"), row.get("stuck") or {}) != (state, report["stuck"]):
+        maintenance_jobs.record(root, "custody_trash", state=state, stuck=report["stuck"], removed=report["removed"])
     return {"state": state, "items": report["removed"]}
 
 
