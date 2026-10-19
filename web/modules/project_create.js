@@ -214,10 +214,16 @@ export function repositionProjectRowMenu() {
     repositionOpenProjectRowMenu?.();
 }
 
+const shown = (node) => Boolean(node?.isConnected && node.getClientRects().length);
+
 // Accessible row menu: Pin/Unpin, Rename, Delete. `project` is a sidebar read model;
 // callbacks refresh the authoritative registry projection. `onPin` receives the state
 // the label named; a pin still being saved reads as such and cannot be pressed again.
-export async function openProjectRowMenu(project, { apiClient, anchorEl, onChanged, onPin, isPinPending = () => false }) {
+// When the anchor is gone or hidden (a collapse, an Unpin, a delete), the menu closes and the keyboard goes to
+// `fallbackFocus`.
+export async function openProjectRowMenu(project, {
+    apiClient, anchorEl, fallbackFocus = null, onChanged, onPin, isPinPending = () => false,
+}) {
     const pinPending = isPinPending();
     const maxNameLength = PROJECT_NAME_MAX;
     const pinned = project.pinned === true;
@@ -232,6 +238,8 @@ export async function openProjectRowMenu(project, { apiClient, anchorEl, onChang
         <button type="button" role="menuitem" data-prm="rename">Rename…</button>
         <button type="button" role="menuitem" class="danger" data-prm="delete">Delete project…</button>
     `;
+    // After a dialog the keyboard returns to the row, or to the fallback when the row has gone or hidden meanwhile.
+    const focusBack = () => (shown(anchorEl) ? anchorEl : fallbackFocus)?.focus();
     let binding;
     const close = (options) => binding?.close(options);
     menu.addEventListener('click', async (event) => {
@@ -265,7 +273,7 @@ export async function openProjectRowMenu(project, { apiClient, anchorEl, onChang
                     });
                 }
             }
-            if (anchorEl.isConnected) anchorEl.focus();
+            focusBack();
         } else if (action === 'delete') {
             const ok = await openConfirmDialog({
                 title: 'Delete project',
@@ -285,7 +293,7 @@ export async function openProjectRowMenu(project, { apiClient, anchorEl, onChang
                 }
                 finally { onChanged?.({ authoritative: true }); }
             }
-            if (anchorEl.isConnected) anchorEl.focus();
+            focusBack();
         }
     });
     document.body.appendChild(menu);
@@ -303,7 +311,7 @@ export async function openProjectRowMenu(project, { apiClient, anchorEl, onChang
     });
     closeOpenProjectRowMenu = close;
     repositionOpenProjectRowMenu = () => {
-        if (!anchorEl.isConnected) close();
+        if (!shown(anchorEl)) close({ restoreFocus: true, focusTarget: fallbackFocus || anchorEl, reason: 'hidden' });
         // A menu opened during a save must not retain its disabled snapshot afterwards.
         else if (pinPending && !isPinPending()) close({ restoreFocus: true });
         else binding.reposition();

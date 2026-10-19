@@ -6890,14 +6890,6 @@ body.keyboard-open .chat-instance-panel .chat-input-area {
     min-height: 0;
 }
 
-/* Collapse keeps pinned, live, open and keyboard-owned Projects; other fetched rows wait here. */
-.nav-projects-show-all {
-    min-height: var(--nav-item-h);
-    padding-left: var(--nav-label-x);
-    font-size: var(--type-body);
-    color: var(--text-meta);
-}
-
 .nav-projects-list {
     display: flex;
     flex-direction: column;

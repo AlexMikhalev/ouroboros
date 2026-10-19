@@ -60,9 +60,12 @@ window.__ouroWs = ws;
 const beforePageLeaveHandlers = [];
 let settingsControls = null;
 let dashboardControls = null;
+// The Projects collapse is the owner's choice on this device (owner 19.10, 2A): written only by the toggle, read once
+// here; a device that never chose, or whose storage is unavailable, starts expanded.
+const PROJECTS_COLLAPSED_KEY = 'ouroboros.projects.collapsed';
 const navState = {
     activeProjectId: null,
-    projectsExpanded: true,
+    projectsExpanded: (() => { try { return localStorage.getItem(PROJECTS_COLLAPSED_KEY) !== '1'; } catch { return true; } })(),
     mobileDrawerOpen: false,
 };
 // The one stack of layers over the room (layers.js): the drawer and the Project panel register here, so Escape,
@@ -99,14 +102,6 @@ const navProjectsToggle = document.getElementById('nav-projects-toggle');
 const navProjectsCount = document.getElementById('nav-projects-count');
 const navProjectsActivity = document.getElementById('nav-projects-activity');
 const navProjectsList = document.getElementById('nav-projects-list');
-// Collapse keeps pinned, live, open and keyboard-owned Projects; other fetched rows wait here.
-const navProjectsShowAll = document.createElement('button');
-navProjectsShowAll.type = 'button';
-navProjectsShowAll.id = 'nav-projects-show-all';
-navProjectsShowAll.className = 'nav-row nav-projects-show-all';
-navProjectsShowAll.hidden = true;
-navProjectsShowAll.setAttribute('aria-controls', 'nav-projects-list');
-navProjectsList?.after(navProjectsShowAll);
 const projectInstances = new Map();
 const projectPaintRequests = new Map();
 // The question reveal the current showing is still making (revealProjectQuestion):
@@ -622,30 +617,27 @@ document.getElementById('project-panel-close')?.addEventListener('click', () => 
 projectPanelBackdrop?.addEventListener('click', () => closeProjectPanel());
 navProjectsToggle?.addEventListener('click', () => {
     navState.projectsExpanded = !navState.projectsExpanded;
-    syncNavigationState();
-});
-navProjectsShowAll.addEventListener('click', () => {
-    navState.projectsExpanded = true;
+    try {
+        if (navState.projectsExpanded) localStorage.removeItem(PROJECTS_COLLAPSED_KEY);
+        else localStorage.setItem(PROJECTS_COLLAPSED_KEY, '1');
+    } catch { /* storage unavailable: the choice holds until the page reloads */ }
     syncNavigationState();
 });
 
-// Collapsed Projects keep the pinned ones, what is alive (a Project whose dots show work running or waiting) and the
-// open one; the rest wait behind "Show all N" (docs/DESIGN.md "Shell"). Expanded, every row shows.
+// Collapse is all or nothing (owner 19.10, 2A): collapsed, the Projects keep only the pinned ones, and the header's mark
+// and unread count speak for the rest (docs/DESIGN.md "Shell"); expanded, every row shows. A row that hides gives the
+// keyboard to the Projects toggle first, and an open menu of a hidden row closes (project_create.js).
 function syncProjectsCollapse() {
     if (!navProjectsList) return;
     const collapsed = !navState.projectsExpanded;
-    const focused = document.activeElement;
     navProjects?.toggleAttribute('data-collapsed', collapsed);
-    let total = 0;
     let shown = 0;
     let pinsShown = false;
     let afterPins = null;
     for (const item of navProjectsList.children) {
         if (!item.classList.contains('nav-project-item')) continue;
-        total += 1;
-        // A row under the keyboard or with its menu open stays until focus leaves it (the list's focusout below).
-        const keep = !collapsed || item.hasAttribute('data-pinned') || item.hasAttribute('data-live') || Boolean(item.querySelector('.nav-project-row.active'))
-            || item.contains(document.activeElement) || Boolean(item.querySelector('[aria-expanded="true"]'));
+        const keep = !collapsed || item.hasAttribute('data-pinned');
+        if (!keep && item.contains(document.activeElement)) navProjectsToggle?.focus({ preventScroll: true });
         item.hidden = !keep;
         if (keep) shown += 1;
         // Pins lead the list; air before the first shown row after them is the group's one boundary, no caption.
@@ -654,20 +646,9 @@ function syncProjectsCollapse() {
     }
     for (const item of navProjectsList.children) item.toggleAttribute('data-after-pins', item === afterPins);
     navProjectsList.hidden = collapsed && shown === 0;
-    navProjectsShowAll.hidden = !collapsed || shown === total;
-    navProjectsShowAll.textContent = fmt('Show all {n}', { n: total });
-    navProjectsShowAll.setAttribute('aria-label', fmt('Show all {n} Projects', { n: total }));
-    // "Show all" hides itself as it expands the list: the keyboard goes on to the first row it revealed.
-    if (focused === navProjectsShowAll && navProjectsShowAll.hidden) {
-        navProjectsList.querySelector('.nav-project-item:not([hidden]) [data-project-id]')?.focus({ preventScroll: true });
-    }
-    // An open row menu follows its anchor once collapsed-row visibility has settled.
+    // An open row menu follows its anchor once row visibility has settled, or closes with its hidden row.
     repositionProjectRowMenu();
 }
-// Focus leaving the Projects lets a row that stayed only for the keyboard go behind "Show all".
-navProjects?.addEventListener('focusout', (event) => {
-    if (!navProjects.contains(event.relatedTarget)) queueMicrotask(syncProjectsCollapse);
-});
 
 function renderProjectsNav(projects, projectChatIds, activityIndex = projectActivityIndex) {
     const all = projects || [];
@@ -746,9 +727,6 @@ function setActivityMarker(marker, summary) {
     marker.dataset.amber = summary.amber ? '1' : '0';
     marker.title = active ? label : '';
     marker.setAttribute('aria-hidden', 'true');
-    // A Project row whose dots show is live: a collapsed list keeps it.
-    const item = marker.closest?.('.nav-project-item');
-    if (item) item.toggleAttribute('data-live', active);
 }
 
 function setActivityOwnerName(owner, baseName, summary) {
@@ -883,7 +861,7 @@ function paintProjectsNav() {
                 kebab.addEventListener('click', (event) => {
                     event.stopPropagation();
                     openProjectRowMenu(item.project, {
-                        apiClient, anchorEl: kebab,
+                        apiClient, anchorEl: kebab, fallbackFocus: navProjectsToggle,
                         isPinPending: () => pendingProjectPins.has(item.project.id),
                         onPin: (pinned) => setProjectPin(item.project, pinned),
                         onChanged: (change = {}) => {
