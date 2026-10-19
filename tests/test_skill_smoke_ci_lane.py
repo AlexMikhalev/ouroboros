@@ -20,6 +20,7 @@ import re
 import yaml
 
 import tests.test_skill_smoke_official as smoke
+from tests.test_system_e2e_ci_lane import _job_text
 
 CI_PATH = pathlib.Path(__file__).resolve().parents[1] / ".github" / "workflows" / "ci.yml"
 
@@ -50,7 +51,12 @@ def test_one_review_leg_per_review_skill_bounded_above_the_tests_own_timeout():
 
 
 def test_the_secret_lives_only_in_the_review_step_of_a_review_leg():
-    steps = _job()["steps"]
+    job = _job()
+    # Never job-wide (the job above, integration-optional, carries its key at job level): every
+    # install leg runs downloaded plugin code. The whole block names exactly one secret.
+    assert "secrets." not in str(job.get("env") or {}), job.get("env")
+    assert _job_text("skill-smoke").count("secrets.") == 1
+    steps = job["steps"]
     secret = [step for step in steps if "OPENROUTER_API_KEY" in str(step.get("env") or {})]
     assert len(secret) == 1 and secret[0]["if"] == "matrix.lane == 'review'", secret
     run = secret[0]["run"]

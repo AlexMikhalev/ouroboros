@@ -803,7 +803,7 @@ jobs:
       # NO provider secret in this step or anywhere in an install leg: it
       # imports downloaded plugin code.
       - name: Run official-skill install smoke (real network, serial)
-        if: ${{ !cancelled() && matrix.lane == 'install' }}
+        if: matrix.lane == 'install'
         run: python -m pytest tests/ -m skill_smoke -k "not review_grants_and_enable" --timeout=900 --timeout-method=thread -q -s --tb=long
 
   marker-guards:

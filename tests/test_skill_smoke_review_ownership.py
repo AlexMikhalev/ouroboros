@@ -12,6 +12,7 @@ thread-leak check.
 from __future__ import annotations
 
 import threading
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -70,6 +71,30 @@ def test_the_drain_reports_a_held_late_worker_and_returns_once_it_retires(tmp_pa
     finally:
         release.set()
     assert smoke.wait_for_review_workers(before, 10, poll_sec=0.05) == {}
+
+
+def test_settling_waits_out_a_late_worker_but_names_a_settled_attempt_left_behind(tmp_path):
+    from ouroboros import review_custody
+
+    before = set(smoke.active_review_attempts())
+    release = threading.Event()
+    _late_review(tmp_path, release, "smoke-settle-late")
+    assert [row["late"] for key, row in smoke.active_review_attempts().items() if key not in before] == [True]
+    threading.Timer(0.5, release.set).start()
+    assert smoke.settle_review_workers(before) == ""  # the by-design late worker is waited out
+
+    # An attempt whose caller took a settled answer must not outlive the review: no long wait for it.
+    lingering = review_custody.ActiveReviewAttempt(key="smoke-lingering", operation_id="op-lingering")
+    with review_custody._ACTIVE_LOCK:
+        review_custody._ACTIVE[lingering.key] = lingering
+    try:
+        started = time.monotonic()
+        problem = smoke.settle_review_workers(before)
+        assert "none of them late" in problem and "op-lingering" in problem, problem
+        assert time.monotonic() - started < 10, "a settled attempt got the late worker's long wait"
+    finally:
+        with review_custody._ACTIVE_LOCK:
+            review_custody._ACTIVE.pop(lingering.key, None)
 
 
 def test_owned_review_workers_holds_teardown_until_the_late_worker_retires(

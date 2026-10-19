@@ -626,12 +626,19 @@ def review_env(monkeypatch, tmp_path):
     monkeypatch.setattr(config, "SETTINGS_PATH", tmp_path / "missing-settings.json")
 
 
-def active_review_attempts() -> Dict[str, str]:
-    """``{attempt key: operation id}`` of every reviewer worker review custody holds now."""
+def active_review_attempts() -> Dict[str, Dict[str, Any]]:
+    """``{attempt key: {"operation_id", "late"}}`` of every reviewer worker review custody holds now.
+
+    ``late``: its caller already took the typed in-flight answer (the slot's window ended, the
+    roster was released early or the author detached), the one kind of worker meant to outlive
+    the review it served.
+    """
     from ouroboros import review_custody
 
     with review_custody._ACTIVE_LOCK:
-        return {key: entry.operation_id for key, entry in review_custody._ACTIVE.items()}
+        return {key: {"operation_id": entry.operation_id,
+                      "late": bool(entry.timed_out or entry.released_early or entry.detached)}
+                for key, entry in review_custody._ACTIVE.items()}
 
 
 def wait_for_review_workers(started_before, bound_sec: float, poll_sec: float = 0.5) -> Dict[str, str]:
@@ -640,14 +647,39 @@ def wait_for_review_workers(started_before, bound_sec: float, poll_sec: float = 
     Review custody retires an attempt from ``_ACTIVE`` in the same worker that
     publishes its settlement, right before the thread ends (its model-send
     executor is already shut down), so an empty difference means the workers
-    are finishing. Returns what is still active at ``bound_sec`` (``{}`` once drained).
+    are finishing. Returns ``{key: operation id}`` of what is still active at
+    ``bound_sec`` (``{}`` once drained).
     """
     deadline = time.monotonic() + bound_sec
     while True:
-        active = {key: op for key, op in active_review_attempts().items() if key not in started_before}
+        active = {key: row["operation_id"] for key, row in active_review_attempts().items()
+                  if key not in started_before}
         if not active or time.monotonic() >= deadline:
             return active
         time.sleep(poll_sec)
+
+
+# The session thread-leak check's own grace (tests/conftest.py _THREAD_LEAK_GRACE_SEC): all an
+# attempt that is not late may take to retire after its review returned.
+_SETTLED_ATTEMPT_GRACE_SEC = 2.0
+
+
+def settle_review_workers(started_before) -> str:
+    """Why reviewer workers started after ``started_before`` are still running, or ``""``.
+
+    Only a late worker is waited for, bounded by the product's own transport bound, which
+    also bounds its send; it exists only when a slot's window ran out mid-call, so its
+    review is unsettled and the test is red anyway. Any other attempt still registered is a
+    custody leak and gets just the thread-leak check's grace, so a regression that keeps a
+    settled attempt alive after a passing review cannot hide behind the late worker's wait.
+    """
+    late = {key for key, row in active_review_attempts().items() if row["late"] and key not in started_before}
+    lingering = wait_for_review_workers(set(started_before) | late, _SETTLED_ATTEMPT_GRACE_SEC, poll_sec=0.1)
+    if lingering:
+        return f"reviewer attempts still registered after the test, none of them late: {sorted(lingering.values())}"
+    bound = _REVIEW_WINDOW_SEC + 60
+    still = wait_for_review_workers(started_before, bound) if late else {}
+    return f"late reviewer workers still active {bound:.0f}s after the test: {sorted(still.values())}" if still else ""
 
 
 @pytest.fixture()
@@ -657,19 +689,15 @@ def owned_review_workers(review_env):
     A slot whose logical window ends hands its caller a typed in-flight actor
     while the physical worker keeps running until its send settles
     (review_custody's late-result worker). That worker belongs to this test:
-    wait for it here, before monkeypatch restores the environment it runs under
-    (this fixture is torn down before ``review_env``) and before the session's
-    thread-leak check, never by widening that check's thread names and never by
-    cutting the provider socket. The wait is bounded by the product's own
-    transport bound, which also bounds the late send; a worker still active
-    after it is a red of its own.
+    wait for it here (``settle_review_workers``), before monkeypatch restores the
+    environment it runs under (this fixture is torn down before ``review_env``) and
+    before the session's thread-leak check, never by widening that check's thread
+    names and never by cutting the provider socket.
     """
     before = set(active_review_attempts())
     yield
-    still_active = wait_for_review_workers(before, _REVIEW_WINDOW_SEC + 60)
-    assert not still_active, (
-        f"reviewer workers still active {_REVIEW_WINDOW_SEC + 60:.0f}s after the test ended "
-        f"(operation ids): {sorted(still_active.values())}")
+    problem = settle_review_workers(before)
+    assert not problem, problem
 
 
 def _skill_state_dir(name: str) -> pathlib.Path:
