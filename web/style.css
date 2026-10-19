@@ -1423,7 +1423,8 @@ html[data-layout="docked"] .app-page-header[data-empty] {
     -webkit-backdrop-filter: blur(8px);
 }
 .status-badge.online { color: var(--status-ok-fg); }
-.status-badge.starting { color: var(--status-warn-fg); }
+/* Loading… and Starting… go on by themselves: the meta ink, never amber. */
+.status-badge.starting { color: var(--text-meta); }
 .status-badge.error { color: var(--status-error-fg); }
 .status-badge.offline { color: var(--text-muted); }
 .chat-page-header .status-badge,
@@ -4927,6 +4928,14 @@ textarea.chat-input::placeholder { color: var(--text-muted); }
     background: rgba(var(--neutral-rgb), 0.04);
     color: var(--text-secondary);
     font-size: 12px;
+}
+
+/* Evolution's amber is the owner's move only: a first conversation, his chat, a spending limit that stopped it
+   (evolution.js runtimePillTone). What goes on by itself keeps the plain pill above. */
+.evo-runtime-pill.owner {
+    color: var(--status-warn-fg);
+    border-color: var(--status-warn-border);
+    background: var(--status-warn-bg);
 }
 
 .evo-runtime-chip strong {
@@ -9234,7 +9243,6 @@ body.keyboard-open .project-panel {
 :root[data-theme="light"] .md-code-block .hljs-function { color: var(--user-sender); }
 :root[data-theme="light"] .md-code-block .hljs-class .hljs-title { color: var(--status-warn-fg); }
 :root[data-theme="light"] .status-badge.online { color: var(--status-ok-fg); }
-:root[data-theme="light"] .status-badge.starting { color: var(--status-warn-fg); }
 :root[data-theme="light"] .status-badge.error { color: var(--status-error-fg); }
 
 /* ---- Airy dopamine (DESIGN.md design bible) -----------------------------------------------------------------------
