@@ -12,6 +12,10 @@ const count = (value) => {
 // types a planned wait as `pending_dispatch` and an exceptional one otherwise.
 export const actorAwaiting = (actor) => text(actor?.operation_state) === 'pending_dispatch' && text(actor?.transport_status) !== 'success';
 export const actorUnresolved = (actor) => ['in_flight', 'custody_lost'].includes(text(actor?.operation_state));
+// A ledger seat whose answer is still owed (its planned wait, an open operation, or the ledger's own
+// `pending` status) is awaiting, never "not reached"; a seat with a readable answer was reached.
+export const actorOwed = (actor) => actorAwaiting(actor) || actorUnresolved(actor) || text(actor?.transport_status) === 'pending';
+const actorAnswered = (actor) => ['valid', 'partial'].includes(text(actor?.parse_status));
 
 function compactCoverage(coverage) {
     if (!coverage || typeof coverage !== 'object') return '';
@@ -80,8 +84,9 @@ export function waveTotalText(cost) {
 }
 
 /** Who sat on a pool-era panel and why, in plain words: strictness, who chose, k of n ticked
- * reviewers, advisers (heard, never counted), the reason or the widening, the seats never
- * reached and why, the wave total and the models. Facts every seat shares are said once here. */
+ * reviewers, advisers (heard, never counted), the reason or the widening, the seats still
+ * awaited, those never reached and why, the wave total and the models. Facts every seat
+ * shares are said once here. */
 export function panelPoolLines(panel) {
     const facts = panel?.panel_facts && typeof panel.panel_facts === 'object' ? panel.panel_facts : {};
     const ticked = Array.isArray(facts.pool) ? facts.pool.length : null;
@@ -99,8 +104,14 @@ export function panelPoolLines(panel) {
         ? `widened to every ticked reviewer (Blocking) from the requested ${widened.join(', ')}${reason ? ` · reason given: ${reason}` : ''}`
         : reason || (facts.reason_missing === true ? 'no reason given' : '');
     if (why) lines.push(`Why these reviewers: ${why}`);
+    const actors = (Array.isArray(panel?.actors) ? panel.actors : []).filter((actor) => actor && typeof actor === 'object');
+    const owed = actors.filter(actorOwed).map((actor) => `${text(actor.slot_id) || '?'}${actor.additional ? ' (adviser)' : ''}`);
+    if (owed.length) lines.push(`Awaiting an answer: ${owed.join(', ')}`);
+    // The record's list is read against each seat's own status, which a late answer moves on.
+    const reached = new Set(actors.filter((actor) => actorOwed(actor) || actorAnswered(actor)).map((actor) => text(actor.slot_id)));
     for (const seat of Array.isArray(facts.not_reached) ? facts.not_reached : []) {
-        if (text(seat?.seat_id)) lines.push(`Not reached: ${text(seat.seat_id)} (${text(seat.cause) || 'cause not recorded'})`);
+        const seatId = text(seat?.seat_id);
+        if (seatId && !reached.has(seatId)) lines.push(`Not reached: ${seatId} (${text(seat.cause) || 'cause not recorded'})`);
     }
     const total = waveTotalText(panel?.cost);
     if (total) lines.push(total);
@@ -143,7 +154,8 @@ export function formatReviewProjection(projection) {
             `Review panel ${panelId}: ${String(panel.surface || 'review')} · authority=${String(panel.authority || 'unspecified')} · verdict=${verdictText} · transport=${String(panel.transport_status || 'unknown')} · parse=${String(panel.parse_status || 'unknown')} · quorum=${String(quorum.contributed ?? 0)}/${String(quorum.configured ?? 0)} (required ${String(quorum.required ?? 0)}) · enforcement=${String(panel.enforcement_impact || 'unknown')}${panel.single_reviewer_no_diversity ? ' · single-reviewer (no diversity)' : ''}${panel.dialogue && panel.dialogue.status ? ` · dialogue=${String(panel.dialogue.status)}` : ''}${panel.superseded ? ' · superseded' : ''}`,
         );
         if (panel.reason) lines.push(`Panel reason: ${String(panel.reason)}`);
-        const pooled = panelPoolRecorded(panel.panel_facts);
+        // A preflight seats one named row, ticked or not, and owes no reason: never a pool panel.
+        const pooled = text(panel.surface) !== 'preflight' && panelPoolRecorded(panel.panel_facts);
         if (pooled) lines.push(...panelPoolLines(panel));
         const facts = pooled ? '' : panelFactsText(panel.panel_facts);
         if (facts) lines.push(`Panel composition: ${facts}`);

@@ -39,17 +39,21 @@ def _answer(part, verdict, findings=()):
             "coverage": "n/a" if part == "change" else "full"}
 
 
-def _gate_record(task_id, *, root_task_id="", opus_findings=12):
+def _gate_record(task_id, *, root_task_id="", opus_findings=12, opus_pending=False):
     """One composed commit-gate wave: ``sol`` retrieves (asked both parts), ``opus`` is a
-    packet seat whose change answer FAILs with one critical among ``opus_findings``, and
-    ``critic`` was added beside the pool and errored."""
+    packet seat whose change answer FAILs with one critical among ``opus_findings`` (or, with
+    ``opus_pending``, whose operation is still in flight), and ``critic`` was added beside the
+    pool and errored."""
     notes = [{"item": f"note {n}", "verdict": "FAIL", "severity": "advisory"} for n in range(opus_findings - 1)]
+    opus = ({"slot_id": "opus", "model_id": "anthropic/claude-opus-5", "status": "pending", "parts": ["change"],
+             "operation_state": "in_flight", "late_result_pending": True} if opus_pending else
+            {"slot_id": "opus", "model_id": "anthropic/claude-opus-5", "status": "responded", "parts": ["change"],
+             "answers": {"change": _answer("change", "FAIL", [CRITICAL, *notes])}})
     raws = [
         {"slot_id": "sol", "model_id": "openai/gpt-5.6-sol", "status": "responded", "parts": ["change", "coupling"],
          "answers": {"change": _answer("change", "PASS"),
                      "coupling": _answer("coupling", "PASS", [{"item": "doc drift", "verdict": "PASS"}])}},
-        {"slot_id": "opus", "model_id": "anthropic/claude-opus-5", "status": "responded", "parts": ["change"],
-         "answers": {"change": _answer("change", "FAIL", [CRITICAL, *notes])}},
+        opus,
         {"slot_id": "critic", "model_id": "", "status": "error", "parts": ["change"]},
     ]
     plans = [
@@ -157,8 +161,8 @@ def test_card_shows_only_this_tasks_records_and_says_when_older_ones_exist(tmp_p
 SECRET = "sk-or-v1-" + "0123456789abcdef" * 3
 
 
-def _pool_record(task_id, strictness="advisory", **panel):
-    record = _gate_record(task_id)
+def _pool_record(task_id, strictness="advisory", opus_pending=False, **panel):
+    record = _gate_record(task_id, opus_pending=opus_pending)
     if strictness in ("advisory", "blocking"):  # the enforcement the wave ran under says the same
         record.enforcement, record.enforcement_blocks = strictness, strictness == "blocking"
     record.panel = {**record.panel, "strictness": strictness, "chosen_by": "ouroboros", "pool": ["sol", "opus", "grok"],
@@ -232,3 +236,35 @@ def test_malformed_pool_facts_are_dropped_never_guessed(tmp_path):
     projected = ledger_record_panel(broken)
     assert "cost" not in projected and not {"pool", "strictness"} & set(projected["panel_facts"])
     assert "Panel composition: composed" in _render("t-broken", {"panels": [projected]})["card"]
+
+
+def test_an_open_seat_reads_as_awaiting_and_a_preflight_keeps_its_pre_pool_line(tmp_path):
+    from ouroboros.review_projection import ledger_record_panel
+
+    # A wave whose opus seat is still in flight, built by the real ledger builder. Its `not_reached`
+    # is whatever the producer lists (before fix round 1 the open seat too); the card reads opus's own
+    # status, so opus is awaited and only the critic that failed is not reached.
+    open_record = _pool_record("t-open", opus_pending=True)
+    open_record.panel["not_reached"] = [entry for entry in rl.panel_not_reached(open_record.rows)
+                                        if entry["seat_id"] != "opus"] + [{"seat_id": "opus", "cause": "in_flight"}]
+    record = rl.write_record(tmp_path, open_record)
+    assert record["state"] == "pending"
+    (opus,) = [actor for actor in ledger_record_panel(record)["actors"] if actor["slot_id"] == "opus"]
+    assert (opus["transport_status"], opus["operation_state"]) == ("pending", "in_flight")
+    lines = _render("t-open", {"panels": [ledger_record_panel(record)]})["card"].splitlines()
+    assert "Awaiting an answer: opus" in lines, lines
+    assert not any(line.startswith("Not reached: opus") for line in lines)
+    assert any(line.startswith("Not reached: critic (") for line in lines)
+
+    # A preflight seats one named row and owes no reason: its card keeps the pre-pool line, also for
+    # a record written while the composer still stamped pool facts on preflights, and the projection
+    # adds no pool-era cost to it. The same record on the commit gate is a pool panel.
+    preflight = _pool_record("t-pre")
+    preflight.surface = "preflight"
+    projected = ledger_record_panel(rl.write_record(tmp_path, preflight))
+    assert "cost" not in projected and not any({"cost", "additional"} & set(actor) for actor in projected["actors"])
+    lines = _render("t-pre", {"panels": [projected]})["card"].splitlines()
+    assert any(line.startswith("Panel composition: composed · chosen by ouroboros · seats=2") for line in lines), lines
+    assert not any(line.startswith(("Panel: ", "Why these reviewers", "Wave total", "Awaiting")) for line in lines)
+    gate = ledger_record_panel(rl.write_record(tmp_path, _pool_record("t-gate")))
+    assert "cost" in gate and gate["actors"][0]["cost"]["kind"] == "usd"

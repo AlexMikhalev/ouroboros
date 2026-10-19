@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 
 import {
     actorAwaiting,
+    actorOwed,
     actorUnresolved,
     formatReviewProjection,
     panelComposition,
@@ -261,4 +262,51 @@ test('panel facts are said once whatever the seat count; each seat line carries 
         assert.equal(seatLines.length, size);
         assert.ok(seatLines.every((line) => !/Advisory|chosen by|ticked|Wave total/.test(line)), seatLines[0]);
     }
+});
+
+test('a seat still owed an answer reads as awaiting, never as not reached; the record list follows each seat', () => {
+    // The ledger's open seats: a planned wait, an operation in flight, custody lost, the plain `pending` status
+    // a plan ask records, and an adviser in flight. The record's list was written while the wave was open.
+    const open = (fields) => ({ transport_status: 'pending', parse_status: 'none', semantic_verdict: '', ...fields });
+    const actors = [
+        seat('a'),
+        seat('b', open({ operation_state: 'in_flight' })),
+        seat('c', open({ operation_state: 'pending_dispatch' })),
+        seat('d', open({ operation_state: 'custody_lost' })),
+        seat('e', open({ operation_state: 'pending' })),
+        seat('critic', open({ operation_state: 'in_flight', additional: true })),
+        seat('x', { transport_status: 'error', parse_status: 'none', semantic_verdict: '', operation_state: 'error', cost: { kind: 'unknown', usd: null } }),
+    ];
+    assert.deepEqual(actors.map(actorOwed), [false, true, true, true, true, true, false]);
+    const facts = { ...ADVISORY, seats: 6, additional_seats: 1, not_reached: [{ seat_id: 'a', cause: 'in_flight' },
+        { seat_id: 'b', cause: 'in_flight' }, { seat_id: 'c', cause: 'pending_dispatch' }, { seat_id: 'x', cause: 'quota window spent' }] };
+    const lines = panelPoolLines({ panel_facts: facts, actors });
+    assert.ok(lines.includes('Awaiting an answer: b, c, d, e, critic (adviser)'), lines.join('\n'));
+    // A seat that answered late was reached; only the seat that failed is said not reached.
+    assert.deepEqual(lines.filter((line) => line.startsWith('Not reached: ')), ['Not reached: x (quota window spent)']);
+    // Nothing owed: no awaiting line, and a failed seat stays not reached.
+    const settled = panelPoolLines({ panel_facts: { ...facts, not_reached: [{ seat_id: 'x', cause: 'quota window spent' }] },
+        actors: [actors[0], actors[6]] });
+    assert.ok(!settled.some((line) => line.startsWith('Awaiting')), settled.join('\n'));
+    assert.ok(settled.includes('Not reached: x (quota window spent)'));
+    // A seat the list names but the card has no row for keeps the record's word.
+    assert.ok(panelPoolLines({ panel_facts: facts, actors: [] }).includes('Not reached: b (in_flight)'));
+});
+
+test('a preflight record reads its pre-pool line, whatever pool facts its record carries', () => {
+    // One named row, ticked or not, owing no reason (the preflight facts after fix round 1).
+    const preflight = { seats: 1, additional_seats: 0, distinct_models: 1, observed_unknown_seats: 0, distinct_engines: 1,
+        single_model_panel: false, composition: 'composed', chosen_by: 'ouroboros', reason: '', reason_missing: false };
+    const scout = { ...seat('scout'), cost: undefined, additional: undefined };
+    const card = (surface, facts) => formatReviewProjection({ panels: [panel({ surface, panel_facts: facts, actors: [scout] })] });
+    const plain = card('preflight', preflight);
+    assert.match(plain, /^Panel composition: composed · chosen by ouroboros · seats=1 · distinct models=1 · distinct engines=1$/m);
+    assert.doesNotMatch(plain, /^Panel: |ticked|Why these reviewers|Wave total|Awaiting|Reviewer scout: counted/m);
+    // A preflight written while the composer still stamped pool facts on it reads the same line.
+    const stamped = { ...preflight, strictness: 'advisory', pool: ['a', 'b', 'c'] };
+    const old = card('preflight', stamped);
+    assert.match(old, /^Panel composition: composed · chosen by ouroboros · seats=1/m);
+    assert.doesNotMatch(old, /^Panel: |ticked reviewer|Why these reviewers|Wave total|Reviewer scout: counted/m);
+    // The same facts on a change wave are a pool panel.
+    assert.match(card('change', stamped), /^Panel: Advisory · chosen by Ouroboros · 1 of 3 ticked reviewers$/m);
 });

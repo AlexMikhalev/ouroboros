@@ -427,7 +427,8 @@ def ledger_record_panel(record: Dict[str, Any]) -> Dict[str, Any]:
         facts["reason"] = _public_review_reason(facts["reason"])
     recorded = {key: facts.pop(key) for key in _POOL_FACT_KEYS if key in facts}
     facts.update(_pool_facts(recorded))
-    pooled = "pool" in facts or "strictness" in facts
+    # A preflight seats one named row, ticked or not, and owes no reason: never a pool panel.
+    pooled = str(record.get("surface") or "") != "preflight" and ("pool" in facts or "strictness" in facts)
     costs = [_seat_cost(seat) for seat in seats] if pooled else []
     for actor, seat, cost in zip(actors, seats, costs):
         actor.update(additional=bool(seat.get("additional")), cost=cost)
