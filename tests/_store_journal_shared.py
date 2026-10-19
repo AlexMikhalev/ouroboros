@@ -11,8 +11,10 @@ else the rollback journal (PERSIST; ``store._journal_mode``). The two modes bloc
   (sqlite.org/wal.html, "Sometimes Queries Return SQLITE_BUSY In WAL Mode").
 
 A WAL reader also writes SQLite's own bookkeeping, none of it a commit: the ``-shm`` index on every
-read, the ``-wal``/``-shm`` pair its first open creates and the last close removes, and the header's
-journal-format fields a rollback-journal file gets at its first WAL open (sqlite.org/fileformat2.html).
+read, the ``-wal``/``-shm`` pair its first open creates and the last close removes (that close's
+checkpoint also moves the log's frames into the file), and the header's journal-format fields a
+rollback-journal file gets at its first WAL open (sqlite.org/fileformat2.html). A store held open
+across a window (``held_open``) keeps all of that outside it.
 """
 from __future__ import annotations
 
@@ -22,7 +24,7 @@ import hashlib
 import pathlib
 import sqlite3
 import time
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Iterator, Optional, Tuple
 
 from ouroboros import store
 
@@ -38,18 +40,20 @@ def use_journal(monkeypatch, mode: str) -> None:
     """Every store this test opens from now on runs in MODE ("PERSIST" or "WAL"), whatever this
     interpreter's SQLite would choose: for a subject that exists in one mode only (a reader holding
     a COMMIT is the rollback journal's), or a test that compares the two. The idle handles opened
-    so far close, so the next open turns an existing file into MODE."""
+    so far close, so the next open turns an existing file into MODE (a lease an earlier test's late
+    thread still holds on its own store stays with that thread)."""
     monkeypatch.setattr(store, "_journal_mode", lambda *_args: mode)
-    store.close_connections()
+    store._close_cached(lambda _name: True, idle_only=True)
 
 
-def exclusive_hold(path: Any, *, wait_sec: float = 0.0) -> sqlite3.Connection:
+def exclusive_hold(path: Any, *, wait_sec: float = 5.0) -> sqlite3.Connection:
     """A connection inside a transaction under which every other connection's read and write of
     PATH is busy until it rolls back and closes (the caller does both): ``BEGIN EXCLUSIVE`` on a
     rollback-journal file; on a WAL file the same in exclusive locking mode, which takes the file's
     exclusive lock, once this process's idle handles in the folder closed (each WAL handle keeps a
     shared lock on the file while it is open). The file's journal mode is left as it is.
-    ``wait_sec`` waits out other holders; any thread may end the hold."""
+    ``wait_sec`` waits out other holders (5 s, ``sqlite3.connect``'s own default); any thread may
+    end the hold."""
     path = pathlib.Path(path)
     if not store.wal_file(path):
         conn = store.connect(path, store.TIER_ENFORCED, wait_sec=wait_sec, shared=True, journal_mode="")
@@ -67,13 +71,13 @@ def exclusive_hold(path: Any, *, wait_sec: float = 0.0) -> sqlite3.Connection:
         time.sleep(0.01)
 
 
-def read_hold(path: Any, *, wait_sec: float = 0.0) -> sqlite3.Connection:
+def read_hold(path: Any, *, wait_sec: float = 5.0) -> sqlite3.Connection:
     """A connection inside a read transaction on PATH: on a rollback journal it holds the next
     COMMIT (which waits for readers to drain); under WAL it blocks nothing."""
     return _begin(store.connect(pathlib.Path(path), store.TIER_ENFORCED, wait_sec=wait_sec), "BEGIN")
 
 
-def write_hold(path: Any, *, wait_sec: float = 0.0) -> sqlite3.Connection:
+def write_hold(path: Any, *, wait_sec: float = 5.0) -> sqlite3.Connection:
     """A connection inside a transaction that makes the next write of PATH busy, the way the file's
     journal mode contends a write, while PATH stays readable: a held read on a rollback journal (the
     writer's COMMIT waits for it to drain), the held write lock under WAL (whose COMMIT waits for no
@@ -142,24 +146,37 @@ def store_state(path: Any) -> StoreState:
                       b"".join(raw[part] for part in _WAL_OPEN_FIELDS) if rollback else None)
 
 
+@contextlib.contextmanager
+def held_open(path: Any) -> Iterator[None]:
+    """The store at PATH open for the block, in the journal mode the store chooses and read once:
+    its journal's set-up falls before the block (a first WAL open rewrites the header, a first read
+    creates the ``-wal``/``-shm`` pair), and within it no last close removes the pair or checkpoints
+    the log into the file. The file's and its folder's mtimes then move only with a write, in
+    either journal mode (``tree_state(mtimes=True)``)."""
+    with contextlib.closing(store.connect(pathlib.Path(path), store.TIER_ENFORCED)) as conn:
+        conn.execute("SELECT count(*) FROM sqlite_master").fetchone()  # the first read; no transaction stays
+        yield
+
+
 def tree_state(root: Any, *, mtimes: bool = False, directories: bool = True) -> Dict[str, Any]:
     """Every path under ROOT with what a write changes, keyed by its relative POSIX name: a file's
-    bytes (and its mtime with ``mtimes``), a SQLite database's ``store_state`` (its own
-    journal files left out: they come and go with readers, and their frames are in that state),
-    a directory as ``None`` (with ``mtimes``: its mtime, unless it holds a database, beside which
-    SQLite creates and removes the ``-wal``/``-shm`` pair)."""
+    bytes, a SQLite database's ``store_state``, a directory as ``None``; with ``mtimes`` each one's
+    mtime too, which under WAL holds across a window only while the store stays open (``held_open``).
+    A database's own journal files are left out by name, never opened: they come and go with
+    readers, their frames are in its state, and closing a descriptor of a live ``-shm`` would drop
+    this process's locks on it (``tests/test_store_wal_index.py``)."""
     root = pathlib.Path(root)
     state: Dict[str, Any] = {}
     for path in sorted(root.rglob("*")):
         name = path.relative_to(root).as_posix()
         if path.name.endswith(_JOURNAL_SUFFIXES) and store.is_sqlite_file(path.with_name(path.name.rsplit("-", 1)[0])):
             continue
+        stamp = path.stat().st_mtime_ns if mtimes else None
         if path.is_dir():
             if directories:
-                holds_database = any(store.is_sqlite_file(child) for child in path.iterdir())
-                state[name] = path.stat().st_mtime_ns if mtimes and not holds_database else None
+                state[name] = stamp
         elif store.is_sqlite_file(path):
-            state[name] = store_state(path)
+            state[name] = (store_state(path), stamp)
         else:
-            state[name] = (path.read_bytes(), path.stat().st_mtime_ns) if mtimes else path.read_bytes()
+            state[name] = (path.read_bytes(), stamp)
     return state

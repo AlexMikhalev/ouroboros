@@ -92,8 +92,8 @@ def test_an_empty_store_polls_known_zero_through_the_reader_and_writes_nothing(t
     reader (no fast path answers ahead of it) and changes nothing at all. The
     store exists as in production: the supervisor's lifecycle job creates it
     before any worker (and so any poll) exists. Pinned as the EXACT observed
-    tree, byte for byte, across two polls (each store as its committed
-    content: a WAL reader's own index and log files are no write,
+    tree, byte for byte, across two polls (each store as its rows and any
+    write's trace: a WAL reader's own index and log files are no write,
     ``tree_state``); no events row, no ctx attribute.
     The relayed numbers are the reader's own projection, key by key."""
     import queue

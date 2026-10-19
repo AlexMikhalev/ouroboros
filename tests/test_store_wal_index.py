@@ -129,6 +129,20 @@ def test_the_header_probe_answers_without_opening_the_index(tmp_path, monkeypatc
     assert store.is_sqlite_file(database) and not store.is_wal_index(database)
 
 
+def test_the_tests_tree_snapshot_passes_the_index_by_name(tmp_path, monkeypatch):
+    """The tests' own "a read writes nothing" snapshot (``tree_state``) walks a folder holding a live
+    store: it must leave the index unopened, or it drops the locks a read transaction holds."""
+    from tests._store_journal_shared import tree_state
+
+    use_journal(monkeypatch, "WAL")
+    database = _live_store(tmp_path)
+    with store.open_store(tmp_path, write=False):
+        assert _reset_refused(database)
+        snapshot = tree_state(tmp_path, mtimes=True)
+        assert _reset_refused(database), "the snapshot opened and closed a descriptor of the index"
+    assert "state/current.sqlite" in snapshot and "state/current.sqlite-shm" not in snapshot
+
+
 def test_a_folder_copy_leaves_the_index_behind_and_the_copy_opens_whole(tmp_path, monkeypatch):
     from ouroboros.gateway import files
 
