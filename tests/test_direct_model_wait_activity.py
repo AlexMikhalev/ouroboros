@@ -273,16 +273,16 @@ def test_direct_project_model_wait_census_reaches_js_and_resumes(
         assert wait_row["state"] == "waiting"
         assert wait_row["reason"] == wait_reason
         assert wait_row["task_attempt"] == 2
-        # The room waits on the model: one dot, its reason beside the word, and amber only when the owner has to act.
+        # The room waits on the model: still dots, its reason beside the word, and amber only when the owner has to act.
         work = next(item for item in waiting_body["works"] if item["episode"]["task_id"] == task["id"])
         owner_acts = wait_row["requires_owner_action"] is True
         if wait_reason == "auth":
             assert owner_acts, "a sign-in is the owner's to do"
         assert work["because"][0]["code"] == ("model_access" if owner_acts else "model_wait")
+        note = "Something here waits for you" if owner_acts else ""
         assert _js_project_summary(waiting_body, task["chat_id"]) == {
-            "state": "dot", "motion": False, "amber": owner_acts, "word": "Waiting",
-            "label": " · ".join(["Waiting", work["because"][0]["text"],
-                                 *(["Something here waits for you"] if owner_acts else [])]),
+            "mark": "still", "owner": owner_acts, "word": "Waiting", "note": note,
+            "label": " · ".join(filter(None, ["Waiting", work["because"][0]["text"], note])),
         }
 
         catalog.available = True
@@ -296,7 +296,7 @@ def test_direct_project_model_wait_census_reaches_js_and_resumes(
         assert resumed_activity["task_attempt"] == 2
         assert list(resumed_activity["model_waits"].values())[0]["state"] == "resolved"
         resumed_summary = _js_project_summary(resumed_body, task["chat_id"])
-        assert (resumed_summary["state"], resumed_summary["motion"], resumed_summary["amber"]) == ("working", True, False)
+        assert (resumed_summary["mark"], resumed_summary["owner"]) == ("moving", False)
     finally:
         catalog.available = True
         keep_owner_open.set()
