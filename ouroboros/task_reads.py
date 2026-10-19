@@ -27,27 +27,29 @@ log = logging.getLogger(__name__)
 _REPLICAS: "OrderedDict[str, Tuple[tuple, Dict[str, Any]]]" = OrderedDict()
 _REPLICAS_MAX = 512  # child stores whose views a process keeps (one per delegated child drive)
 _REPLICAS_LOCK = threading.Lock()
-# The coarsest file time a supported file system keeps (FAT, HFS+ and some FUSE mounts: 1-2 s):
-# a store written this recently may change again without its stamp moving, so it is not cached.
+# The coarsest file time a supported file system keeps (FAT, HFS+ and some FUSE mounts: 1-2 s): a
+# store written this recently is read again, not cached (a margin; the stamp itself needs no time).
 _STAMP_GRAIN_SEC = 2.0
 
 
 def _store_stamp(root: pathlib.Path) -> Optional[tuple]:
     """The store's identity, or None when it is absent or too fresh to stand for its content.
-    A commit rewrites the file (rollback journal) or appends to its WAL log, which keeps it until
-    a checkpoint moves it into the file (``store.log_identity``), so an unchanged pair is unchanged
-    content; an interrupted commit moves it too. A commit inside the file time's grain may keep
-    size and time, so a stamp younger than the grain is never trusted."""
-    from ouroboros.store import STORE_REL, log_identity
+    A rollback-journal commit moves the change counter in the file's header; a WAL commit adds a
+    frame to the log, which keeps it until a checkpoint moves it into the file (``store.log_identity``):
+    an unchanged stamp is unchanged content without trusting a file time, which Windows may keep
+    while a cached connection holds the file. A store written within the time grain is not cached."""
+    from ouroboros.store import STORE_REL, log_identity, read_file_bytes
 
+    database = root / STORE_REL
     try:
-        info = (root / STORE_REL).stat()
+        info = database.stat()
+        header = read_file_bytes(database, limit=100)  # the borrowed descriptor: no lock of ours closes
     except OSError:
         return None
-    log = log_identity(root / STORE_REL)
-    if time.time() - max(info.st_mtime_ns, log[2] if log else 0) / 1e9 < _STAMP_GRAIN_SEC:
+    if time.time() - info.st_mtime < _STAMP_GRAIN_SEC:
         return None
-    return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, tuple(log) if log else None)
+    log = log_identity(database)
+    return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, header[24:28], tuple(log) if log else None)
 
 
 class TaskReads:

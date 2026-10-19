@@ -725,16 +725,41 @@ def forget_handoffs() -> None:
     _HANDED_OFF.clear()
 
 
+_WAL_MAGIC = (0x377F0682, 0x377F0683)
+
+
 def log_identity(path: Any) -> Optional[list]:
-    """The WAL log's identity while it holds frames (``[inode, size, mtime_ns]``), else ``None``. A
-    commit lives there until a checkpoint moves it into the database file; an empty or absent log
-    (opened empty by a reader, deleted at the last close) holds none, so its coming and going is no
-    change: a resting duty keyed on the database file plus this wakes on commits only."""
+    """The commits the WAL log holds (``[checkpoint sequence and salts, last commit frame]``), else
+    ``None``. A commit lives there until a checkpoint moves it into the database file; an empty or
+    absent log (opened empty by a reader, deleted at the last close) holds none, so its coming and
+    going is no change: a resting duty keyed on the database file plus this wakes on commits only.
+
+    Read from the log itself (sqlite.org/fileformat2.html §4), which carries no lock, never from its
+    size or time: a checkpointed log is reused in place at the same inode and size, and Windows may
+    keep a file's write time while a cached connection holds it open. Every reset renews the
+    header's checkpoint sequence and salts; the generation's frames are the log's prefix carrying
+    those salts, and every commit ends with a commit frame (a database size) after the last one,
+    where a rolled-back transaction leaves only frames without one."""
     try:
-        info = os.stat(f"{os.fspath(path)}-wal")
+        with open(f"{os.fspath(path)}-wal", "rb", buffering=0) as log:
+            header = log.read(32)
+            if len(header) < 32 or int.from_bytes(header[:4], "big") not in _WAL_MAGIC:
+                return None  # no frame is valid before the header
+            frame = 24 + int.from_bytes(header[8:12], "big")
+
+            def frame_header(number: int) -> bytes:  # frame NUMBER, from 1
+                log.seek(32 + (number - 1) * frame)
+                return log.read(16)
+
+            held, above = 0, (os.fstat(log.fileno()).st_size - 32) // frame + 1
+            while above - held > 1:  # the last frame carrying this generation's salts
+                middle = (held + above) // 2
+                held, above = (middle, above) if frame_header(middle)[8:16] == header[16:24] else (held, middle)
+            while held and frame_header(held)[4:8] == b"\0\0\0\0":
+                held -= 1
     except OSError:
         return None
-    return [info.st_ino, info.st_size, info.st_mtime_ns] if info.st_size else None
+    return [header[12:24].hex(), held] if held else None
 
 
 def prepare_handoff(path: pathlib.Path, tier: str, *, wait_sec: float = STORE_WAIT_SEC) -> None:

@@ -283,3 +283,41 @@ def test_a_store_that_cannot_hand_off_refuses_the_door_reset(tmp_path, monkeypat
         reset=lambda: pytest.fail("the checkout moved past a store still in WAL"))
     assert (ok, deferred) == (False, False) and "checkpoint busy" in message
     assert handed not in store._HANDED_OFF, "a refused door hands every store back to this process"
+
+
+def test_the_log_identity_moves_with_every_commit_and_only_with_commits(tmp_path):
+    """Read from the log's header and frame headers alone, never its size or time: a commit adds a
+    commit frame, a rolled-back transaction's spilled frames add none, and a log reused in place at
+    the same size after a checkpoint carries a new generation's salts."""
+    path = tmp_path / "log.sqlite"
+    writer = sqlite3.connect(path, isolation_level=None)
+    assert writer.execute("PRAGMA journal_mode=WAL").fetchone()[0] == "wal"
+    writer.execute("PRAGMA wal_autocheckpoint=0")
+    writer.execute("CREATE TABLE t(v)")
+    held = sqlite3.connect(path, isolation_level=None)  # stays open: no last close removes the log
+    log = path.with_name(path.name + "-wal")
+
+    def commit(rows, connection=writer):
+        connection.execute("BEGIN IMMEDIATE")
+        connection.executemany("INSERT INTO t VALUES (?)", [("x" * 900,)] * rows)
+        connection.execute("COMMIT")
+        return store.log_identity(path)
+
+    first = commit(20)
+    assert first[1] > 1 and commit(1)[1] > first[1]  # every commit adds its frames
+    committed = store.log_identity(path)
+    spiller = sqlite3.connect(path, isolation_level=None)
+    spiller.execute("PRAGMA cache_size = 5")  # the transaction spills frames into the log before it ends
+    spiller.execute("BEGIN IMMEDIATE")
+    spiller.executemany("INSERT INTO t VALUES (?)", [("y" * 3000,)] * 300)
+    spiller.execute("ROLLBACK")
+    assert log.stat().st_size > 32 + 4096 * committed[1] and store.log_identity(path) == committed
+    small = commit(1)
+    assert small[0] == committed[0] and small[1] > committed[1]  # over the spilled frames, one commit further
+    assert writer.execute("PRAGMA wal_checkpoint(PASSIVE)").fetchone()[0] == 0
+    size = log.stat().st_size
+    reused = commit(1)  # every frame is in the database: the log restarts in place
+    assert log.stat().st_size == size and reused[0] != small[0] and reused[1] < small[1]
+    for connection in (spiller, held, writer):
+        connection.close()
+

@@ -8,8 +8,10 @@ data root, not one per task and document.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import os
+import sqlite3
 import time
 from types import SimpleNamespace
 
@@ -191,6 +193,35 @@ def test_a_wal_commit_older_than_the_grain_still_moves_the_stamp(tmp_path, monke
     then = time.time() - 60
     os.utime((child / STORE_REL).with_name(STORE_REL.name + "-wal"), (then, then))  # the commit past the grain
     assert TaskReads(tmp_path).load(child, "task-a")["status"] == "failed"
+
+
+def test_a_log_reused_in_place_moves_the_stamp_while_its_size_and_times_stay(tmp_path, monkeypatch):
+    """A checkpointed log is reused in place: the next commit rewrites it from its first frame, at
+    the same inode and size, and Windows may keep the file's write time while a cached connection
+    holds it open. The stamp reads the log's generation and frames, never its size or time."""
+    from ouroboros import task_reads
+    from ouroboros.store import STORE_REL
+    from tests._store_journal_shared import use_journal
+
+    use_journal(monkeypatch, "WAL")
+    monkeypatch.setattr(task_reads, "_REPLICAS", task_reads.OrderedDict())
+    child = tmp_path / "child"
+    for index in range(4):  # a first generation longer than the commit that reuses the log
+        _seed(child, f"task-{index}", "completed")
+    database = child / STORE_REL
+    log = database.with_name(STORE_REL.name + "-wal")
+    with contextlib.closing(sqlite3.connect(database)) as conn:
+        busy, frames, moved = conn.execute("PRAGMA wal_checkpoint(PASSIVE)").fetchone()
+    assert busy == 0 and frames == moved > 0  # every frame is in the database: the next writer restarts the log
+    _age(child)
+    assert TaskReads(tmp_path).load(child, "task-0")["status"] == "completed"  # cached under the aged stamp
+    held, kept = os.stat(database), os.stat(log)
+    _seed(child, "task-0", "failed")
+    reused = os.stat(log)
+    assert (reused.st_ino, reused.st_size) == (kept.st_ino, kept.st_size), "the commit rewrote the log in place"
+    assert (os.stat(database).st_size, os.stat(database).st_mtime_ns) == (held.st_size, held.st_mtime_ns)
+    os.utime(log, ns=(kept.st_atime_ns, kept.st_mtime_ns))  # its write time as Windows may still report it
+    assert TaskReads(tmp_path).load(child, "task-0")["status"] == "failed"
 
 
 def test_a_child_store_written_within_the_file_time_grain_is_read_again(tmp_path, monkeypatch):
