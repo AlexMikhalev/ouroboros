@@ -314,7 +314,7 @@ ouroboros/ — agent core and shared runtime (§6)
   semantic_dedup.py — LLM-first semantic dedup, fail-open None; consumed by review_state
   betterleaks_runtime.py — Pinned Betterleaks runtime resolver (six platform artifacts, packaged resource first)
   skill_loader.py — Discovers data buckets and connected folders (`OUROBOROS_SKILLS_REPO_PATH` is My folder); state in `data/state/skills/<name>/` (§13)
-  skill_catalogue.py — compact whole-record skill index pages and named full diagnostics with a physical manifest read address (§13)
+  skill_catalogue.py — paged skill records, named diagnostics and manifest addresses, the delegate skill index (§13)
   skill_context_snapshot.py — Optional skill facts at the append-only tail; visible-base lease renewal (§6)
   skill_readiness.py — Execution readiness and next actions from review, hash, enablement, grants, dependencies and peer conflicts
   skill_peer_inventory.py, skill_conflicts.py — execution-time peers without payload reads: the `SkillPeer` projection and the one conflict verdict (§13)
