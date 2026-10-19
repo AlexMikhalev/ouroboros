@@ -14,11 +14,15 @@ const source = (id) => SOURCES.find((row) => row.id === id);
 const health = (id) => CATALOG.sources.find((row) => row.id === id);
 const items = (id) => CATALOG.items.filter((item) => item.source_id === id);
 const text = (html) => html.replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim();
+// The fixtures' sources were last read on 17 Oct 2026, 13:00–15:00 UTC; a test that shows
+// their age holds the clock at 15:10 that day, so it says the same whatever day it runs.
+const FIXTURE_NOW = Date.parse('2026-10-17T15:10:00Z');
 
-test('the official hub row carries the Official glyph; the folder row says Folder; counts come from the catalog', () => {
+test('the official hub row carries the Official glyph; the folder row says Folder; counts come from the catalog', (t) => {
+    t.mock.timers.enable({ apis: ['Date'], now: FIXTURE_NOW });
     const official = renderSourceRow(source('ouroboros'), { items: items('ouroboros'), health: health('ouroboros') });
     assert.match(official, /<strong>Ouroboros<\/strong><button type="button" class="skills-mark"/);
-    assert.match(text(official), /github\.com\/razzant\/OuroborosHub · 4 skills · read .* ago/);
+    assert.match(text(official), /github\.com\/razzant\/OuroborosHub · 4 skills · read 12 min ago/);
     assert.match(text(official), /The Ouroboros project’s own skills, marked Official by its maintainer\./);
     const community = renderSourceRow(source('ouroboros-community'), { items: items('ouroboros-community'), health: health('ouroboros-community') });
     assert.doesNotMatch(community, /data-official-mark/);
@@ -46,7 +50,8 @@ test('trust is a setting on the right, marked suggested until the owner confirms
     assert.deepEqual(unconfirmedHubRows(SOURCES.map((row) => ({ ...row, confirmed: true }))), []);
 });
 
-test('health is a status sentence: read, reading, couldn’t be read with Try again, registry on demand', () => {
+test('health is a status sentence: read, reading, couldn’t be read with Try again, registry on demand', (t) => {
+    t.mock.timers.enable({ apis: ['Date'], now: FIXTURE_NOW });
     const ago = (ms) => new Date(Date.now() - ms).toISOString();
     assert.match(text(sourceHealthHtml(source('ouroboros'), { state: 'ready', last_read_at: ago(120_000) })), /^read 2 min ago$/);
     assert.match(sourceHealthHtml(source('ouroboros'), { state: 'reading' }), /data-work/);
@@ -55,8 +60,13 @@ test('health is a status sentence: read, reading, couldn’t be read with Try ag
     // The host keeps the last list when a fetch fails: state ready, the failure in `error`.
     const failed = sourceHealthHtml(source('ouroboros-community'), health('ouroboros-community'));
     assert.match(failed, /data-tone="warn"/);
-    assert.match(text(failed), /couldn’t be read: GitHub didn&#39;t answer \(timed out after 60 s\) — showing the list from .* ago Try again/);
+    assert.match(text(failed), /couldn’t be read: GitHub didn&#39;t answer \(timed out after 60 s\) — showing the list from 2 h ago Try again/);
     assert.match(failed, /data-source-action="refresh" data-source-id="ouroboros-community"/);
+    // That list's age follows the clock: a day after the read it says yesterday, three days after, 3 days ago.
+    t.mock.timers.setTime(Date.parse('2026-10-18T13:00:00Z'));
+    assert.match(text(sourceHealthHtml(source('ouroboros-community'), health('ouroboros-community'))), /— showing the list from yesterday Try again$/);
+    t.mock.timers.setTime(Date.parse('2026-10-20T13:00:00Z'));
+    assert.match(text(sourceHealthHtml(source('ouroboros-community'), health('ouroboros-community'))), /— showing the list from 3 days ago Try again$/);
     const never = sourceHealthHtml(source('ouroboros'), { state: 'error', error: 'repository not found' });
     assert.equal(text(never), 'couldn’t be read: repository not found Try again', 'no list was ever read: no age is claimed');
     assert.equal(text(sourceHealthHtml(source('clawhub'), { state: 'search' })), 'searched when you search');
@@ -64,9 +74,10 @@ test('health is a status sentence: read, reading, couldn’t be read with Try ag
     assert.equal(sourceHealthHtml(source('builtin'), { state: 'ready' }), '', 'built-in skills ship with the app: nothing is read');
 });
 
-test('a row without the catalog read uses its own state; a count is said only for a list that was read', () => {
+test('a row without the catalog read uses its own state; a count is said only for a list that was read', (t) => {
+    t.mock.timers.enable({ apis: ['Date'], now: FIXTURE_NOW });
     const own = renderSourceRow(source('my-folder'));
-    assert.match(text(own), /~\/ouroboros-skills · 0 skills · read .* ago/, 'a read folder with no skills has 0, a fact');
+    assert.match(text(own), /~\/ouroboros-skills · 0 skills · read 10 min ago/, 'a read folder with no skills has 0, a fact');
     const unread = renderSourceRow({ ...source('ouroboros'), state: 'reading', last_read_at: '' });
     assert.doesNotMatch(text(unread), /skills ·/, 'before the first read the count is unknown, never 0');
     assert.match(unread, /data-work/);
