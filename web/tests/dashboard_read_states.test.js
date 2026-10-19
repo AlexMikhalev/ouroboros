@@ -531,9 +531,14 @@ test('Activity unites live direct turns with queue identities and preserves queu
     assert.match(rows[0].textContent, /Queue title[\s\S]*running · task · 9s/);
     assert.match(rows[1].textContent, /Paused work[\s\S]*paused \(budget\)/);
     assert.equal(rows[1].querySelector('button').dataset.budgetPaused, '1');
-    assert.match(rows[2].textContent, /Direct turn[\s\S]*thinking · 12s/);
+    // A live census row says its state in the chip's own word (translated at its producer), never the census code.
+    assert.equal(rows[2].querySelector('[data-i18n-skip]').textContent, 'Thinking');
+    assert.match(rows[2].textContent, /Direct turn[\s\S]*· 12s/);
+    assert.doesNotMatch(rows[2].textContent, /thinking/);
     assert.equal(rows[2].querySelector('button').dataset.id, 'direct-1');
     assert.equal(rows[2].querySelector('button').dataset.act, 'task-control');
+    // Stop… is the neutral shared trigger on every row, never a danger button.
+    assert.deepEqual(rows.map((row) => row.querySelector('button').className), Array(3).fill('btn btn-xs btn-default'));
     assert.doesNotMatch(queue.textContent, /Nothing running/);
     assert.deepEqual(calls, [queueUrl, backgroundUrl, schedulesUrl], 'reuse the existing state read');
 });
@@ -928,7 +933,8 @@ test('Activity shows a row\'s own known outcome first and its unfinished finaliz
     assert.deepEqual(chip(rowOf(mount, 'late-root')), { text: 'Done', phase: 'done',
         label: 'Task status: Done, Paused', secondary: 'Paused' });
     assert.equal(chip(rowOf(mount, 'thinking-direct')), null);
-    assert.match(rowOf(mount, 'thinking-direct').textContent, /thinking · 5s/);
+    assert.equal(rowOf(mount, 'thinking-direct').querySelector('[data-i18n-skip]').textContent, 'Thinking');
+    assert.match(rowOf(mount, 'thinking-direct').textContent, /· 5s/);
     // Known outcomes keep the shared chip in the cards' tones: Done with warnings green, Stopped neutral, Failed red.
     const look = (id) => {
         const status = rowOf(mount, id).querySelector('[data-activity-phase]');
