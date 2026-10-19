@@ -718,9 +718,12 @@ def _cancel_task(ctx: ToolContext, task_id: str, reason: str = "", stop_action_i
                 status_drive_root, retry_hint,
             )
         elif settled_status(status_drive_root, tid):
-            # A settled root whose helpers still run is still owned: the owner's
-            # Stop cascades over that subtree, and so does this one.
-            live_helpers = task_subtree_has_live_queue_rows(status_drive_root, tid)
+            # A settled root whose helpers or delegated runs still work is still
+            # owned: the owner's Stop cascades over that tree, and so does this one.
+            from ouroboros.delegate_custody_reconcile import tree_open_runs
+
+            live_helpers = (task_subtree_has_live_queue_rows(status_drive_root, tid)
+                            or bool(tree_open_runs(status_drive_root, tid)))
             live_ownership = live_ownership or live_helpers
     except Exception:
         live_ownership = True
@@ -787,8 +790,9 @@ def _cancel_task(ctx: ToolContext, task_id: str, reason: str = "", stop_action_i
         except Exception:
             widened = False
             log.warning("cancel_task could not extend %s to its live helpers", tid, exc_info=True)
-        helpers_note = (" It had already finished: its result stays and its still-running helpers stop with it."
-                        if widened else " Its still-running helpers could not be added to this Stop; they may keep running.")
+        helpers_note = (" It had already finished: its result stays and its still-running helpers and external runs"
+                        " stop with it." if widened else " Its still-running helpers and external runs could not be"
+                        " added to this Stop; they may keep running.")
     if own:
         _record_child_decision_beacon(
             ctx, tid,
