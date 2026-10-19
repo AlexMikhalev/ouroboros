@@ -294,11 +294,10 @@ def test_the_persist_legs_select_real_modules_and_keep_the_gate_split(tmp_path):
     bash = shutil.which("bash")
     if bash is None:
         pytest.skip("workflow shell unavailable on this host")
-    shim = tmp_path / "bin"
-    shim.mkdir()
-    (shim / "python").symlink_to(sys.executable)
+    # `python` is this interpreter's own folder first on PATH: a link to a Windows venv launcher loses its pyvenv.cfg.
+    path = f"{Path(sys.executable).parent}{os.pathsep}{os.environ['PATH']}"
     result = subprocess.run([bash, "-c", select["run"]], cwd=repo, capture_output=True, text=True, timeout=60,
-                            env={**os.environ, "RUNNER_TEMP": str(tmp_path), "PATH": f"{shim}{os.pathsep}{os.environ['PATH']}"})
+                            env={**os.environ, "RUNNER_TEMP": str(tmp_path), "PATH": path})
     assert result.returncode == 0, result.stderr
     listed = (tmp_path / "journal_modules.txt").read_bytes()
     assert listed and not listed.endswith((b"\n", b"\r")), listed[-20:]
