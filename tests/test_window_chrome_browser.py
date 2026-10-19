@@ -65,7 +65,9 @@ LAYOUT = """() => {
     const first = document.querySelector('[data-nav-page="chat"]').getBoundingClientRect();
     const toggle = document.querySelector('.chat-page-header .mobile-nav-toggle');
     const handle = document.querySelector('.resize-handle');
-    return { sidebar_position: getComputedStyle(sidebar).position, sidebar_padding_top: getComputedStyle(sidebar).paddingTop,
+    // The sidebar's top inset lives on its pinned head (#1998: three zones), the band adds to it.
+    return { sidebar_position: getComputedStyle(sidebar).position,
+             sidebar_padding_top: getComputedStyle(sidebar.querySelector('.sidebar-head')).paddingTop,
              sidebar_width: sidebar.getBoundingClientRect().width, first_row: { x: first.x, y: first.y, width: first.width, height: first.height },
              drawer_toggle: toggle ? getComputedStyle(toggle).display : 'absent',
              resize_handle: handle ? getComputedStyle(handle).display : 'absent' };
@@ -177,7 +179,7 @@ def test_the_spa_declares_and_reserves_only_the_measured_band(subscription_ui):
     assert declared[0]["chrome"] == INTEGRATED
     assert (declared[0]["choice"], declared[0]["theme"]) == (
         page.locator("html").get_attribute("data-theme-choice"), page.locator("html").get_attribute("data-theme"))
-    sidebar_top = page.evaluate("getComputedStyle(document.getElementById('primary-sidebar')).paddingTop")
+    sidebar_top = page.evaluate("getComputedStyle(document.querySelector('#primary-sidebar .sidebar-head')).paddingTop")
     assert sidebar_top == "16px" and page.locator("html").get_attribute("data-window-chrome") is None
 
     apply(page)
@@ -195,7 +197,7 @@ def test_the_spa_declares_and_reserves_only_the_measured_band(subscription_ui):
 
     apply(page, top=0, start=0)  # full screen or the ordinary bar
     assert page.locator("html").get_attribute("data-window-chrome") is None
-    assert page.evaluate("getComputedStyle(document.getElementById('primary-sidebar')).paddingTop") == "16px"
+    assert page.evaluate("getComputedStyle(document.querySelector('#primary-sidebar .sidebar-head')).paddingTop") == "16px"
     page.mouse.click(150, TOP / 2)
     assert drags(page) == ["drag", "drag", "double-click"]
 
@@ -221,7 +223,7 @@ def test_a_browser_without_the_shell_reserves_nothing(subscription_ui):
     page.goto(subscription_ui["url"])
     page.wait_for_selector("#chat-input")
     assert page.locator("html").get_attribute("data-window-chrome") is None
-    assert page.evaluate("getComputedStyle(document.getElementById('primary-sidebar')).paddingTop") == "16px"
+    assert page.evaluate("getComputedStyle(document.querySelector('#primary-sidebar .sidebar-head')).paddingTop") == "16px"
     assert page.evaluate("window.__shellMessages") is None
 
 
