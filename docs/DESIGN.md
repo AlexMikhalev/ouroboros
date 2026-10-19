@@ -2193,11 +2193,24 @@ drawer's × sits in its head, where a page's ☰ is. The scrim,
 ×, Escape, Back and choosing a place close it. A drag only speeds this up: a
 sideways finger anywhere on the room, from the screen's very edge and over its
 buttons, links, header and composer, pulls the drawer with the finger, and holds
-it while the row under the finger is redrawn or a browser bar changes the
-window's height; only a field, a slider, media, selected text and anything that
+it while the row under the finger is redrawn, a browser bar changes the window's
+height or the thumb drifts up or down (once the drag is sideways, the page cannot
+scroll under it); only a field, a slider, media, selected text and anything that
 scrolls sideways keep their own finger. Dragging it back closes it
 (`web/modules/drawer_drag.js`, switched off by one constant). Every gesture has
 a visible control.
+
+Where the system or the host owns the very edge (Android's back gesture, the
+leftmost ~30 pt in Telegram on iOS), its gesture wins; a start a little further in
+is the drawer's.
+
+**The drawer's motion.** Under the finger the drawer moves 1:1 and the scrim is
+as dark as the drawer is open; pulled past fully open it gives like a rubber band.
+Released, or when the system takes the touch, it settles the rest of the way at
+the finger's speed (180–400 ms); ☰ opens it in 340 ms and × or the scrim close it
+in 280 ms, on the iOS sheet curve `cubic-bezier(0.32, 0.72, 0, 1)`. The scrim
+fades in and out with it and leaves the page only once it has faded. Reduced
+motion keeps the finger tracking and drops the rest.
 
 **Layers and dismissal.** The drawer and the Project panel are layers in one
 stack (`web/modules/layers.js`); dialogs, menus and the Shade keep their own
