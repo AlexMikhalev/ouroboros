@@ -7,9 +7,9 @@ The vocabulary half: one reason token, one owner sentence in BOTH twins
 reducer that keeps an accepted decision out of BLOCKED. Nothing writes the note now (the
 acceptance decision writer is gone); stored task cards still carry it. The behaviour half:
 the seal (``loop_delivery._seal_admission_before_delivery``, right before an author stop is
-delivered) delivers over a silent supervisor with ``admission_released=False``, reads a
-``sealed`` refusal as its own earlier seal, and turns any other refusal, a locally seen owner
-change or owner mail that arrived during the silent wait into the owner-revision round.
+delivered) reads a ``sealed`` refusal as its own earlier seal and delivers over a silent
+supervisor or any other refusal with ``admission_released=False``; only owner facts, a locally
+seen owner change or owner mail that arrived during the silent wait, start the owner-revision round.
 """
 
 from __future__ import annotations
@@ -89,7 +89,7 @@ def _stopped_trace():
 @pytest.mark.parametrize("answer,owner_changed,delivered", [
     ("unknown", False, True),  # a gap, never a refusal: delivered, the release disclosed
     ("sealed", False, True),  # the worker's own earlier seal
-    ("active", False, False),  # another holder: the owner-revision path
+    ("active", False, True),  # another holder is not owner mail: delivered, the release disclosed
     ("unknown", True, False),  # a locally seen owner change is real
 ])
 def test_the_final_seal_reads_the_queues_typed_answer(tmp_path, answer, owner_changed, delivered):
@@ -101,7 +101,7 @@ def test_the_final_seal_reads_the_queues_typed_answer(tmp_path, answer, owner_ch
     assert _seal_admission_before_delivery(tools, limit_ctx, llm_trace) is delivered
     # The owner-revision round voids the selected completion; a delivered stop keeps its record.
     assert ("task_completion" in llm_trace) is delivered
-    if delivered and answer == "unknown":
+    if delivered and answer in {"unknown", "active"}:
         assert llm_trace["review_decision"]["admission_released"] is False
 
 
@@ -148,11 +148,14 @@ def test_a_locally_seen_owner_change_survives_a_silent_end(tmp_path):
     ("begin", {"ok": False, "status": "error", "error": "invalid acceptance fence event"}, "invalid acceptance fence event"),
     ("inspect", {"ok": True, "status": "released", "token": "t", "row_absent": True}, "released"),
 ])
-def test_the_seam_refuses_with_the_rows_typed_status(tmp_path, op, ack, reason):
+def test_the_seam_refuses_with_the_rows_typed_status(tmp_path, monkeypatch, op, ack, reason):
     """A refusal carries the row's typed state (`sealed`, `active`, `released`) as its reason;
     only a malformed request keeps the error text. The worker reads the state, never the prose."""
+    from supervisor import queue as task_queue
+
     agent = _pooled_agent(tmp_path, stdqueue.Queue())
-    agent.fence_transition = lambda **_kwargs: ack
+    agent._fence_in_process = lambda: True
+    monkeypatch.setattr(task_queue, "transition_acceptance_fence", lambda **_kwargs: ack)
     with pytest.raises(RuntimeError) as refused:
         if op == "begin":
             agent._begin_acceptance_fence(root_task_id="root-1", task_id="root-1")
