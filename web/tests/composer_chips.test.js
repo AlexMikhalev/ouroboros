@@ -124,7 +124,8 @@ test('a failing source backs off doubling its refresh, shows a muted dash with t
     feed.destroy();
 });
 
-function roomFixture({ room = 300, widths = {} } = {}) {
+function roomFixture({ room: initialRoom = 300, widths = {} } = {}) {
+    let room = initialRoom;
     const env = installDomDouble();
     const { doc, el } = env;
     const slot = el('span', { className: 'chat-composer-chips', attrs: { 'data-composer-chips': '' } });
@@ -144,7 +145,8 @@ function roomFixture({ room = 300, widths = {} } = {}) {
         lists.push(list);
         return list;
     };
-    return { ...env, slot, composer, menu, lists, chipsShown: () => slot.children.filter((node) => !node.hidden
+    return { ...env, slot, composer, menu, lists, setRoom: (next) => { room = next; },
+        chipsShown: () => slot.children.filter((node) => !node.hidden
         && !node.classList.contains('chat-chip-more')).map((node) => node.dataset.chipKey),
     more: () => slot.children.find((node) => node.classList.contains('chat-chip-more')),
     restore() { delete Object.getPrototypeOf(slot).offsetWidth; env.restore(); } };
@@ -248,6 +250,11 @@ test('with no room even for "+N", the chips are listed in "+" under their skill;
         entries.splice(1);
         feed.emit();
         assert.deepEqual(chipSections(), [['A', ['A a1']]]);
+        f.setRoom(300);  // a wider row (a rotated phone)
+        feed.emit();
+        assert.deepEqual(f.chipsShown(), ['a:chip'], 'room again: the chip is back in the row');
+        assert.equal(f.slot.dataset.roomless, undefined);
+        assert.deepEqual(chipSections(), [], 'and no longer in "+"');
         dispose();
         assert.deepEqual(chipSections(), [], 'an unbound room leaves nothing in "+"');
         unbindPlus();

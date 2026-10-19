@@ -562,7 +562,9 @@ The contribution response includes these preferences and `voice[kind]` as
 `{key, available, reason}`: reason is empty when available, `not_selected` for an
 empty choice or `provider_unavailable` for a missing chosen engine. Client API
 availability is a separate browser fact. Re-read on `extension_lifecycle`, WS
-open and `ouro:skill-lifecycle`; owner toggles invalidate instruction entries too.
+open, the end of a skill lifecycle job (its `chat` row with `system_type:
+"skill_lifecycle"` and `lifecycle.phase` completed, failed or cancelled) and
+`ouro:skill-lifecycle`; owner toggles invalidate instruction entries too.
 
 Server STT uses POST of raw audio to `route_url`, with its recorded `Content-Type`
 and optional `?lang=` (the builtin client sends none). Reply: `{text}`, `{text:"", status:"no_speech"}` or

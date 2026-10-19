@@ -273,6 +273,7 @@ def test_chips_take_the_room_the_capsules_leave_and_fold_into_one_more_chip(subs
                 assert after["lines"] == 1 and after["rowHeight"] <= before["rowHeight"] + 0.5, (where, before, after)
                 assert after["hosts"] == before["hosts"] and after["compact"] == before["compact"], (where, before, after)
                 assert all(chip["whole"] and chip["right"] <= after["slot"]["right"] + 0.5 for chip in after["shown"]), (where, after)
+                assert after["overflow"] <= 0, (where, after)
                 if after["roomless"]:
                     # The row has no room even for "+N" (☰ leads a phone's row): "+" lists every chip under its skill.
                     assert after["shown"] == [] and after["moreRight"] is None, (where, after)
@@ -286,7 +287,6 @@ def test_chips_take_the_room_the_capsules_leave_and_fold_into_one_more_chip(subs
                     setup_browser.capture(page, f"chips-{scheme}-{width}-{count}")
                     continue
                 assert len(after["shown"]) + after["folded"] == count, (where, after)
-                assert after["overflow"] <= 0, (where, after)
                 for chip in after["shown"]:
                     index = int(chip["key"].split(":")[0].removeprefix("chips"))
                     assert chip["name"] == f"Meter {index} {index * 7}%", (where, chip)
