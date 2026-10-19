@@ -25,6 +25,7 @@ maintenance jobs: a second run over unchanged inputs commits nothing and reads n
 
 from __future__ import annotations
 
+import contextlib
 import json
 import math
 import os
@@ -350,7 +351,21 @@ def test_the_rest_law_catches_a_job_that_redoes_its_work(tmp_path, rests):
     assert bool(rest_breaches(second_run(job, tmp_path))) is not rests
 
 
-def test_the_meter_installs_where_a_door_is_missing_and_never_records_a_wrapper_as_the_original(tmp_path, monkeypatch):
+@pytest.fixture
+def contained_meter():
+    """The meter tests below make installs and uninstalls fail on purpose. A regression could leave a
+    meter installed; it is put back when the test ends, so the failure stays this test's own instead of
+    cascading into every later meter test as "one cost meter at a time"."""
+    from tests import _cost_meter
+
+    yield
+    if _cost_meter._ACTIVE is not None:
+        with contextlib.suppress(Exception):  # the test's own failure is the one to report
+            _cost_meter.uninstall(_cost_meter._ACTIVE)
+
+
+def test_the_meter_installs_where_a_door_is_missing_and_never_records_a_wrapper_as_the_original(
+        tmp_path, monkeypatch, contained_meter):
     """``os.pread`` is POSIX-only, so on Windows the meter counts without it. An install that meets a door still
     wrapped refuses and puts back every door it replaced: a wrapper recorded as the original would recurse in
     every later caller of that door, in this process and in every test after it."""
@@ -369,7 +384,7 @@ def test_the_meter_installs_where_a_door_is_missing_and_never_records_a_wrapper_
 
 
 @pytest.mark.parametrize("takes", [0, 1], ids=["rebinding_refused", "restoring_refused"])
-def test_the_meter_puts_every_door_back_past_a_module_that_refuses(tmp_path, monkeypatch, takes):
+def test_the_meter_puts_every_door_back_past_a_module_that_refuses(tmp_path, monkeypatch, takes, contained_meter):
     """A module holding a door's alias may refuse the wrapper (the install fails) or refuse to give it
     back (the uninstall fails). Either way every other door goes back, the refusal is named once,
     and the next install starts from the real doors."""
