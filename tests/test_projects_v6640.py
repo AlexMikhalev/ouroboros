@@ -407,7 +407,7 @@ def test_project_sidebar_and_menu_static_contracts():
     assert "await markProjectViewed(project.id, revision)" in app
     assert "async function markProjectViewed" in app
     assert "await fetchJson('/api/ui/preferences'" in app
-    assert "item.appendChild(btn)" in app and "item.append(pin, kebab)" in app
+    assert "item.appendChild(btn)" in app and "item.appendChild(kebab)" in app
     assert "hideProjectFromSidebar" not in app
     assert "project_last_viewed" not in app
     assert "project_hidden" not in app
@@ -422,6 +422,7 @@ def test_project_sidebar_and_menu_static_contracts():
     assert "clearTransientRoutingAnnotations(messagesDiv);" in chat
 
     assert "menu.setAttribute('role', 'menu')" in menu
+    assert 'role="menuitem" data-prm="pin"' in menu  # the pin lives in ⋯, never a row column
     assert 'role="menuitem" data-prm="rename"' in menu
     assert 'role="menuitem" class="danger" data-prm="delete"' in menu
     assert 'data-prm="hide"' not in menu

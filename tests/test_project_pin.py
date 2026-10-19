@@ -1,13 +1,22 @@
 """Persistent Project pins use the existing partial update and sidebar projection."""
 from concurrent.futures import ThreadPoolExecutor
 import json
+import pathlib
+import re
+import typing
 
 import pytest
 from starlette.applications import Starlette
 from starlette.testclient import TestClient
 
+from ouroboros.gateway.client_contracts import ProjectUpdateRequest
+from ouroboros.gateway.contracts import ProjectEntry
 from ouroboros.gateway.router import collect_routes
+from ouroboros.gateway.schema import validate_ingress
 from ouroboros import projects_registry as registry
+from tests.test_gateway_parity import _js_typedef_fields, _js_typedef_properties
+
+WEB_MODULES = pathlib.Path(__file__).resolve().parents[1] / "web" / "modules"
 
 
 @pytest.fixture
@@ -113,3 +122,34 @@ def test_legacy_and_concurrent_partial_updates_keep_neighbour_fields(pin_client)
         list(pool.map(lambda pid: registry.update_project(root, pid, pinned=True), ("alpha", "beta")))
     assert all(registry.get_project(root, pid)["pinned"] for pid in ("alpha", "beta"))
     assert [registry.get_project(root, pid)["name"] for pid in ("alpha", "beta")] == ["alpha", "beta"]
+
+
+def test_pin_contract_is_optional_partial_and_mirrored_in_jsdoc(pin_client):
+    """The served ABI, its ingress validator and both JSDoc twins agree: pinned is an optional
+    strict boolean on the row, and an update names name and/or pinned (the handler requires one)."""
+    client, _ = pin_client
+    document = client.get("/api/contract").json()
+    schemas = document["schemas"]
+    # ProjectEntry is published inline wherever a row is answered: the list and the update.
+    listed = schemas["ProjectListResponse"]["properties"]["projects"]["items"]
+    answered = [s for s in schemas["ProjectUpdateResponse"]["properties"]["project"]["anyOf"] if s["type"] == "object"]
+    for entry in (listed, *answered):
+        assert entry["properties"]["pinned"] == {"type": "boolean"} and "pinned" not in entry.get("required", [])
+    assert len(answered) == 1
+    update = schemas["ProjectUpdateRequest"]
+    assert update["properties"] == {"name": {"type": "string"}, "pinned": {"type": "boolean"}}
+    assert not update.get("required")
+    route = {f"{e['method']} {e['path']}": e for e in document["http"]}["POST /api/projects/{project_id}/update"]
+    assert route["request"]["schemas"] == ["ProjectUpdateRequest"]
+    assert set(route["responses"]) == {"200", "400", "404", "409", "500"}
+    for body in ({"pinned": True}, {"pinned": False}, {"name": "Renamed"}, {"name": "Renamed", "pinned": True}):
+        assert validate_ingress(body, ProjectUpdateRequest) == [], body
+    for value in ("true", 1, 0, None, [], {}):
+        assert validate_ingress({"pinned": value}, ProjectUpdateRequest) == ["pinned must be a JSON boolean"], value
+    rows = (WEB_MODULES / "api_types.js").read_text(encoding="utf-8")
+    assert _js_typedef_fields(rows, "ProjectEntry") == set(typing.get_type_hints(ProjectEntry))
+    assert re.search(r"@typedef \{Object\} ProjectEntry\b[^/]*?@property \{boolean=\} pinned\b", rows, re.S)
+    twin = (WEB_MODULES / "client_contract_types.js").read_text(encoding="utf-8")
+    assert _js_typedef_properties(twin, "ProjectUpdateRequest") == {("string=", "name"), ("boolean=", "pinned")}
+    assert set(typing.get_type_hints(ProjectUpdateRequest)) == {"name", "pinned"}
+    assert not ProjectUpdateRequest.__required_keys__
