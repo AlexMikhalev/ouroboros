@@ -6826,13 +6826,6 @@ body.keyboard-open #page-chat.active {
     overscroll-behavior: none;
 }
 
-/* A Project room over Main shrinks to the visible viewport too: its composer, with the room's ☰, stays above the
-   keyboard instead of behind it. */
-body.keyboard-open .project-panel {
-    height: var(--vvh);
-    max-height: var(--vvh);
-}
-
 body.keyboard-open #page-chat.active .chat-page-header,
 body.keyboard-open #page-chat.active .chat-page-note {
     flex-shrink: 0;
@@ -7377,6 +7370,13 @@ html[data-layout="stack"] .project-panel {
 
 html[data-layout="stack"] .project-panel.open {
     transform: translateY(0);
+}
+
+/* With the keyboard up a Project room shrinks to the visible viewport, as Main does (body.keyboard-open #page-chat):
+   its composer, with the room's ☰, stays above the keyboard instead of behind it. */
+body.keyboard-open .project-panel {
+    height: var(--vvh);
+    max-height: var(--vvh);
 }
 
 @media (prefers-reduced-motion: reduce) {
