@@ -246,8 +246,10 @@ test('a parent that finished while its helper works keeps the Stop its work offe
     const card = cardControls(helper, 'p');
     assert.deepEqual([card.menu, card.resume, card.work?.work_id], [true, false, 'p']);
     assert.deepEqual(cardMenuActions(helper, { groupId: 'p' }), [ACTION_STOP_NOW]);
-    // External runs that no Stop door reaches: the ended work offers nothing, so the card keeps its own controls.
-    const runs = cardControls(stateOf('ended_with_runs'), 'r');
+    // An ended work that offers nothing (the server may also offer its open runs' Stop) gives none:
+    // the card keeps its own controls.
+    const ended = stateOf('ended_with_runs', 42, { works: [{ ...work('ended_with_runs'), controls: [] }] });
+    const runs = cardControls(ended, 'r');
     assert.deepEqual([runs.menu, runs.resume, runs.work], [false, false, null]);
 });
 
