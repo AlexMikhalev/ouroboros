@@ -63,7 +63,7 @@ def test_authority_pause_rejects_unrepaired_resume_then_returns_same_work(
             page.on("pageerror", lambda error: errors.append(str(error)))
             try:
                 flow._open_chat(page, url)
-                expect(flow._chip(page, flow.ALPHA)).to_have_text("Paused · technical issue", timeout=30_000)
+                expect(flow._chip(page, flow.ALPHA)).to_have_text("Paused · technical problem", timeout=30_000)
                 resume = flow._card(page, flow.ALPHA).locator("[data-resume-run]")
                 expect(resume).to_be_visible()
                 page.screenshot(path=str(evidence / "01-technical-pause.png"))
@@ -82,7 +82,7 @@ def test_authority_pause_rejects_unrepaired_resume_then_returns_same_work(
                 server["restart_server"]()
                 page.reload()
                 flow._open_chat(page, url)
-                expect(flow._chip(page, flow.ALPHA)).to_have_text("Paused · technical issue", timeout=60_000)
+                expect(flow._chip(page, flow.ALPHA)).to_have_text("Paused · technical problem", timeout=60_000)
                 retained = flow._http(url, "GET", f"/api/tasks/{flow.ALPHA}")["budget_pause"]
                 assert retained["pause_id"] == before["pause_id"]
                 assert retained["reason"] == "authority" and model.main_calls("ALPHA") == 1

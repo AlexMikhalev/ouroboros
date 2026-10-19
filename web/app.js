@@ -6,11 +6,7 @@ import { loadVersion } from './modules/utils.js';
 import { bindScrollFade } from './modules/scroll_fade.js';
 import { initChat, createChatInstance } from './modules/chat.js';
 import { createStateSnapshotSequencer } from './modules/chat_activity.js';
-import {
-    buildProjectActivityIndex,
-    reconcileProjectActivityCensus,
-    summarizeProjectActivities,
-} from './modules/project_activity.js';
+import { IDLE_SUMMARY, buildProjectActivityIndex, reconcileProjectRooms } from './modules/project_activity.js';
 import { initFiles } from './modules/files.js';
 import { createNotificationActivation, getNotifier } from './modules/notifications.js';
 import { showToast } from './modules/toast.js';
@@ -117,7 +113,7 @@ const projectReveals = new Map();
 let knownProjectsJson = '';
 let lastProjectRows = [];
 const pendingProjectPins = new Set();
-let projectActivityRows = new Map();
+let projectRooms = new Map();
 let projectActivityIndex = buildProjectActivityIndex();
 let activitySocketDisconnected = false;
 let projectPanelHideTimer = null;
@@ -304,11 +300,11 @@ let mainChat;
 const stateSnapshots = createStateSnapshotSequencer((data, requestedAt, generation) => {
     data = data && typeof data === 'object' ? data : {};
     // A complete REST body cannot prove absence while the socket is in a
-    // disconnect episode. Keep the previous rows and render them unknown until
+    // disconnect episode. Keep the previous rooms and render them unknown until
     // a post-reconnect snapshot is sequenced.
-    const activity = reconcileProjectActivityCensus(projectActivityRows, activitySocketDisconnected ? {} : data);
-    projectActivityRows = activity.rows;
-    projectActivityIndex = buildProjectActivityIndex([...projectActivityRows.values()]);
+    projectRooms = reconcileProjectRooms(projectRooms, activitySocketDisconnected ? {} : data).rooms;
+    projectActivityIndex = buildProjectActivityIndex(projectRooms, data.project_chat_ids
+        ?? (data.projects || lastProjectRows).map((project) => project?.chat_id));
     renderProjectsNav(data.projects || lastProjectRows,
         data.project_chat_ids ?? (data.projects ? undefined : Array.from(state.projectChatIds)), projectActivityIndex);
     applyTaskBindings(data.task_bindings || {});
@@ -732,8 +728,8 @@ function renderProjectsNav(projects, projectChatIds, activityIndex = projectActi
 // ended. Retain its row for the next complete census, but stop motion and make
 // the marker explicitly unknown rather than quietly showing stale liveness.
 function markProjectActivityUnknown() {
-    projectActivityRows = reconcileProjectActivityCensus(projectActivityRows).rows;
-    projectActivityIndex = buildProjectActivityIndex([...projectActivityRows.values()]);
+    projectRooms = reconcileProjectRooms(projectRooms).rooms;
+    projectActivityIndex = buildProjectActivityIndex(projectRooms, [...state.projectChatIds]);
     patchProjectActivityMarkers(projectActivityIndex);
 }
 
@@ -744,7 +740,8 @@ function setActivityMarker(marker, summary) {
     marker.hidden = !active;
     marker.dataset.state = active ? String(summary.state || 'unknown') : 'idle';
     marker.dataset.motion = summary.motion ? '1' : '0';
-    marker.dataset.waiting = summary.waiting ? '1' : '0';
+    // Amber: something in the room waits for the owner (the server's room.amber); a pause is not amber.
+    marker.dataset.amber = summary.amber ? '1' : '0';
     marker.title = active ? label : '';
     marker.setAttribute('aria-hidden', 'true');
     // A Project row whose dots show is live: a collapsed list keeps it.
@@ -770,7 +767,7 @@ function patchProjectActivityMarkers(activityIndex = projectActivityIndex) {
     );
     for (const row of lastProjectRows) {
         const button = buttons.get(String(row.id));
-        const summary = activityIndex.byProject.get(String(row.id)) || summarizeProjectActivities();
+        const summary = activityIndex.byChat.get(String(row.chat_id)) || IDLE_SUMMARY;
         setActivityMarker(button?.querySelector('.nav-activity-marker'), summary);
         // The pin is said in the row's full name (its tooltip and accessible name), never drawn in the row.
         const name = `${row.name || row.id}${row.pinned === true ? ' · Pinned' : ''}`;

@@ -712,10 +712,10 @@ def cancel_task_custody(
             from supervisor.cancel_publication import _finish_captured_chat_turn
 
             return _finish_captured_chat_turn(q, task_id, turn, intent=intent, deliver=deliver)
-        from supervisor.cancel_publication import stop_paused_late_phase_custody
+        from supervisor.cancel_publication import stop_paused_late_review_custody
 
-        if stop_paused_late_phase_custody(q, task_id, intent=intent):
-            return CANCEL_CANCELLED  # the answered root's saved remainder (D10), its answer kept
+        if stop_paused_late_review_custody(q, task_id, intent=intent):
+            return CANCEL_CANCELLED  # the answered root's deferred late review, its answer kept
     if settled and captured_worker is None and not captured_was_reaping:
         # A slot stranded at ``reaping`` by a custody attempt that crashed is
         # recovered HERE too: the task settled on its own afterwards, so nothing
