@@ -1667,9 +1667,20 @@ requires fresh reviewer approval. See ARCHITECTURE §13 for the shared runtime g
 
 ## Reference skills
 
-The simplest reference for each type lives in the OuroborosHub catalog
-(`razzant/OuroborosHub`); `unix_computer_use` and `windows_computer_use` ship
-bundled under `repo/skills/`:
+Bundled references live under `repo/skills/`: `ui_design` guides visual work;
+`design_demo` presents a visual choice in one self-contained page. Both are
+`type: instruction`, recommended and on by default on fresh and upgraded installs.
+Trusted installation needs no review call; an owner's Off or removal stands.
+`unix_computer_use` and `windows_computer_use` are bundled extensions.
+
+Non-declared delegated sessions receive an index of enabled, accepted or reviewed
+instruction skills from every installed bucket: bounded descriptions, triggers and
+absolute manifest paths. Workers may read these files and their references, never
+modify host skills. The index lives in host instructions; retries reuse its stored
+bytes. Bodies are read on demand. Declared-input sessions need explicit references
+in their brief.
+
+The OuroborosHub catalog (`razzant/OuroborosHub`) supplies other examples:
 
 - `weather` — `type: extension`, declarative form/key-value widget,
   reads no env keys.
