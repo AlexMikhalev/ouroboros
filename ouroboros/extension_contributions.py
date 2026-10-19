@@ -11,7 +11,8 @@ import logging
 from urllib.parse import quote
 
 from ouroboros.extension_ui_validation import validate_contributions
-from ouroboros.skill_loader import _iter_payload_files, reduce_skill_content_hash
+from ouroboros.skill_identity import payload_bucket, release_declaration, release_digest_from_file_digests
+from ouroboros.skill_loader import _iter_payload_files
 
 log = logging.getLogger(__name__)
 HOST_ASSET_TYPES = {
@@ -22,7 +23,10 @@ HOST_ASSET_TYPES = {
 
 
 def _capture_host_sources(skill, revision: str) -> dict[str, bytes]:
+    """The page assets of the reviewed release, read while hashing it: the bytes captured are the bytes whose
+    release digest (skill_identity, the skill's ``content_hash``) equals ``revision``."""
     root = skill.skill_dir.resolve()
+    bucket = payload_bucket(root)
     sources, digests = {}, []
     for path in _iter_payload_files(root, manifest_entry=skill.manifest.entry, manifest_scripts=skill.manifest.scripts):
         rel = path.relative_to(root).as_posix()
@@ -37,7 +41,8 @@ def _capture_host_sources(skill, revision: str) -> dict[str, bytes]:
         digests.append((rel, digest.digest()))
         if capture:
             sources[rel] = bytes(content)
-    if reduce_skill_content_hash(digests) != revision:
+    declaration = release_declaration(root, skill.manifest, bucket=bucket)
+    if release_digest_from_file_digests(digests, declaration, bucket=bucket) != revision:
         raise ValueError("payload changed while capturing host modules; reload the reviewed revision")
     return sources
 
