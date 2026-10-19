@@ -510,6 +510,33 @@ def _journal_mode(path: pathlib.Path, tier: str) -> str:
     return "WAL" if (fixed and tier == TIER_ENFORCED and _filesystem_type(path) in _LOCAL_FILESYSTEMS) else "PERSIST"
 
 
+def _set_journal_mode(conn: sqlite3.Connection, mode: str, wait_sec: float) -> str:
+    """``PRAGMA journal_mode``; a switch INTO WAL waits out contention within ``wait_sec`` in all. Turning a
+    rollback-journal file into WAL takes the write lock from inside a read transaction, where SQLite skips
+    the busy handler (two converters would deadlock), so a connection writing then, such as another
+    thread's first open converting the same freshly published store, would fail it at once. A retry's busy
+    handler gets only the time left, and the open's own busy timeout (``wait_sec``) comes back afterwards.
+    Leaving WAL is never retried: every other open WAL connection keeps its shared lock for its life, so
+    waiting would only delay the same refusal."""
+    budget = max(0.0, wait_sec) if mode.upper() == "WAL" else 0.0
+    deadline, bounded = time.monotonic() + budget, False
+    while True:
+        try:
+            actual = conn.execute(f"PRAGMA journal_mode = {mode}").fetchone()[0]
+            break
+        except sqlite3.OperationalError as exc:
+            if not busy(exc) or (left := deadline - time.monotonic()) <= 0:
+                raise
+            time.sleep(min(0.01, left))
+            if (left := deadline - time.monotonic()) <= 0:
+                raise
+            conn.execute(f"PRAGMA busy_timeout = {max(1, int(left * 1000))}")
+            bounded = True
+    if bounded:
+        conn.execute(f"PRAGMA busy_timeout = {int(budget * 1000)}")
+    return actual
+
+
 def connect(path: pathlib.Path, tier: str, *, create: bool = False, wait_sec: float = 0.0,
             shared: bool = False, journal_mode: Optional[str] = None) -> sqlite3.Connection:
     """A connection with the tier's lock protocol (``sqlite3.Error`` is the caller's to type);
@@ -539,7 +566,7 @@ def connect(path: pathlib.Path, tier: str, *, create: bool = False, wait_sec: fl
             journal_mode = "" if os.path.abspath(path) in _HANDED_OFF else _journal_mode(path, tier)
         mode = journal_mode
         if mode:
-            actual = conn.execute(f"PRAGMA journal_mode = {mode}").fetchone()[0]
+            actual = _set_journal_mode(conn, mode, wait_sec if tier == TIER_ENFORCED else 0.0)
             if actual != mode.lower():
                 raise sqlite3.OperationalError(f"store journal mode {actual}, expected {mode}")
         conn.execute(f"PRAGMA journal_size_limit = {JOURNAL_SIZE_LIMIT}")
@@ -690,9 +717,10 @@ def close_connections_under(root: pathlib.Path, *, idle_only: bool = False) -> N
 atexit.register(close_connections)  # before module globals (including the inode guard) are cleared
 
 
-# Files this process handed off (``prepare_handoff``): a later open in this process (the seam's own
-# receipt, a late writer before the exit) leaves their journal alone instead of choosing WAL again,
-# until a refused switch hands them back (``forget_handoffs``); the next boot chooses again anyway.
+# Files this process handed off at an export/switch seam (``prepare_handoff``): a later open in this
+# process (the seam's own receipt, a late writer before the exit) leaves their journal alone instead of
+# choosing WAL again, until a refused switch hands them back (``forget_handoffs``); the next boot chooses
+# again anyway. A lock-tier re-record converts the file the same way but never enters this set.
 _HANDED_OFF: set = set()
 
 
@@ -713,13 +741,16 @@ def log_identity(path: Any) -> Optional[list]:
     return [info.st_ino, info.st_size, info.st_mtime_ns] if info.st_size else None
 
 
-def prepare_handoff(path: pathlib.Path, tier: str, *, wait_sec: float = STORE_WAIT_SEC) -> None:
+def prepare_handoff(path: pathlib.Path, tier: str, *, wait_sec: float = STORE_WAIT_SEC, seam: bool = True) -> None:
     """Quiescent export/switch seam: release cached handles and leave a standalone DELETE file.
-    Name-tier callers hold their name lock. An older SQLite may open the resulting file."""
+    Name-tier callers hold their name lock. An older SQLite may open the resulting file. A lock-tier
+    re-record (``seam=False``) converts it the same way, but this process keeps running and keeps
+    choosing its journal mode as its sibling processes do."""
     close_connections(path)
     with contextlib.closing(connect(path, tier, wait_sec=wait_sec, journal_mode="")) as conn:
         _delete_journal(conn)
-    _HANDED_OFF.add(os.path.abspath(path))
+    if seam:
+        _HANDED_OFF.add(os.path.abspath(path))
 
 
 def wal_file(path: pathlib.Path) -> bool:
@@ -1089,14 +1120,14 @@ def open_store(root: Any, *, write: bool, wait_sec: float = STORE_WAIT_SEC, serv
             conn = stack.enter_context(connection(store_path(root), tier, wait_sec=wait_sec))
         except sqlite3.Error as exc:
             raise _typed(exc) from exc
-        handoff = False
+        handoff = seam = False
         try:
             changes = conn.total_changes
             with transaction(conn, write=write, commit_wait_sec=wait_sec if tier == TIER_ENFORCED else None,
                              finish=(lambda: conn.execute("ROLLBACK")) if barrier else None):
                 txn = Txn(conn, root)
                 phase = txn.phase()
-                handoff = phase != PUBLISHED
+                handoff = seam = phase != PUBLISHED
                 if write and not service and handoff:
                     raise StoreRetired(f"current store phase is {phase}: the files are the authority")
                 yield txn
@@ -1104,7 +1135,7 @@ def open_store(root: Any, *, write: bool, wait_sec: float = STORE_WAIT_SEC, serv
                     raise StoreError("a barrier transaction wrote rows; its ROLLBACK would discard them")
                 if write and conn.total_changes != changes:
                     txn.set_meta("commit_seq", txn.revision() + 1)
-            handoff = handoff or txn._handoff
+            handoff, seam = handoff or txn._handoff, seam or txn._seam
         except sqlite3.Error as exc:
             raise _typed(exc) from exc
         finally:
@@ -1112,7 +1143,7 @@ def open_store(root: Any, *, write: bool, wait_sec: float = STORE_WAIT_SEC, serv
                 stack.close()  # return the lease before closing every thread's idle handle
                 with name_lock(root, LOCK_NAME, timeout_sec=wait_sec) if tier == TIER_NAME else contextlib.nullcontext():
                     try:
-                        prepare_handoff(store_path(root), tier, wait_sec=wait_sec)
+                        prepare_handoff(store_path(root), tier, wait_sec=wait_sec, seam=seam)
                     except sqlite3.Error as exc:
                         raise _typed(exc) from exc
 
@@ -1199,7 +1230,7 @@ class Txn:
     def __init__(self, conn: sqlite3.Connection, root: Any = None) -> None:
         self.conn = conn
         self.root = pathlib.Path(root) if root is not None else None
-        self._handoff = False
+        self._handoff = self._seam = False  # hand the file off; ``_seam``: an export/switch seam
 
     def meta(self, key: str) -> Any:
         record = self.conn.execute("SELECT value FROM meta WHERE key=?", (key,)).fetchone()
@@ -1212,8 +1243,10 @@ class Txn:
             if int(self.meta(key) or 1) < store_hot_facts.VERSION:
                 store_hot_facts.upgrade(self)
         self.conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)", (key, machine_json(value)))
-        if (key == "phase" and value in (EXPORTING, RETIRED)) or key in {"export_manifest", "lock_tier"}:
-            self._handoff = True
+        if (key == "phase" and value in (EXPORTING, RETIRED)) or key == "export_manifest":
+            self._handoff = self._seam = True
+        elif key == "lock_tier":
+            self._handoff = True  # re-recorded at boot: the file is converted, this process carries on
 
     def phase(self) -> str:
         return str(self.meta("phase") or PUBLISHED)
