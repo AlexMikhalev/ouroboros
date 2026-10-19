@@ -321,3 +321,20 @@ def test_the_log_identity_moves_with_every_commit_and_only_with_commits(tmp_path
     for connection in (spiller, held, writer):
         connection.close()
 
+
+@pytest.mark.parametrize("mode", ["PERSIST", "WAL"])
+def test_the_store_state_sees_a_vacuum_that_keeps_every_row(tmp_path, monkeypatch, mode):
+    """``committed_content`` cannot show that nothing wrote: a VACUUM keeps every row. The store
+    state also holds the write's trace, which a first WAL open's header fields do not count as."""
+    from tests._store_journal_shared import committed_content, store_state, use_journal
+    from tests.test_store import document
+
+    use_journal(monkeypatch, mode)
+    path = publish(tmp_path, document("t1"), document("t2"))  # a rollback-journal build, as the importer leaves it
+    before = store_state(path)
+    with store.open_store(tmp_path, write=False) as txn:  # the first open sets the journal up: WAL rewrites the header
+        assert txn.load("t1")["status"] == "completed"
+    assert store_state(path) == before
+    with contextlib.closing(store.connect(path, store.TIER_ENFORCED)) as conn:
+        conn.execute("VACUUM")
+    assert committed_content(path) == before.content and store_state(path) != before

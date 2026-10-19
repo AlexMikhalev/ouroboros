@@ -17,15 +17,21 @@ journal-format fields a rollback-journal file gets at its first WAL open (sqlite
 from __future__ import annotations
 
 import contextlib
+import dataclasses
+import hashlib
 import pathlib
 import sqlite3
 import time
-from typing import Any, Dict, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 from ouroboros import store
 
 # A database's own journal files: what they hold is the database's committed content.
 _JOURNAL_SUFFIXES = ("-wal", "-shm", "-journal")
+# The header fields a rollback-journal file's first WAL open rewrites (sqlite.org/fileformat2.html
+# §1.3): the format versions (18-19), the change counter (24-27), the version-valid-for number
+# (92-95) and the version of the SQLite that wrote the file last (96-99).
+_WAL_OPEN_FIELDS = (slice(18, 20), slice(24, 28), slice(92, 100))
 
 
 def use_journal(monkeypatch, mode: str) -> None:
@@ -90,17 +96,56 @@ def _begin(conn: sqlite3.Connection, statement: str) -> sqlite3.Connection:
 def committed_content(path: Any) -> Tuple[Any, ...]:
     """A SQLite file's committed content whatever its journal mode: its application id, user
     version, schema and rows, read through an independent connection (the WAL log's frames
-    included). Equal content is what "no commit" means; a WAL file's bytes are no such proof,
-    since a reader's first open rewrites header fields and a checkpoint moves frames into it."""
+    included). Equal content says the rows are as they were, not that nothing wrote: a VACUUM
+    keeps it (``StoreState`` adds the write's own trace)."""
     with contextlib.closing(sqlite3.connect(pathlib.Path(path), isolation_level=None)) as conn:
         header = tuple(conn.execute(f"PRAGMA {name}").fetchone()[0] for name in ("application_id", "user_version"))
         return header + tuple(conn.iterdump())
 
 
+@dataclasses.dataclass(frozen=True, eq=False)
+class StoreState:
+    """A SQLite file as a write changes it. ``content`` (``committed_content``) says what the rows
+    are, never that nothing was written: a VACUUM keeps it. The write's own trace after the
+    journal's set-up is the rest: the commits the WAL log holds (``store.log_identity``), the file's
+    bytes but for the header fields a first WAL open rewrites (``masked``), and those fields too
+    while the file keeps a rollback journal, whose every commit moves the change counter."""
+
+    content: Tuple[Any, ...]
+    log: Any
+    masked: bytes
+    rollback_fields: Optional[bytes]
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, StoreState):
+            return NotImplemented
+        # The header fields count while both sides keep a rollback journal: a first WAL open rewrites them.
+        held = (self.rollback_fields, other.rollback_fields)
+        fields = None in held or held[0] == held[1]
+        return fields and (self.content, self.log, self.masked) == (other.content, other.log, other.masked)
+
+    def __repr__(self) -> str:
+        digest = hashlib.sha256(self.masked).hexdigest()[:12]
+        return (f"StoreState(content: {len(self.content)} lines, log={self.log}, masked sha256 {digest}, "
+                f"rollback fields {self.rollback_fields.hex() if self.rollback_fields is not None else None})")
+
+
+def store_state(path: Any) -> StoreState:
+    """``StoreState`` of the SQLite file at PATH, its bytes read through the store's borrowed
+    descriptor (closing a descriptor of our own would drop this process's locks on the file)."""
+    raw = store.read_file_bytes(path)
+    masked = bytearray(raw)
+    for part in _WAL_OPEN_FIELDS:
+        masked[part] = bytes(part.stop - part.start)
+    rollback = raw[18:20] != b"\x02\x02"  # versions 2 mean WAL
+    return StoreState(committed_content(path), store.log_identity(path), bytes(masked),
+                      b"".join(raw[part] for part in _WAL_OPEN_FIELDS) if rollback else None)
+
+
 def tree_state(root: Any, *, mtimes: bool = False, directories: bool = True) -> Dict[str, Any]:
     """Every path under ROOT with what a write changes, keyed by its relative POSIX name: a file's
-    bytes (and its mtime with ``mtimes``), a SQLite database's ``committed_content`` (its own
-    journal files left out: they come and go with readers, and their frames are in that content),
+    bytes (and its mtime with ``mtimes``), a SQLite database's ``store_state`` (its own
+    journal files left out: they come and go with readers, and their frames are in that state),
     a directory as ``None`` (with ``mtimes``: its mtime, unless it holds a database, beside which
     SQLite creates and removes the ``-wal``/``-shm`` pair)."""
     root = pathlib.Path(root)
@@ -114,7 +159,7 @@ def tree_state(root: Any, *, mtimes: bool = False, directories: bool = True) -> 
                 holds_database = any(store.is_sqlite_file(child) for child in path.iterdir())
                 state[name] = path.stat().st_mtime_ns if mtimes and not holds_database else None
         elif store.is_sqlite_file(path):
-            state[name] = committed_content(path)
+            state[name] = store_state(path)
         else:
             state[name] = (path.read_bytes(), path.stat().st_mtime_ns) if mtimes else path.read_bytes()
     return state

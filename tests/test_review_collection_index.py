@@ -15,7 +15,7 @@ import re
 import pytest
 
 from ouroboros import obligations, store, store_import, task_store
-from tests._store_journal_shared import committed_content
+from tests._store_journal_shared import store_state
 from tests.test_store import document, publish
 
 _SCHEMA_SHAPES = {"v1": (), "owner-v2": ("has_owner_questions",),
@@ -133,9 +133,9 @@ def test_passive_read_leaves_old_schema_and_first_child_write_upgrades_before_mu
     child = tmp_path / "child"
     original = _question_document("child")
     _legacy_store(child, original, owned_root=tmp_path, shape=shape)
-    before = committed_content(store.store_path(child))  # not the bytes: a first WAL open rewrites the header
+    before = store_state(store.store_path(child))  # rows and any write's trace; a first WAL open's header aside
     assert task_store.read_document(child, "child") == original
-    assert committed_content(store.store_path(child)) == before
+    assert store_state(store.store_path(child)) == before
     monkeypatch.setattr(store_import, "_reconcile", lambda *_: pytest.fail("first write must not replay/import history"))
     calls = []
     def mutate(row):
