@@ -810,15 +810,17 @@ def _latest_wave(name: str) -> Any:
 
 
 def _review_with_one_settled_retry(slug: str, name: str):
+    retried_on = _latest_wave(name)  # an older row (a reused data dir) never stands in for this attempt's
     status, error, deps_status, payload = _run_review_flow(slug, name)
-    waves, outages, settled, stop, retried_on = 1, 0, False, "", None
-    while ((status not in ("clean", "warnings") or error or (slug in DEPS_SKILLS and deps_status != "installed"))
-           and waves < _REVIEW_WAVES):
+    waves, outages, settled, stop = 1, 0, False, ""
+    while (status not in ("clean", "warnings") or error or (slug in DEPS_SKILLS and deps_status != "installed")):
         wave = _latest_wave(name)
-        if error.startswith(_REVIEW_RAISED):
+        if waves >= _REVIEW_WAVES:
+            stop = f"all {_REVIEW_WAVES} waves are spent"
+        elif error.startswith(_REVIEW_RAISED):
             stop = "the review itself raised"
-        elif retried_on is not None and wave == retried_on:
-            stop = "the retry recorded no wave of its own"
+        elif wave == retried_on:
+            stop = "the attempt recorded no wave of its own"
         else:
             stop = _smoke_retry_refusal(name, status)
             if not stop and not _refused_by_provider(wave) and settled:

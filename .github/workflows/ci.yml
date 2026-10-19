@@ -825,7 +825,8 @@ jobs:
   # LLM verdict is OS-independent), one leg per review skill so the three
   # live reviews run in parallel under the product's own review window.
   # Paid lane: about $11 per native review, measured 2026-10-17/18 (~$33 per
-  # run for the three skills, at most one settled retry each on top). A
+  # run for the three skills; a retry, settled or after a provider outage,
+  # adds at most two more waves each, ~$99 per run at worst). A
   # missing secret is a hard red by owner directive — forks/mirrors without
   # it stay red.
   # ──────────────────────────────────────────────────────────────────

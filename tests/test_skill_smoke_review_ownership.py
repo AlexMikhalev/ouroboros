@@ -162,8 +162,8 @@ def test_a_provider_outage_is_told_apart_from_a_review_that_answered():
 
 
 def test_every_wave_the_retries_can_send_is_within_the_review_cycle_cap(review_env):  # noqa: F811 -- fixture
-    """A refused wave is a paid cycle too: under the shipped cap of two the waves after an outage wait were
-    refused locally before they reached the provider (proving run 39251921588)."""
+    """A refused wave is a paid cycle too: under the shipped cap of two, a third wave after an outage wait
+    would be refused locally before it reached the provider (Opus's probe of 2e349e80f)."""
     from ouroboros.review_cycles import review_max_cycles
     from ouroboros.settings_defaults import SETTINGS_DEFAULTS
 
@@ -206,10 +206,17 @@ def test_an_outage_is_waited_out_but_an_answered_failure_keeps_its_one_retry(mon
     assert status == "clean" and len(flows) == 3 and len(sleeps) == 1 and "one settled retry" in note
     # A route that never answers: outage waits until the wave budget is spent, then red.
     status, *_rest, note = run(*[outage] * smoke._REVIEW_WAVES, (clean, _ANSWERED))
-    assert status == "pending" and len(flows) == smoke._REVIEW_WAVES == len(sleeps) + 1
+    assert status == "pending" and len(flows) == smoke._REVIEW_WAVES == len(sleeps) + 1 and "waves are spent" in note
     # A retry that crashes before any send records no wave: the earlier outage never counts again (Opus, r5).
     status, *_rest, note = run(outage, crash, (clean, _ANSWERED))
     assert status == "pending" and len(flows) == 2 and "recorded no wave of its own" in note
+    # A reused data dir's older 429 row never stands in for a first attempt that recorded nothing (Opus, r6).
+    stale = _wave(_REFUSED, wave_id="old")
+    sleeps.clear(), history.clear(), flows.clear()
+    history.append(stale)
+    monkeypatch.setattr(smoke, "_run_review_flow", lambda *_a: flows.append(1) or pending)
+    status, *_rest, note = smoke._review_with_one_settled_retry("skill", "skill")
+    assert status == "pending" and len(flows) == 1 and sleeps == [] and "recorded no wave of its own" in note
     # A first attempt that records no wave is never retried.
     status, *_rest, note = run(crash, (clean, _ANSWERED))
     assert status == "pending" and len(flows) == 1 and "not retried" in note
