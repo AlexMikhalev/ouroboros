@@ -933,7 +933,9 @@ def test_review_skill_pipeline_order_pin():
 
     gate_source = inspect.getsource(skill_review._skill_cycles_gate)
     assert gate_source.index("free_replay_outcome(") < gate_source.index("skill_review_cycles_refusal(")
-    source = inspect.getsource(skill_review.review_skill)
+    wrapper = inspect.getsource(skill_review.review_skill)
+    assert wrapper.index("compose_review_panel(") < wrapper.index("_review_skill(")
+    source = inspect.getsource(skill_review._review_skill)
     assert source.index("_skill_cycles_gate(") < source.index("_review_wave_budget_block(")
     assert source.index("_review_wave_budget_block(") < source.index("run_skill_review_passes(")
     assert source.count("_paid_facts(") >= 5  # dispatch marks every post-panel outcome paid

@@ -39,6 +39,7 @@ from tests.test_acceptance_delivery import (
     _tool_call,
 )
 from tests._review_substrate_shared import user_text as _user_text
+from tests._store_shared import remove_store_tree
 
 _OVERFLOW = {**_ACCEPTANCE_PACKET, "__immutable_core_overflow__": {"reason": "owner requirements exceed the budget"}}
 _SOURCE_PATH = re.compile(r'path="(source_handles/context_checkpoints/acceptance-packet-[0-9a-f]{64}\.json)"')
@@ -328,7 +329,7 @@ def test_huge_fields_session_packet_and_named_closure_survive_cleanup(monkeypatc
     def start(self, wire, **kw):
         delivery = request.slot_source_delivery[slot.slot_id]
         # Delete ONLY this test's execution drive, after the real consumer retained the source.
-        shutil.rmtree(author)
+        remove_store_tree(author)
         raw = Path(delivery["source_path"]).read_bytes()
         assert Path(delivery["source_path"]).is_relative_to(canonical)
         assert json.dumps(delivery["source_path"], ensure_ascii=False) in wire["prompt"]
@@ -475,7 +476,7 @@ def test_consumer_refuses_source_lost_before_retention(monkeypatch, tmp_path, se
 
     fake = _fake_session(monkeypatch)
     request, slot, author, canonical, _workspace = _prepared_request(tmp_path, session=session)
-    shutil.rmtree(author)
+    remove_store_tree(author)
     llm = _EpisodeLLM(canonical, [])
     result = run_review_request(request, slots=[slot], drive_root=canonical, llm=llm)
     assert result.aggregate_signal != "PASS"

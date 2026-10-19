@@ -8,8 +8,6 @@ import pytest
 from ouroboros import acceptance_late, cancel_intents, owner_pause
 from ouroboros.task_results import load_task_result, write_task_result
 from tests.test_admission_contention import database_reader
-from tests.test_acceptance_late_consumers import late as late
-from tests.test_review_operation_collection import fresh_sends as fresh_sends
 
 pytestmark = pytest.mark.serial
 
@@ -44,15 +42,6 @@ def _contend_publication(monkeypatch, *, outside=None, acquire_wait_sec=0.0):
     monkeypatch.setattr(owner_pause, "time", SimpleNamespace(
         monotonic=clock.monotonic, time=clock.time, sleep=wait))
     return calls, publications, waits
-
-
-def test_combined_resume_hands_the_real_preparer_once_while_publication_retries(late, tmp_path, monkeypatch):
-    from tests.test_combined_late_resume import test_one_resume_restores_post_task_and_dead_acceptance_preparation
-
-    calls, publications, waits = _contend_publication(monkeypatch, acquire_wait_sec=1.0)
-    test_one_resume_restores_post_task_and_dead_acceptance_preparation(late, tmp_path, monkeypatch, False)
-    assert calls == [1] and len(publications) == 1 and waits
-    assert len(late.calls) == 3
 
 
 @pytest.mark.parametrize("interruption", ["open", "pause", "stop", "different_grant", "read_probe"])

@@ -231,8 +231,9 @@ class ReviewSlot:
     # compound route slug or the surface setting applied. Disclosure for the
     # last-execution projection; identity already rides ``effort``.
     declared_effort: str = ""
-    # Captured preference; empty explicitly preserves the legacy request shape.
-    processing_preference: str = ""
+    # Captured preference; empty explicitly preserves the legacy request shape. ``None`` is a slot
+    # built without one (a bare model): the send then resolves its role's, as any unbound call does.
+    processing_preference: Optional[str] = None
     # An api row's delivery, stated by whoever built the row: ``True`` — the
     # bounded native inspection episode on its own route (the catalog's
     # ``native``), ``False`` — the assembled packet (``packet``). The pool

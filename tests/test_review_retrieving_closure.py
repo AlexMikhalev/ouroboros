@@ -4,7 +4,6 @@ import dataclasses
 import json
 import pathlib
 import queue
-import shutil
 from types import SimpleNamespace
 
 import pytest
@@ -17,6 +16,7 @@ from ouroboros.review_native_episode import inspection_registry
 from ouroboros.review_substrate import ReviewRequest, ReviewSlot, run_review_request
 from ouroboros.task_results import load_task_result, write_task_result
 from tests.test_native_tool_round_executor import _tool_call
+from tests._store_shared import remove_store_tree
 
 pytestmark = pytest.mark.serial
 
@@ -95,7 +95,7 @@ def test_actual_native_and_session_work_orders_survive_author_cleanup(tmp_path):
                 for row in closure['sources']:
                     if row['status'] == 'retained':
                         assert row['retained_path'] in prompt
-                shutil.rmtree(author)
+                remove_store_tree(author)
                 return {'tool_calls': [_tool_call('read_file', row['source_ref']['read']['arguments'], f'read-{i}')
                     for i, row in enumerate(closure['sources']) if row['status'] == 'retained']}, {}
             if len(calls) == 2:
@@ -190,7 +190,7 @@ def test_named_closure_keeps_attachments_foreign_owner_and_two_checkpoint_genera
     retain_review_request_sources(request, source_root=author, custody_root=canonical)
     root = pathlib.Path(request.policy['native_data_root'])
     assert root != canonical and root != author
-    shutil.rmtree(author)
+    remove_store_tree(author)
     for path in inputs:
         pathlib.Path(path).unlink()
     registry, _, _ = inspection_registry(str(repo), root, task)
@@ -229,7 +229,7 @@ def test_native_oversized_result_retains_typed_continuation_after_author_cleanup
         def chat(self, **kwargs):
             calls.append(copy.deepcopy(kwargs['messages']))
             if len(calls) == 1:
-                shutil.rmtree(author)
+                remove_store_tree(author)
                 ref = next(row['source_ref'] for row in request.policy['review_source_closure']['sources']
                            if row['name'] == 'artifact:proof.txt')
                 return {'tool_calls': [_tool_call('read_file', ref['read']['arguments'])]}, {}
@@ -321,7 +321,7 @@ def test_nomination_data_never_authorizes_source_io_or_promotion(tmp_path, monke
             assert not list((canonical / 'task_results').rglob(pathlib.Path(unselected['path']).name))
             retained = json.loads(artifacts.read_actor_source_bytes(canonical, request.task_id, checkpoint))
             assert retained['messages'][1]['content'] == forged
-            shutil.rmtree(author)
+            remove_store_tree(author)
             return {'content': json.dumps({'verdict': 'PASS', 'findings': [], 'summary': 'data retained'})}, {}
 
     result = run_review_request(request, slots=[native], usage_ctx=ctx, drive_root=author, llm=Reader())
@@ -378,7 +378,7 @@ def test_complete_inventory_survives_preview_cap_and_author_gc(tmp_path, count, 
             rows = [row for row in closure['sources'] if row['name'].startswith('artifact:')]
             assert len(rows) == count
             snapshot = {row['name']: pathlib.Path(row['retained_path']).read_bytes() for row in rows}
-            shutil.rmtree(author)
+            remove_store_tree(author)
             registry, _, _ = inspection_registry(str(repo), request.policy['native_data_root'], request.task_id)
             for row in rows:
                 name = row['name'].removeprefix('artifact:')
@@ -431,7 +431,7 @@ def test_saved_child_row_with_canonical_sources_retains_original_owner_before_di
             closure = request.policy['review_source_closure']
             row = next(row for row in closure['sources'] if row['name'] == 'task-result')
             saved = json.loads(artifacts.read_actor_source_bytes(root, task, row['source_ref']))
-            shutil.rmtree(author)
+            remove_store_tree(author)
             applied = saved['review_projection']['panels'][0]['applied_source_ref']
             evidence = json.loads(artifacts.read_actor_source_bytes(root, task, applied))['request']['evidence']['source_ref']
             registry, _, _ = inspection_registry(str(repo), root, task)
@@ -482,7 +482,7 @@ def test_packet_custody_and_closed_work_order_precede_operation_freeze(tmp_path,
         for row in rows:
             if row['status'] == 'retained':
                 assert row['retained_path'] in request.slot_session_tasks[slot.slot_id]
-        shutil.rmtree(author)
+        remove_store_tree(author)
         registry, _, _ = inspection_registry(str(repo), root, request.task_id)
         result_source = next(row for row in rows if row['name'] == 'task-result')['source_ref']
         assert 'original task record' in registry.execute_result('read_file', result_source['read']['arguments']).text
@@ -533,6 +533,6 @@ def test_wide_closure_map_is_retained_in_compact_packet_not_copied_into_first_se
     closure = source['retrieval_sources']
     assert closure == request.policy['review_source_closure']
     row = next(row for row in closure['sources'] if row['name'] == 'artifact:evidence-209.txt')
-    shutil.rmtree(author)
+    remove_store_tree(author)
     registry, _, _ = inspection_registry(str(repo), root, request.task_id)
     assert '209' in registry.execute_result('read_file', row['source_ref']['read']['arguments']).text

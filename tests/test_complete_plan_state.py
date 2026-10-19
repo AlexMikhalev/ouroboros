@@ -12,7 +12,7 @@ import pytest
 from ouroboros import task_results
 from ouroboros.tools import plan_review_artifacts as artifacts, plan_spec
 from tests import _legacy_plan_shared as legacy
-from tests._store_shared import read_result
+from tests._store_shared import read_result, remove_store_tree
 
 
 def _spec(**fields):
@@ -119,7 +119,6 @@ def test_operative_example_text_keeps_its_reviewed_identity(tmp_path, example):
 
 @pytest.mark.parametrize("compact", [False, True])
 def test_spec_source_is_in_the_existing_child_promotion_closure(tmp_path, compact):
-    import shutil
     from ouroboros.artifacts import read_actor_source_bytes
     from ouroboros.observability import promote_child_task_refs
 
@@ -134,7 +133,7 @@ def test_spec_source_is_in_the_existing_child_promotion_closure(tmp_path, compac
     copied_wave = copied["plan_review_state"]["waves"][0]
     copied_ref = copied_wave["spec_source_ref"]
     assert copied_ref["sha256"] == ref["sha256"]
-    shutil.rmtree(child)
+    remove_store_tree(child)
     assert json.loads(read_actor_source_bytes(parent, "large-plan", copied_ref)) == spec
     assert artifacts.read_wave(parent, "large-plan", copied_wave["wave_artifact"])["spec"] == spec
 

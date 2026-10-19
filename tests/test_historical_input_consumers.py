@@ -12,7 +12,6 @@ import copy
 import dataclasses
 import hashlib
 import json
-import shutil
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -25,6 +24,7 @@ from ouroboros.review_substrate import ReviewRequest, run_review_request
 from tests.test_acceptance_delivery import _CLEAN_VERDICT, _EpisodeLLM, _fake_session, _tool_call
 from tests.test_acceptance_source_first import _SOURCE_PATH, _prepared_request
 from tests._review_substrate_shared import user_text as _user_text
+from tests._store_shared import remove_store_tree
 from tests import test_main_authored_context as context_fixtures
 
 main_loop = context_fixtures.main_loop
@@ -104,7 +104,7 @@ def test_native_historical_read_reaches_next_model_input_after_author_cleanup(tm
                 binding = _historical_binding(request)
                 assert binding["retained_path"] in prompt
                 assert Path(binding["retained_path"]).read_bytes() == raw
-                shutil.rmtree(author)
+                remove_store_tree(author)
                 calls = [_tool_call("read_file", binding["read"]["arguments"], "history")]
                 if paged:
                     packet_path = _SOURCE_PATH.search(_user_text(kwargs["messages"][-1]["content"])).group(1)
@@ -154,7 +154,7 @@ def test_offline_session_physically_reads_advertised_historical_source(tmp_path,
         assert _OLD not in wire["prompt"] and _TODAY not in wire["prompt"]
         assert wire["scope"] == {"kind": "project", "root": str(workspace)}
         assert wire["access"] == "readonly" and wire["mode"] == "ask"
-        shutil.rmtree(author)
+        remove_store_tree(author)
         actual = path.read_bytes()
         assert actual == raw and _OLD in actual.decode("utf-8")
         assert hashlib.sha256(actual).hexdigest() == binding["sha256"]

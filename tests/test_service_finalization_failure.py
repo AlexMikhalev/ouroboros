@@ -9,6 +9,7 @@ import pytest
 
 from ouroboros import loop_budget, loop_forced_finalization
 from ouroboros.tools.registry import ToolContext
+from tests._store_shared import remove_store_tree
 
 
 @pytest.mark.parametrize("live", [False, True])
@@ -345,7 +346,6 @@ def test_retrieving_reviewer_reads_complete_logs_after_the_author_drive_is_gone(
     retains each log source, and the native reviewer's read_file reads it after
     the author's execution drive is deleted. Gaps stay tails and refuse nothing."""
     import pathlib
-    import shutil
 
     from ouroboros import artifacts, observability
     from ouroboros.review_evidence import build_task_acceptance_evidence
@@ -371,7 +371,7 @@ def test_retrieving_reviewer_reads_complete_logs_after_the_author_drive_is_gone(
     request = ReviewRequest(surface="task_acceptance", task_id="parent1", goal="review", subject="answer",
                             evidence=packet, policy={})
     retain_review_request_sources(request, source_root=author, custody_root=canonical)
-    shutil.rmtree(author)
+    remove_store_tree(author)
 
     read_root = pathlib.Path(request.policy["native_data_root"])
     registry, _ctx, _schemas = inspection_registry(str(repo), str(read_root), "parent1")

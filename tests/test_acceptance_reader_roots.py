@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import json
-import shutil
 from dataclasses import replace
 
 import pytest
@@ -16,7 +15,7 @@ from ouroboros.utils import append_jsonl
 from tests.test_acceptance_delivery import _CLEAN_VERDICT, _EpisodeLLM, _tool_call, _fake_session
 from tests.test_acceptance_source_first import _SOURCE_PATH, _prepared_request
 from tests._review_substrate_shared import user_text as _user_text
-from tests._store_shared import result_exists
+from tests._store_shared import remove_store_tree, result_exists
 
 
 @pytest.fixture(autouse=True)
@@ -50,7 +49,7 @@ def test_native_episode_reads_retained_external_sources_after_original_cleanup(t
                 retained = {row["name"]: row for row in closure["sources"] if row["status"] == "retained"}
                 for row in retained.values():
                     assert row["retained_path"] in prompt
-                shutil.rmtree(author)
+                remove_store_tree(author)
                 calls = [
                     _tool_call("read_file", retained["task-result"]["source_ref"]["read"]["arguments"], "result"),
                     _tool_call("read_file", retained["verification-receipts"]["source_ref"]["read"]["arguments"], "receipt"),
@@ -96,7 +95,7 @@ def test_retained_packet_cannot_substitute_for_a_gone_original_reader_root(monke
         request.evidence.pop("__immutable_core_overflow__")
         acceptance_retrieving_work_order(request, [slot], session_root=str(workspace), data_root=author)
     retain_review_source(request, slot.slot_id, canonical)
-    shutil.rmtree(author)
+    remove_store_tree(author)
     llm = _EpisodeLLM(canonical, [])
     result = run_review_request(request, slots=[slot], drive_root=canonical, llm=llm)
     assert result.aggregate_signal != "PASS"
