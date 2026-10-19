@@ -84,12 +84,14 @@ if (navProjectsHeader) navProjectsHeader.innerHTML = renderProjectsHeader();
 const navDrawerBackdrop = document.getElementById('nav-drawer-backdrop');
 const projectPanelBackdrop = document.getElementById('project-panel-backdrop');
 const projectPanel = document.getElementById('project-panel');
-// The Project panel's header is the one page header (page_header.js): ☰ · name · status … ×. A Project is
-// named by its owner, not by the sidebar, so its name stays visible in every layout (owner Q3=A).
+// The Project panel's header is the one page header (page_header.js): name · status … ×; its ☰ is the room's
+// composer row's first control (owner 19.10, 1A). A Project is named by its owner, not by the sidebar, so its name
+// stays visible in every layout (owner Q3=A).
 projectPanel?.insertAdjacentHTML('afterbegin', renderPageHeader({
     title: '',
     titleId: 'project-panel-title',
     named: false,
+    showMobileNav: false,
     variant: 'project',
     className: 'project-panel-bar project-inspector-header',
     trailingHtml: `<button id="project-panel-close" class="shell-icon-control project-panel-close" type="button" title="Close project thread" aria-label="Close project thread">${SHELL_ICONS.close}</button>`,

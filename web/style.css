@@ -3537,9 +3537,21 @@ html[data-layout="stack"] .mobile-nav-toggle {
     flex: 0 0 44px;
     display: inline-flex;
 }
+/* A room's ☰ is the first control of its composer's row, under the thumb (owner 19.10, 1A): as tall as the
+   capsules beside it, with the touch minimum as its finger target (.ui-hit-area). */
+html[data-layout="stack"] .chat-toolbar-row > .composer-menu {
+    flex: 0 0 auto;
+    width: var(--composer-control-height);
+    height: var(--composer-control-height);
+}
+html[data-layout="stack"] .chat-toolbar-row > .composer-menu svg {
+    width: 18px;
+    height: 18px;
+}
 /* The drawer (a layer, layers.js): the same sidebar slides in from the left over a scrim; it leaves 48px of the
-   room showing for the scrim, never more than 360px. Its head row holds the one × exactly where the header's ☰
-   was (the header's inset and leading slot), so the control the finger reached for stays under it. */
+   room showing for the scrim, never more than 360px. Its head row holds the one × exactly where a page header's ☰
+   is (the header's inset and leading slot), so the control the finger reached for stays under it; a room's ☰ is
+   its composer's first control, and the × stays here (owner 19.10, 2A). */
 html[data-layout="stack"] .nav-drawer-backdrop {
     position: fixed;
     inset: 0;

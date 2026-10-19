@@ -90,7 +90,7 @@ def test_navigation_state_and_mobile_drawer_are_first_class():
 def test_page_header_is_shared_foundation_for_top_pages():
     header_js = _read("web/modules/page_header.js")
     css = _read("web/style.css")
-    assert "export function renderMobileNavToggle()" in header_js
+    assert "export function renderMobileNavToggle({ inComposer = false } = {})" in header_js  # one ☰, a page's or a room's
     assert "toolbarHtml" in header_js
     assert "trailingHtml" in header_js
     # Actual toolbar class composition/escaping is exercised by page_header.test.js.
