@@ -198,7 +198,7 @@ def test_a_wal_commit_older_than_the_grain_still_moves_the_stamp(tmp_path, monke
 def test_a_log_reused_in_place_moves_the_stamp_while_its_size_and_times_stay(tmp_path, monkeypatch):
     """A checkpointed log is reused in place: the next commit rewrites it from its first frame, at
     the same inode and size, and Windows may keep the file's write time while a cached connection
-    holds it open. The stamp reads the log's generation and frames, never its size or time."""
+    holds it open. The stamp reads the log's generation and frames beside its size and time."""
     from ouroboros import task_reads
     from ouroboros.store import STORE_REL
     from tests._store_journal_shared import use_journal

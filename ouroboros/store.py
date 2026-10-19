@@ -742,19 +742,22 @@ _WAL_MAGIC = (0x377F0682, 0x377F0683)
 
 
 def log_identity(path: Any) -> Optional[list]:
-    """The commits the WAL log holds (``[checkpoint sequence and salts, last commit frame]``), else
-    ``None``. A commit lives there until a checkpoint moves it into the database file; an empty or
-    absent log (opened empty by a reader, deleted at the last close) holds none, so its coming and
-    going is no change: a resting duty keyed on the database file plus this wakes on commits only.
-
-    Read from the log itself (sqlite.org/fileformat2.html §4), which carries no lock, never from its
-    size or time: a checkpointed log is reused in place at the same inode and size, and Windows may
-    keep a file's write time while a cached connection holds it open. Every reset renews the
-    header's checkpoint sequence and salts; the generation's frames are the log's prefix carrying
-    those salts, and every commit ends with a commit frame (a database size) after the last one,
-    where a rolled-back transaction leaves only frames without one."""
+    """The commits the WAL log holds (``[checkpoint sequence and salts, last commit frame, its
+    checksum, the log's size, its mtime_ns]``), else ``None``. A commit lives there until a checkpoint
+    moves it into the database file; an empty or absent log (opened empty by a reader, deleted at the
+    last close) holds none, so its coming and going is no change. Read from the log (which carries no
+    lock; sqlite.org/fileformat2.html §4) beside its size and time: a checkpointed log is reused in place
+    at the same inode and size, and Windows may keep a cached file's write time, but every reset renews
+    the sequence and salts. The committed frames are a prefix carrying those salts, the last ending a
+    commit (a database size); frames after them (rolled back, or not yet salted) may carry any salts
+    but no size. A writer killed between writing its commit frame and publishing it in the index leaves
+    one no reader sees, and the next commit of the same length overwrites it: that frame's checksum,
+    the log's size and time move all the same. A rolled-back transaction's frames move the last two."""
+    name = f"{os.fspath(path)}-wal"
     try:
-        with open(f"{os.fspath(path)}-wal", "rb", buffering=0) as log:
+        if not stat.S_ISREG(os.stat(name).st_mode):
+            return None  # never open a FIFO or a device to look
+        with open(name, "rb", buffering=0) as log:
             header = log.read(32)
             if len(header) < 32 or int.from_bytes(header[:4], "big") not in _WAL_MAGIC:
                 return None  # no frame is valid before the header
@@ -762,17 +765,18 @@ def log_identity(path: Any) -> Optional[list]:
 
             def frame_header(number: int) -> bytes:  # frame NUMBER, from 1
                 log.seek(32 + (number - 1) * frame)
-                return log.read(16)
+                return log.read(24)
 
             held, above = 0, (os.fstat(log.fileno()).st_size - 32) // frame + 1
-            while above - held > 1:  # the last frame carrying this generation's salts
+            while above - held > 1:  # ends at or past the last committed frame: all before carry the salts
                 middle = (held + above) // 2
                 held, above = (middle, above) if frame_header(middle)[8:16] == header[16:24] else (held, middle)
             while held and frame_header(held)[4:8] == b"\0\0\0\0":
                 held -= 1
+            checksum, info = frame_header(held)[16:24] if held else b"", os.fstat(log.fileno())
     except OSError:
         return None
-    return [header[12:24].hex(), held] if held else None
+    return [header[12:24].hex(), held, checksum.hex(), info.st_size, info.st_mtime_ns] if held else None
 
 
 def prepare_handoff(path: pathlib.Path, tier: str, *, wait_sec: float = STORE_WAIT_SEC) -> None:
