@@ -6,6 +6,7 @@ import sqlite3
 import subprocess
 import sys
 import threading
+import time
 
 import pytest
 
@@ -156,6 +157,39 @@ def test_delete_and_persist_writers_interleave_with_full_durability(tmp_path, mo
             store.close_connections(path)  # this body's turn ends as its exit ends it: its handles let go
             assert old.execute("SELECT value FROM meta WHERE key='reply'").fetchone()[0] == str(number)
         assert old.execute("PRAGMA journal_mode").fetchone()[0] == "delete"
+
+
+@pytest.mark.parametrize("wait_sec", [5.0, 0.0], ids=["budget", "no_budget"])
+def test_a_first_wal_open_waits_out_another_writer_within_its_budget(tmp_path, monkeypatch, wait_sec):
+    """A published store is a rollback-journal file until a first open turns it into WAL, and that
+    switch takes the write lock from inside a read transaction, where SQLite skips the busy handler.
+    Another connection writing at that moment (another thread's first open converting the same fresh
+    store, as on a Windows runner) failed it at once with "database is locked". The open now waits
+    out the writer within its own budget; with no budget it still refuses at once."""
+    monkeypatch.setattr(store, "_journal_mode", lambda *_: "PERSIST")
+    path = publish(tmp_path)
+    store.close_connections()
+    monkeypatch.setattr(store, "_journal_mode", lambda *_: "WAL")
+    writer = sqlite3.connect(path, isolation_level=None, check_same_thread=False)
+    writer.execute("BEGIN IMMEDIATE")  # another connection holds the write lock
+    released = threading.Timer(0.3, lambda: writer.execute("ROLLBACK"))
+    released.start()
+    started = time.monotonic()
+    try:
+        if not wait_sec:
+            with pytest.raises(sqlite3.OperationalError, match="locked"):
+                store.connect(path, store.TIER_ENFORCED, wait_sec=wait_sec)
+            assert time.monotonic() - started < 0.2, "no budget, no wait"
+            return
+        conn = store.connect(path, store.TIER_ENFORCED, wait_sec=wait_sec)
+        try:
+            assert conn.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
+        finally:
+            conn.close()
+        assert time.monotonic() - started >= 0.25, "it waited for the writer instead of failing"
+    finally:
+        released.join(5)
+        writer.close()
 
 
 def test_handoff_closes_other_threads_idle_connections_before_rename(tmp_path):

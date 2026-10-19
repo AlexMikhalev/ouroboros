@@ -510,6 +510,21 @@ def _journal_mode(path: pathlib.Path, tier: str) -> str:
     return "WAL" if (fixed and tier == TIER_ENFORCED and _filesystem_type(path) in _LOCAL_FILESYSTEMS) else "PERSIST"
 
 
+def _set_journal_mode(conn: sqlite3.Connection, mode: str, wait_sec: float) -> str:
+    """``PRAGMA journal_mode``, waiting out contention within ``wait_sec``. Turning a rollback-journal
+    file into WAL takes the write lock from inside a read transaction, where SQLite skips the busy
+    handler (two converters would deadlock), so a connection writing then, such as another thread's
+    first open converting the same freshly published store, would fail it at once."""
+    deadline = time.monotonic() + max(0.0, wait_sec)
+    while True:
+        try:
+            return conn.execute(f"PRAGMA journal_mode = {mode}").fetchone()[0]
+        except sqlite3.OperationalError as exc:
+            if not busy(exc) or time.monotonic() >= deadline:
+                raise
+            time.sleep(0.01)
+
+
 def connect(path: pathlib.Path, tier: str, *, create: bool = False, wait_sec: float = 0.0,
             shared: bool = False, journal_mode: Optional[str] = None) -> sqlite3.Connection:
     """A connection with the tier's lock protocol (``sqlite3.Error`` is the caller's to type);
@@ -539,7 +554,7 @@ def connect(path: pathlib.Path, tier: str, *, create: bool = False, wait_sec: fl
             journal_mode = "" if os.path.abspath(path) in _HANDED_OFF else _journal_mode(path, tier)
         mode = journal_mode
         if mode:
-            actual = conn.execute(f"PRAGMA journal_mode = {mode}").fetchone()[0]
+            actual = _set_journal_mode(conn, mode, wait_sec if tier == TIER_ENFORCED else 0.0)
             if actual != mode.lower():
                 raise sqlite3.OperationalError(f"store journal mode {actual}, expected {mode}")
         conn.execute(f"PRAGMA journal_size_limit = {JOURNAL_SIZE_LIMIT}")
