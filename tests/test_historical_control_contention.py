@@ -32,7 +32,10 @@ def test_real_historical_panel_waits_through_nested_control_contention(late, tmp
         if first:
             # The outer subject read already succeeded. The real lower
             # historical control owner now meets an independently held store.
-            with database_reader(f.root, exclusive=True):
+            # Taking that lock waits out the operation's own concurrent readers: with no
+            # wait, a loaded runner's overlapping read failed the fixture itself, and its
+            # AssertionError reached the probe as an unknown control (0 reviewer calls).
+            with database_reader(f.root, exclusive=True, acquire_wait_sec=30):
                 return original(*args, **kwargs)
         return original(*args, **kwargs)
 
