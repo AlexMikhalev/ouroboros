@@ -271,7 +271,6 @@ APPROVED_DELTAS: Mapping[str, Delta] = MappingProxyType({
     "shape:followup_objective_required": Delta(False, "ok", True, "argument_error", "A.22", "an empty objective scheduled nothing"),
     "shape:followup_text_too_long": Delta(False, "ok", True, "argument_error", "A.22", "an over-limit objective or context is refused whole — never truncated, never scheduled"),
     "shape:followup_data_root_unresolved": Delta(False, "ok", True, "error", "A.22", "a drive root that could not be resolved wrote no record"),
-    "shape:followup_cap_reached": Delta(False, "ok", True, "resource_constraint_blocked", "A.22", "a follow-up beyond the per-task cap was never registered; the cap is the constraint"),
     "shape:followup_persist_failed": Delta(False, "ok", True, "error", "A.22", "a follow-up the table refused to store does not exist"),
     # A.23 — F6 rolling upstream sync (drift b9f7597f..8d13373b). Upstream's #440
     # fix-forward added both browser markers to its failure-prefix table; the

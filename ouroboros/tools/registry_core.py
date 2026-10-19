@@ -703,11 +703,12 @@ class ToolRegistry:
         # Rebuild from the load-time facts, never from empty: a rebuilt schema
         # list must not erase module_load_failed omissions (H3, capinv-447).
         self._capability_omissions = [dict(item) for item in self._module_load_omissions]
+        # Every locally unavailable built-in is withheld under its own cause, not only a missing key.
         unavailable_tools = {
-            entry.name: detail
+            entry.name: (reason, detail)
             for entry in self._entries.values()
             for available, reason, detail in [_builtin_tool_availability(entry.name, self._ctx)]
-            if not available and reason == "missing_credential" and entry.name not in disabled_tools
+            if not available and entry.name not in disabled_tools
         }
         built_in = [
             schema
@@ -722,12 +723,13 @@ class ToolRegistry:
         ]
         if disabled_tools:
             self._capability_omissions.append({"surface": "tools", "reason": "disabled_by_contract", "tools": sorted(disabled_tools)})
-        if unavailable_tools:
+        for cause in dict.fromkeys(reason for reason, _detail in unavailable_tools.values()):
+            names = sorted(name for name, (reason, _detail) in unavailable_tools.items() if reason == cause)
             self._capability_omissions.append({
                 "surface": "tools",
-                "reason": "missing_credential",
-                "tools": sorted(unavailable_tools),
-                "details": {name: unavailable_tools[name] for name in sorted(unavailable_tools)},
+                "reason": cause,
+                "tools": names,
+                "details": {name: unavailable_tools[name][1] for name in names},
             })
         # Live (enabled, granted, reviewed) extension tool schemas join normal tool
         # discovery: liveness, acting-child grants and the network resource
@@ -848,7 +850,7 @@ class ToolRegistry:
         if entry:
             available, reason, detail = _builtin_tool_availability(requested, self._ctx)
             if not available:
-                if reason == "missing_credential":
+                if reason:
                     self._capability_omissions.append({
                         "surface": "tools",
                         "reason": reason,
