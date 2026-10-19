@@ -145,7 +145,9 @@ def conflicting_writers(q: Any, predecessor: str, *, drive_root: Any = None,
     panel still finishes and attaches its verdict. Missing or unknown
     provenance, ordinary delegations, author research copies, author model
     attempts, tool/process/merge/executor custody and unreadable custody keep
-    holding. The empty default is the complete census for every other consumer.
+    holding. Retained terminal HTTP failures without a receiver are not writers,
+    even with unresolved cost; this pure classification applies to every consumer.
+    The empty default is the complete census for every other consumer.
     """
     from ouroboros.budget_pause import observe_task_runs
     from ouroboros.owner_pause import tree_member_results
@@ -234,6 +236,7 @@ def conflicting_writers(q: Any, predecessor: str, *, drive_root: Any = None,
         blockers.append({"kind": "process_custody_unreadable", "detail": str(exc)[:200]})
     try:
         from ouroboros import usage_store
+        from ouroboros.local_custody_repair import ended_unbound_model_request
         # The root's open attempts only (the store's open-set index).
         with usage_store.read(custody_root) as txn:
             attempts = txn.open_attempts(root_task_id=predecessor)
@@ -245,6 +248,8 @@ def conflicting_writers(q: Any, predecessor: str, *, drive_root: Any = None,
                 if (isinstance(retired, dict) and retired.get("retired_at")
                         and type(attempt.get("local_answer_task_attempt")) is int
                         and retired.get("task_attempt") == attempt["local_answer_task_attempt"]):
+                    continue
+                if ended_unbound_model_request(attempt):
                     continue
                 # A reviewer's own send (its slot/skill attribution) is review
                 # custody: the owner Pause's readers list it as still finishing.
