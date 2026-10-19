@@ -4187,14 +4187,15 @@ textarea.chat-input::placeholder { color: var(--text-muted); }
 }
 
 /* Context: exactly three modes, the chosen one under a glass thumb, in its mode's colour (Max the
-   accent, full context; Low amber, reduced; Nano the project fuchsia). */
+   accent, full context; Low the neutral ink, reduced: a level the owner chose is not a warning; Nano the
+   project fuchsia). */
 .chat-context-mode {
     --context-ink: var(--accent-light);
     --context-fill: var(--accent-dim);
 }
 .chat-context-mode[data-context-mode="low"] {
-    --context-ink: var(--status-warn-fg);
-    --context-fill: var(--status-warn-bg);
+    --context-ink: var(--status-neutral-fg);
+    --context-fill: var(--status-neutral-bg);
 }
 .chat-context-mode[data-context-mode="nano"] {
     --context-ink: var(--project);
