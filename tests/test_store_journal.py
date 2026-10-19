@@ -365,6 +365,44 @@ def test_a_killed_writer_s_unseen_commit_frame_does_not_hide_the_next_commit(tmp
         connection.close()
 
 
+def test_a_shorter_commit_over_a_killed_writer_s_longer_one_moves_only_the_log_s_time(tmp_path):
+    """A killed writer's unseen commit spans four frames, and the next commit writes one: the
+    unseen commit frame stays the log's last, so the frame, its checksum and the log's size stay the
+    same, and only the log's time moves the identity (pinned: with the time constant, it would not
+    move at all; on a volume that keeps a held file's time it stays until the next commit)."""
+    path = tmp_path / "log.sqlite"
+    with contextlib.closing(sqlite3.connect(path, isolation_level=None)) as setup:
+        setup.execute("CREATE TABLE t(k INTEGER PRIMARY KEY, v)")
+        setup.executemany("INSERT INTO t VALUES (?, ?)", [(k, "a" * 3000) for k in range(4)])  # a leaf page each
+    writer = store.connect(path, store.TIER_ENFORCED, journal_mode="WAL")  # counted: its file reads borrow
+    writer.execute("PRAGMA wal_autocheckpoint = 0")
+    writer.execute("UPDATE t SET v = 'b' || substr(v, 2) WHERE k = 0")
+    held = sqlite3.connect(path, isolation_level=None)  # keeps the index: no recovery adopts the orphan
+    log = path.with_name(path.name + "-wal")
+    published = store.log_identity(path)
+    copy = tmp_path / "copy.sqlite"
+    copy.write_bytes(store.read_file_bytes(path))
+    shutil.copyfile(log, copy.with_name(copy.name + "-wal"))
+    with contextlib.closing(sqlite3.connect(copy, isolation_level=None)) as other:  # recovers the same log
+        other.execute("PRAGMA wal_autocheckpoint = 0")
+        other.execute("UPDATE t SET v = 'k' || substr(v, 2)")  # the killed writer's commit: four leaf pages
+        orphan = copy.with_name(copy.name + "-wal").read_bytes()[log.stat().st_size:]
+    with open(log, "r+b") as raw:  # it reached the log, never the index
+        raw.seek(log.stat().st_size)
+        raw.write(orphan)
+    then = log.stat().st_mtime_ns - 10 ** 10
+    os.utime(log, ns=(then, then))  # written ten seconds ago, past any file time's grain
+    seen = store.log_identity(path)
+    rows = "SELECT group_concat(substr(v, 1, 1), '') FROM t"
+    assert seen[1] - published[1] == 4 and held.execute(rows).fetchone() == ("baaa",)  # the orphan unseen
+    writer.execute("UPDATE t SET v = 'n' || substr(v, 2) WHERE k = 3")  # one frame: shorter than the orphan
+    moved = store.log_identity(path)
+    assert held.execute(rows).fetchone() == ("baan",)
+    assert [part for part, (now, before) in enumerate(zip(moved, seen)) if now != before] == [4], (seen, moved)
+    for connection in (held, writer):
+        connection.close()
+
+
 @pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="needs FIFOs")
 def test_a_fifo_in_the_log_s_place_is_never_opened(tmp_path):
     """Opening a FIFO for reading waits for a writer: the log's identity looks at a regular file only,

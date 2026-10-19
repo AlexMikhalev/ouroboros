@@ -738,14 +738,15 @@ def log_identity(path: Any) -> Optional[list]:
     """The commits the WAL log holds (``[checkpoint sequence and salts, last commit frame, its
     checksum, the log's size, its mtime_ns]``), else ``None``. A commit lives there until a checkpoint
     moves it into the database file; an empty or absent log (opened empty by a reader, deleted at the
-    last close) holds none, so its coming and going is no change. Read from the log (which carries no
-    lock; sqlite.org/fileformat2.html §4) beside its size and time: a checkpointed log is reused in place
-    at the same inode and size, and Windows may keep a cached file's write time, but every reset renews
-    the sequence and salts. The committed frames are a prefix carrying those salts, the last ending a
-    commit (a database size); frames after them (rolled back, or not yet salted) may carry any salts
-    but no size. A writer killed between writing its commit frame and publishing it in the index leaves
-    one no reader sees, and the next commit of the same length overwrites it: that frame's checksum,
-    the log's size and time move all the same. A rolled-back transaction's frames move the last two."""
+    last close) holds none, so its coming and going is no change. Read from the log, which carries no
+    lock (sqlite.org/fileformat2.html §4): the committed frames are a prefix carrying the generation's
+    salts, the last one ending a commit (a database size); frames after them may carry any salts but
+    no size. What moves: a commit, its commit frame (with the checksum, size and time); a checkpointed
+    log reused in place at the same inode and size, the sequence and salts; a rolled-back transaction's
+    frames, the size and time. A writer killed between writing its commit frame and publishing it in
+    the index leaves a commit frame no reader sees: the next commit of the same length overwrites it,
+    moving its checksum; a shorter one leaves it the last, so only the log's time moves, and where
+    that time stays (a held file on Windows, a coarse clock) the identity stays until the next commit."""
     name = f"{os.fspath(path)}-wal"
     try:
         if not stat.S_ISREG(os.stat(name).st_mode):
