@@ -312,7 +312,7 @@ def _copy_path(source: pathlib.Path, destination: pathlib.Path) -> None:
         destination.symlink_to(os.readlink(source), target_is_directory=source.is_dir())
         return
     if source.is_dir():
-        # A store's WAL index stays behind: its first open rebuilds the copy's from the copied log.
+        # A held store's WAL index stays behind: its first open rebuilds the copy's from the copied log.
         shutil.copytree(source, destination, symlinks=True, copy_function=store.copy_file_bytes,
                         ignore=lambda folder, names: [name for name in names
                                                       if store.is_wal_index(pathlib.Path(folder) / name)])
