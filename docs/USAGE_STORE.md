@@ -133,11 +133,11 @@ refuse a WAL index, told by its name on every OS, before opening it
 (`store.is_wal_index`, `WalIndexRefused`; the Files panel answers 403), folder
 copies and captures leave it out as an excluded member (a copy rebuilds its own
 from the copied `-wal`, which carries no lock) and search skips SQLite's journal
-and WAL files. Under WAL a download or copy of a live store's database
-file holds its state as of the last checkpoint (newer commits are still in its
-`-wal`, which a folder copy takes along, but at another moment), so an exact copy
-is one taken after Ouroboros stops, when its last close has checkpointed the log
-into the file. The connection, tier,
+and WAL files. Under WAL a byte copy of a live store (a download, a file or
+folder copy) can hold an older state (newer commits stay in its `-wal`), be torn
+by a checkpoint running meanwhile, or fail to open when a folder copy pairs the
+file with a `-wal` taken at another moment; an exact copy comes from a stopped
+Ouroboros, whose last close checkpoints the log into the file. The connection, tier,
 file-identity and transaction core is `ouroboros/store.py`, shared with the
 current-facts store; `usage_store` keeps the money error vocabulary over it.
 
