@@ -76,8 +76,10 @@ def test_actual_review_start_retains_one_request_and_post(start, tmp_path, monke
     assert custody.invocation_record(tmp_path, events[0]["invocation_id"])["request"] == posts()[0][0]
 
 
+@pytest.mark.parametrize("journal", ["PERSIST", "WAL"])
 @pytest.mark.parametrize("control", ["pause", "stop", "deadline", "closed"])
-def test_current_controls_end_the_unsent_wait_without_post(start, tmp_path, monkeypatch, control):
+def test_current_controls_end_the_unsent_wait_without_post(start, tmp_path, monkeypatch, control, journal):
+    use_journal(monkeypatch, journal)  # a held write fails its COMMIT (rollback journal), its BEGIN (WAL)
     stopped, waited = [], []
     with task_model_wait_scope(task={"id": "t-b", "_attempt": 1}, drive_root=tmp_path,
             event_queue=None, worker_slot_held=False,

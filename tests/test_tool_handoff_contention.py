@@ -88,9 +88,11 @@ def test_real_sql_claim_contention_preserves_one_registry_read(reader, monkeypat
     (False, "pause"), (False, "stop"), (True, "pause"), (True, "stop"),
     (True, "deadline"), (True, "closed"),
 ])
+@pytest.mark.parametrize("journal", ["PERSIST", "WAL"])
 def test_wait_rechecks_current_controls_without_revoking_handed_pause(
-    reader, monkeypatch, handed, control,
+    reader, monkeypatch, handed, control, journal,
 ):
+    use_journal(monkeypatch, journal)  # a held write fails its COMMIT (rollback journal), its BEGIN (WAL)
     root, registry, calls = reader
     stopped, waited = [], []
     with task_model_wait_scope(task={"id": "root", "_attempt": 1}, drive_root=root,

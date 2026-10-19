@@ -110,11 +110,13 @@ def test_receipt_commit_busy_keeps_same_event_copy_and_one_worker_handoff(env, m
     assert not any("not scheduled" in text for _, text, _ in env.ctx.sent)
 
 
+@pytest.mark.parametrize("journal", ["PERSIST", "WAL"])
 @pytest.mark.parametrize("acting", [False, True])
 @pytest.mark.parametrize("control", ["stop", "pause", "deadline"])
-def test_control_during_receipt_wait_prevents_worker_handoff(env, monkeypatch, acting, control):
+def test_control_during_receipt_wait_prevents_worker_handoff(env, monkeypatch, acting, control, journal):
     from supervisor import worker_assignment
     from supervisor.events_budget import _set_root_budget_pause_locked
+    use_journal(monkeypatch, journal)  # a held write fails its COMMIT (rollback journal), its BEGIN (WAL)
     event = request(env, acting)
     deadline = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=1)
     if control == "deadline":
@@ -203,10 +205,12 @@ def test_hard_receipt_write_failure_keeps_existing_refusal(env, monkeypatch, act
 
 
 
-def test_registered_schedule_subagent_reaches_one_worker_after_real_receipt_contention(env, monkeypatch):
+@pytest.mark.parametrize("journal", ["PERSIST", "WAL"])
+def test_registered_schedule_subagent_reaches_one_worker_after_real_receipt_contention(env, monkeypatch, journal):
     from ouroboros.tools.registry import ToolRegistry
     from tests._shared import configure_test_subagent
 
+    use_journal(monkeypatch, journal)  # a held write fails its COMMIT (rollback journal), its BEGIN (WAL)
     worker, delivered = install_worker(env, monkeypatch)
     write_task_result(env.data, "root", "running", root_task_id="root",
                       task_contract={"delegation_budget": {"may_delegate": True, "may_fan_out": True}})
