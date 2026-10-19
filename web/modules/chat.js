@@ -16,6 +16,7 @@ import { attachmentCaption, attachmentViews, composerText, createComposerAttachm
 import { createChatDecision } from './chat_decision.js';
 import { createRoomWork } from './room_work.js';
 import { applyCardWorkViews, cardControls, cardMenuActions, emptyWorkState, openCardControls, ownStopPress, reconcileWorkState, roomStatusView } from './work_status.js';
+import { statusMarkHtml } from './status_mark.js';
 import { createMainWaiting } from './main_waiting.js';
 import { createHostStart } from './host_starting_status.js';
 import { createModelWaitController, isModelWaitReference } from './model_wait.js';
@@ -3106,12 +3107,11 @@ export function createChatInstance({
     refreshHeaderControlState(true);
 
     const typingEl = document.createElement('div');
-    // Per-instance id (main stays 'typing-indicator'; panels get a unique id) so
-    // multiple open chat columns never collide on a duplicate DOM id.
+    // A per-instance id (Main's stays 'typing-indicator'): open chat columns never share one.
     typingEl.id = idPrefix === 'chat' ? 'typing-indicator' : `${idPrefix}-typing-indicator`;
     typingEl.className = 'chat-bubble assistant typing-bubble';
     typingEl.style.display = 'none';
-    typingEl.innerHTML = `<div class="typing-dots"><span></span><span></span><span></span></div>`;
+    typingEl.innerHTML = statusMarkHtml('typing-mark', { shape: 'moving', hue: 'ink' });
     messagesDiv.appendChild(typingEl);
 
     const pageHistoryIds = new Map();
