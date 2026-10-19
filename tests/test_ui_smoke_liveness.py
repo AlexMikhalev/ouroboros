@@ -28,10 +28,12 @@ from tests._store_shared import seed_result
 
 
 def _seed_orphan_swarm(data_dir: pathlib.Path) -> None:
-    """Durable state reproducing the stuck pill: a subagent FINAL chat row whose
-    swarm parent has no rows in the window, a STALE progress floor (older than
-    the child, so the server honestly keeps the lineage — the client reconcile
-    is the load-bearing fix), and the parent's completed task result on disk.
+    """Durable state of the old stuck pill: a subagent FINAL chat row whose swarm
+    parent has no rows in the window, and a STALE progress floor (older than the
+    child, so the server honestly keeps the lineage). Since #1872 no parent card
+    is minted from a child's lineage, so the child is its own card, finished by
+    its final row; the parent's completed result on disk plays no part (the
+    durable-result reconcile is the #866 case in web/tests/chat_header_census.test.js).
     The rows go into the dialogue store the running server reads (#1982): a log
     file written after it started is never read."""
     from ouroboros import dialogue_store
