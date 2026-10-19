@@ -173,6 +173,96 @@ def test_collector_does_not_take_over_review_panel(tmp_path, money):
     assert not current.run(tmp_path, entry.run_id).terminal_state
 
 
+@pytest.mark.parametrize("contended", [False, True])
+def test_foreground_supervision_returns_review_collection_refusal(tmp_path, monkeypatch, money, contended):
+    """A terminal execution cannot make a permanent collection refusal retryable."""
+    from ouroboros import delegate_supervision
+    from ouroboros.platform_layer import acquire_exclusive_file_lock, release_exclusive_file_lock
+    from ouroboros.tools.delegate_terminal_evidence import collect_and_deliver_terminal
+    from ouroboros.tools.registry import ToolContext
+
+    entry = started(tmp_path, source="review_substrate_commit")
+    ctx = ToolContext(repo_dir=tmp_path, drive_root=tmp_path, task_id=entry.task_id)
+    monkeypatch.setattr(delegate_supervision, "_leaf_live_input", lambda *args: "unknown")
+    monkeypatch.setattr(delegate_supervision, "_TICK_SEC", 0)
+    observations = []
+
+    def observed(*args, **kwargs):
+        assert not observations, "permanent collection refusal was silently retried"
+        payload = collect_and_deliver_terminal(ctx, entry.run_id, terminal(), body._shape(entry), entry, None)
+        observations.append(payload)
+        return json.dumps(payload)
+
+    lock = custody.disposition_lock_path(tmp_path, entry)
+    fd = None
+    if contended:
+        lock.parent.mkdir(parents=True, exist_ok=True)
+        fd = acquire_exclusive_file_lock(lock, timeout_sec=0)
+        assert fd is not None
+    try:
+        result = delegate_supervision.supervised_wait(ctx, entry.run_id, wait_once=observed)
+    finally:
+        if fd is not None:
+            release_exclusive_file_lock(lock, fd)
+    payload = json.loads(result.text)
+    assert len(observations) == 1
+    assert payload["status"] == "refused" and payload["ok"] is False
+    assert result.code == payload["host_code"] == "TOOL_REPORTED_FAILURE"
+    assert payload["reason"] == "collection_owner_mismatch"
+    assert payload["collection"] == {"status": "unavailable", "reason": "collection_owner_mismatch"}
+    assert payload["state"] == "succeeded" and payload["answered"] is True
+    assert payload["run_id"] == entry.run_id and payload["last_seq"] == 4
+    assert "review" in payload["detail"].lower()
+    assert "primary_output" not in payload and "output_delivery" not in payload
+    fresh = current.run(tmp_path, entry.run_id)
+    assert fresh.review_owned and fresh.task_id == entry.task_id
+    assert fresh.terminal_state == "succeeded" and fresh.terminal_source
+    assert not fresh.output_source and not fresh.output_consumed
+    assert not fresh.settled and not fresh.ledger_recorded and not money
+    assert not fresh.patch_captured and not fresh.patch_disposed
+
+
+def test_foreground_collection_preserves_missing_custody_refusal(tmp_path, monkeypatch, money):
+    from ouroboros import platform_layer
+    from ouroboros.tools.delegate_terminal_evidence import collect_and_deliver_terminal
+    from ouroboros.tools.registry import ToolContext
+
+    entry = started(tmp_path)
+    ctx = ToolContext(repo_dir=tmp_path, drive_root=tmp_path, task_id=entry.task_id)
+    acquire, read = platform_layer.acquire_exclusive_file_lock, current.run
+    target_lock = custody.disposition_lock_path(tmp_path, entry)
+    locked = False
+
+    def acquired(path, **kwargs):
+        nonlocal locked
+        fd = acquire(path, **kwargs)
+        if path == target_lock:
+            locked = fd is not None
+        return fd
+
+    monkeypatch.setattr(platform_layer, "acquire_exclusive_file_lock", acquired)
+    monkeypatch.setattr(current, "run", lambda *args, **kwargs: None if locked else read(*args, **kwargs))
+    result = collect_and_deliver_terminal(ctx, entry.run_id, terminal(), body._shape(entry), entry, None)
+    assert locked and result["status"] == "refused" and result["ok"] is False
+    assert result["reason"] == "custody_missing"
+    assert result["collection"] == {"status": "unavailable", "reason": "custody_missing"}
+    assert not money and "primary_output" not in result
+
+
+def test_missing_retention_stays_pending_without_fabricated_output(tmp_path, monkeypatch, money):
+    from ouroboros.tools.delegate_terminal_evidence import collect_and_deliver_terminal
+    from ouroboros.tools.registry import ToolContext
+
+    entry = started(tmp_path)
+    ctx = ToolContext(repo_dir=tmp_path, drive_root=tmp_path, task_id=entry.task_id)
+    monkeypatch.setattr(body, "_retain_output", lambda *args, **kwargs: {})
+    result = collect_and_deliver_terminal(ctx, entry.run_id, terminal(), body._shape(entry), entry, None)
+    assert result["status"] == "observation_pending" and result["collection"]["status"] == "pending"
+    assert "primary_output" not in result and "output_delivery" not in result
+    fresh = current.run(tmp_path, entry.run_id)
+    assert not fresh.output_source and not fresh.output_complete and not fresh.output_consumed
+
+
 def test_small_retained_inline_delivery_credits_only_the_actual_full_view(tmp_path, money):
     from ouroboros.delegate_output import acknowledge_staged_output_delivery
     from ouroboros.tools.delegate_terminal_evidence import _retained_terminal_payload
