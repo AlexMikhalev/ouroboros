@@ -179,6 +179,37 @@ def test_a_dead_controllers_pointer_is_removed_never_settled(tmp_path):
     assert obligations.review_collection_pending(load_task_result(tmp_path, TASK)), "the live pointer still holds"
 
 
+def test_a_row_an_older_body_flagged_with_nothing_open_is_written_back_and_packs(tmp_path):
+    """Both directions: a terminal row whose stored review_collection_pending is 1 only because an older body
+    flagged it for its acceptance collection (here a closed acceptance pointer) is written back to 0 by one
+    pass and becomes packable, its body untouched; a row with an open live pointer keeps its 1."""
+    from ouroboros import store
+    from ouroboros.evidence_packs import task_packable
+
+    prepare_startup_state(tmp_path)
+    closed = {"op-closed": {"state": "closed", "surface": "task_acceptance", "retry_key": "task_acceptance:closed",
+                            "controller": {"pid": _dead_pid(), "birth": "gone", "session": "gone"}}}
+    live = {"op-live": {"state": "dispatched", "surface": "plan_review", "retry_key": "plan_review:live",
+                        "controller": _alive_controller()}}
+    write_task_result(tmp_path, "old-flag", "completed", result="done", review_operations=closed)
+    write_task_result(tmp_path, "open-review", "completed", result="done", review_operations=live)
+    with store.open_store(tmp_path, write=True) as txn:  # the column as the older body derived it
+        txn.conn.execute("UPDATE tasks SET review_collection_pending=1 WHERE task_id='old-flag'")
+
+    def column(task):
+        with store.open_store(tmp_path, write=False) as txn:
+            return txn.row(task, "review_collection_pending")
+
+    assert (column("old-flag"), column("open-review")) == (1, 1)
+    report = review_operation.retire_dead_review_pointers(tmp_path)
+    assert report["reclassified"] == ["old-flag"] and report["retired"] == [], report
+    assert (column("old-flag"), column("open-review")) == (0, 1)
+    with store.open_store(tmp_path, write=False) as txn:
+        assert task_packable(txn, "old-flag") and not task_packable(txn, "open-review")
+    assert review_operation.retire_dead_review_pointers(tmp_path)["reclassified"] == []
+    assert load_task_result(tmp_path, "old-flag")["review_operations"] == closed
+
+
 def test_checkout_retirement_targets_only_its_registration_and_keeps_an_offline_owner_worktree(subject):
     entry = _retain(subject)
     offline = subject.repo.parent / "owners-offline-checkout"

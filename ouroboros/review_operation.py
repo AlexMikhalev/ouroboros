@@ -1008,7 +1008,7 @@ def retire_dead_review_pointers_softly(drive_root: Any, *, stop: Optional[Callab
     """The maintenance hook: one fail-soft pass that never stops the sweep around it."""
     try:
         report = retire_dead_review_pointers(drive_root, stop=stop)
-        if report.get("retired"):
+        if report.get("retired") or report.get("reclassified"):
             log.info("Dead review operation pointers retired: %s", report)
     except Exception:
         log.warning("Dead review operation pointer retirement failed", exc_info=True)
@@ -1024,19 +1024,23 @@ def retire_dead_review_pointers(drive_root: Any, *, stop: Optional[Callable[[], 
     Once the task's actor has ended and the pointer's controller is proven dead (or is this
     process without a registration) it is removed, never settled; a live or unverifiable
     controller keeps it. The retired task acceptance's pointers are such pointers too: nothing
-    settles them any more."""
+    settles them any more; a row an older body flagged for that collection with nothing open is
+    written back to 0 (``task_store.reclassify_review_collection``), so its evidence packs."""
     from ouroboros.store import StoreError
     from ouroboros.task_results import load_task_result
-    from ouroboros.task_store import review_collection_candidates
+    from ouroboros.task_store import reclassify_review_collection, review_collection_candidates
 
     local_reviews_settled()
     root = pathlib.Path(drive_root)
-    report: Dict[str, Any] = {"retired": []}
+    report: Dict[str, Any] = {"retired": [], "reclassified": []}
     for task_id in review_collection_candidates(root, stop=stop):
         if stop is not None and stop():
             break
         try:
             row = load_task_result(root, task_id) or {}
+            if reclassify_review_collection(root, task_id):  # nothing open: an older body's flag, never owed work
+                report["reclassified"].append(task_id)
+                continue
         except (OSError, ValueError, StoreError):
             continue
         if not _actor_ended(root, task_id, row):
