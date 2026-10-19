@@ -64,6 +64,17 @@ def provision(tmp_path, target, *, snapshot_id="fill", independent=False):
         worktree_root=tmp_path / "snapshots", data_dir=tmp_path / "data", independent=independent)
 
 
+def open_files_deletable(tmp_path):
+    """POSIX unlinks a file another handle holds open; Windows refuses (a sharing violation)."""
+    probe = tmp_path / "open-probe"
+    with open(probe, "wb"):
+        try:
+            os.unlink(probe)
+        except PermissionError:
+            return False
+    return True
+
+
 def nothing_left(tmp_path, target, snapshot_id):
     assert trees.find_execution_snapshot(snapshot_id, tmp_path / "data") is None
     assert not git(target, "for-each-ref", "refs/ouroboros/delegated/").stdout
@@ -176,8 +187,12 @@ def test_a_copy_whose_provisioning_has_not_returned_is_never_a_ready_copy(tmp_pa
             assert trees.prune_execution_snapshots(set(), worktree_root=tmp_path / "snapshots",
                                                    data_dir=tmp_path / "data") == {"removed": [], "kept": ["fill"]}
         else:
-            assert trees.remove_execution_snapshot("fill", worktree_root=tmp_path / "snapshots",
-                                                   data_dir=tmp_path / "data")
+            removed = trees.remove_execution_snapshot("fill", worktree_root=tmp_path / "snapshots",
+                                                      data_dir=tmp_path / "data")
+            # Where a file population holds open cannot be deleted (Windows), the removal defers: its
+            # row stays marked for custody GC, and the failing provisioning discards the copy below.
+            assert removed or (not open_files_deletable(tmp_path)
+                               and (trees.find_execution_snapshot("fill", tmp_path / "data") or {}).get("removal_failed"))
     finally:
         release.set()
         worker.join(_WAIT_SEC)

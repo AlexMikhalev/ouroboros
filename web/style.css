@@ -29,6 +29,13 @@ body {
     syntax: '*';
     inherits: false;
 }
+/* The phone drawer's finger (drawer_drag.js) moves by one number on the drawer and its scrim: not inherited, so a
+   frame restyles those two boxes, not every row inside the drawer. */
+@property --drawer-p {
+    syntax: '<number>';
+    inherits: false;
+    initial-value: 0;
+}
 
 #app {
     display: grid;
@@ -3592,7 +3599,20 @@ html[data-layout="stack"] .nav-drawer-backdrop {
     z-index: var(--z-drawer-scrim);
     display: block;
     background: rgba(0, 0, 0, 0.48);
+    /* It fades with the drawer: shown at once and faded in from 0 (@starting-style), faded out before app.js puts
+       it away; while it fades out it is not a target. */
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity var(--drawer-settle, 280ms) ease;
     touch-action: pan-y pinch-zoom;  /* a sideways finger on the scrim drags the drawer closed (drawer_drag.js) */
+}
+html[data-layout="stack"] body.nav-drawer-open .nav-drawer-backdrop {
+    opacity: 1;
+    pointer-events: auto;
+    transition-duration: var(--drawer-settle, 340ms);
+}
+@starting-style {
+    html[data-layout="stack"] body.nav-drawer-open .nav-drawer-backdrop { opacity: 0; }
 }
 html[data-layout="stack"] .nav-drawer-backdrop[hidden] {
     display: none;
@@ -3602,8 +3622,11 @@ html[data-layout="stack"] #primary-sidebar {
     inset: 0 auto 0 0;
     z-index: var(--z-drawer);
     width: min(100vw - 48px, 360px);
-    transform: translateX(-105%);
-    transition: transform 200ms cubic-bezier(0.32, 0.72, 0, 1), box-shadow 200ms ease;
+    /* Closed it sits exactly off screen, where a drag picks it up (p = 0); it closes in 280ms and opens in 340ms on
+       the iOS sheet curve, or at the finger's speed after a drag (--drawer-settle, drawer_drag.js). */
+    transform: translateX(-100%);
+    transition: transform var(--drawer-settle, 280ms) cubic-bezier(0.32, 0.72, 0, 1),
+        box-shadow var(--drawer-settle, 280ms) ease;
     padding-bottom: calc(var(--space-3) + var(--inset-bottom));
     touch-action: pan-y;  /* a sideways finger is the drawer's (drawer_drag.js); up and down scroll the list */
 }
@@ -3630,24 +3653,30 @@ html[data-layout="stack"] .drawer-head {
     padding: calc(var(--chrome-inset) + var(--inset-top)) 0 var(--chrome-inset);
 }
 /* The shadow belongs to the open drawer: on the closed one it leaked a grey band onto the phone's left edge. */
+/* Pulled past fully open the drawer gives a little (a rubber band, drawer_drag.js, at most DRAG.rubberMax = 48px). Its
+   surface reaches 64px past its left edge as a solid shadow, so the room never shows through the gap: a shadow paints
+   outside the box, where the drawer's own scroller would clip a child or a pseudo-element. */
 html[data-layout="stack"] #primary-sidebar.open {
     transform: translateX(0);
-    box-shadow: var(--elev-float);
+    box-shadow: -64px 0 0 var(--surface-side), var(--elev-float);
+    transition-duration: var(--drawer-settle, 340ms);
 }
 /* Under a finger (drawer_drag.js) the layer moves by one number, --drawer-p (0 closed … 1 open), with no
-   transition; the scrim is exactly as dark as the drawer is open. Releasing drops the class, and the transition
-   springs the drawer the rest of the way; reduced motion keeps the finger tracking and drops the spring. */
+   transition; the scrim is exactly as dark as the drawer is open. Releasing drops the class, and the drawer and its
+   scrim settle the rest of the way at the finger's speed; reduced motion keeps the finger tracking and drops the
+   settle. */
 html[data-layout="stack"] #primary-sidebar.dragging {
     transition: none;
     will-change: transform;
     transform: translate3d(calc((var(--drawer-p, 0) - 1) * 100%), 0, 0);
-    box-shadow: var(--elev-float);
+    box-shadow: -64px 0 0 var(--surface-side), var(--elev-float);
 }
-html[data-layout="stack"] .nav-drawer-backdrop.dragging {
+html[data-layout="stack"] body .nav-drawer-backdrop.dragging {
     opacity: var(--drawer-p, 0);
+    transition: none;
 }
 @media (prefers-reduced-motion: reduce) {
-    html[data-layout="stack"] #primary-sidebar { transition: none; }
+    html[data-layout="stack"] :is(#primary-sidebar, #primary-sidebar.open, .nav-drawer-backdrop) { transition: none; }
 }
 html[data-layout="stack"] .unread-badge {
     top: 2px;

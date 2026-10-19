@@ -30,7 +30,7 @@ import { renderPageHeader } from './modules/page_header.js';
 import { isStackLayout, onLayoutChange } from './modules/layout.js';
 import { createLayerStack } from './modules/layers.js';
 import { createTelegramHost } from './modules/host_telegram.js';
-import { DRAWER_DRAG, bindDrawerDrag } from './modules/drawer_drag.js';
+import { DRAG, DRAWER_DRAG, bindDrawerDrag } from './modules/drawer_drag.js';
 
 import { fmt, markBootRead, pendingBootRead, refreshDictionary, setLanguage, storedLanguage, tr } from './modules/i18n.js';
 import { initOnboardingOverlay } from './modules/onboarding_overlay.js';
@@ -194,6 +194,30 @@ function updateUnreadBadge() {
     }
 }
 
+// The scrim fades with the drawer (style.css): shown at once when the drawer opens, put away once its fade has run
+// when it closes, unless the drawer opened again meanwhile. A docked window or reduced motion has no fade to wait for.
+const DRAWER_SCRIM_FADE_MS = DRAG.settleMax + 20;  // the longest settle after a drag; a tap's close is shorter
+let drawerScrimTimer = 0;
+function syncDrawerScrim(open) {
+    if (!navDrawerBackdrop) return;
+    clearTimeout(drawerScrimTimer);
+    drawerScrimTimer = 0;
+    if (open || navDrawerBackdrop.hidden) { navDrawerBackdrop.hidden = !open; return; }
+    if (!isStackLayout() || window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+        navDrawerBackdrop.hidden = true;
+        return;
+    }
+    drawerScrimTimer = setTimeout(() => {
+        drawerScrimTimer = 0;
+        if (!navState.mobileDrawerOpen && !navDrawerBackdrop.classList.contains('dragging')) navDrawerBackdrop.hidden = true;
+    }, DRAWER_SCRIM_FADE_MS);
+}
+// A finger that takes the drawer during the fade takes its scrim too (drawer_drag.js then puts it away itself).
+function releaseDrawerScrim() {
+    clearTimeout(drawerScrimTimer);
+    drawerScrimTimer = 0;
+}
+
 function syncNavigationState() {
     const activeProjectId = navState.activeProjectId;
     const drawerOpen = Boolean(navState.mobileDrawerOpen);
@@ -202,7 +226,7 @@ function syncNavigationState() {
     document.querySelectorAll('[data-mobile-nav-toggle]').forEach((button) => {
         button.setAttribute('aria-expanded', drawerOpen ? 'true' : 'false');
     });
-    if (navDrawerBackdrop) navDrawerBackdrop.hidden = !drawerOpen;
+    syncDrawerScrim(drawerOpen);
     // In the stack layout the closed drawer is off screen: inert and out of the tab order.
     if (primarySidebar) primarySidebar.inert = isStackLayout() && !drawerOpen;
     // The drawer is a modal layer (its scrim stays live); the Project panel's layer, modal only where it covers the
@@ -289,6 +313,7 @@ const disposeDrawerDrag = DRAWER_DRAG ? bindDrawerDrag({
     sidebar: primarySidebar, scrim: navDrawerBackdrop,
     isOpen: () => navState.mobileDrawerOpen, setOpen: (open) => setMobileDrawerOpen(open),
     isStack: () => isStackLayout(), isCoarse: () => window.matchMedia('(pointer: coarse)').matches,
+    onGrab: releaseDrawerScrim, onLayout: (sync) => onLayoutChange(() => sync()),
 }) : () => {};
 const navDrawerClose = document.getElementById('nav-drawer-close');
 if (navDrawerClose) {
