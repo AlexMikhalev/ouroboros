@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import os
 import pathlib
+import re
 import time
 from typing import Any
 
@@ -276,7 +277,7 @@ def _stop_owned_daemon(label: str) -> None:
 
 
 def _stop_owned_daemon_for_new_pin() -> None:
-    """A planned restart ends the owned daemon only when the landed checkout pins another engine.
+    """A planned restart replaces an off-pin daemon, but never downgrades a newer one.
 
     Runs in the server lifespan teardown of every requested restart (planned
     self-restart, managed update or rollback; the owner's manual Restart has
@@ -286,7 +287,10 @@ def _stop_owned_daemon_for_new_pin() -> None:
     handshake through the attach-only ``read_owned_gateway``. An unprovisioned
     home, an unpublished or unreadable pin and an unreachable, foreign or
     stopped daemon leave the existing handoff untouched: the next generation
-    attaches. A different version or build SHA makes the same attested stop the
+    attaches. A lower release pin keeps the authenticated newer daemon: its data
+    root may already require that engine's serving floor. This preserves live
+    availability, not cold-start compatibility after that daemon later exits.
+    Other version or build changes make the same attested stop the
     manual Restart makes, so the next generation spawns the pinned engine; the
     delegated runs that daemon served end with it, and the next generation's
     startup sweep and resumed parents close them as absent (no invented spend).
@@ -306,6 +310,14 @@ def _stop_owned_daemon_for_new_pin() -> None:
                  "unavailable (%s)", exc)
         return
     if serving == (pin.version, pin.build_sha):
+        return
+    # Runtime pins are validated x.y.z releases. Do not infer prerelease ordering
+    # from a handshake spelling outside that contract; retain the existing stop.
+    if (re.fullmatch(r"\d+\.\d+\.\d+", serving[0] or "")
+            and re.fullmatch(r"\d+\.\d+\.\d+", pin.version)
+            and tuple(map(int, pin.version.split("."))) < tuple(map(int, serving[0].split(".")))):
+        log.warning("Planned restart keeps newer owned Claudexor %s: checkout pin %s would downgrade "
+                    "its data root; cold start still requires a compatible pin", serving[0], pin.version)
         return
     log.warning("Planned restart stops the owned Claudexor daemon: engine %s (%s) is serving while the "
                 "checkout pins %s (%s); the next generation starts the pinned engine and the runs "

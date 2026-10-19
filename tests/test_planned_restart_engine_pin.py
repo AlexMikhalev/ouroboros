@@ -1,4 +1,4 @@
-"""A planned restart ends the owned daemon only when the landed checkout pins another engine.
+"""Planned restarts replace off-pin engines without stopping a newer release for a downgrade.
 
 Self-restart after self-modification and the managed update (or its rollback) share
 one seam, the lifespan teardown of a requested restart; the comparison reads the pin
@@ -169,7 +169,7 @@ def test_a_switch_intent_compares_the_targets_pin_not_the_landed_checkouts(plann
     from ouroboros import store_switch
 
     asked = []
-    target = SimpleNamespace(version="3.9.8", build_sha="b" * 40)
+    target = SimpleNamespace(version="3.11.0", build_sha="b" * 40)
 
     def pin(path=None, *, data=None):
         return target if data == b"target-pin" else PIN
@@ -185,6 +185,28 @@ def test_a_switch_intent_compares_the_targets_pin_not_the_landed_checkouts(plann
     store_switch.record_switch_intent(tmp_path, target_sha="c" * 40, target_ref="v1.0", reason="owner rollback", door="ui_rollback")
     server_restart._stop_owned_daemon_for_new_pin()
     assert planned.calls == ["daemon_stop"] and asked == [("c" * 40, "ouroboros/claudexor_runtime_pin.json")]
+
+
+@pytest.mark.parametrize("version", ["3.10.1", "3.11.0", "4.3.0", "10.0.0"])
+def test_newer_release_survives_lower_checkout_pin(planned, caplog, version):
+    gateway = planned.serving(version, "b" * 40)
+    with caplog.at_level(logging.WARNING):
+        server_restart._stop_owned_daemon_for_new_pin()
+    assert planned.calls == [] and gateway.closed
+    assert "keeps newer owned Claudexor" in caplog.text
+    assert "cold start still requires a compatible pin" in caplog.text
+
+
+def test_switch_downgrade_keeps_newer_engine(planned, monkeypatch, tmp_path):
+    from ouroboros import store_switch
+
+    gateway = planned.serving("4.3.0", "b" * 40)
+    monkeypatch.setattr(store_switch, "next_engine_pin",
+                        lambda repo, sha: SimpleNamespace(version="4.2.0", build_sha="c" * 40))
+    store_switch.record_switch_intent(tmp_path, target_sha="c" * 40, target_ref="v1.0",
+                                     reason="owner rollback", door="ui_rollback")
+    server_restart._stop_owned_daemon_for_new_pin()
+    assert planned.calls == [] and gateway.closed
 
 
 def test_the_check_lives_in_the_restart_teardown_and_the_handoff_performer_is_untouched(planned, monkeypatch, tmp_path):
