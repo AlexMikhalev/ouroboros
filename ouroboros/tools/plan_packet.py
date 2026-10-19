@@ -359,9 +359,11 @@ def settled_frame(ask_id: str, participants: Sequence[Mapping[str, Any]], object
             and (sid not in recorded or (recorded[sid].get("status") == "pending" and not recorded[sid].get("unresolved")))]
     waiting = [str(p.get("seat_id") or "?") for p in participants
                if p.get("status") == "pending" and not p.get("unresolved") and str(p.get("seat_id") or "?") not in held]
+    advisers = [sid for sid in waiting if not recorded[sid].get("owner_marked")]
+    waiting = [sid for sid in waiting if recorded[sid].get("owner_marked")]
     own = [o for o in objections if o.get("ask_id") == ask_id]
-    head = (f"Plan ask {ask_id}: counted participants settled" if waiting and all(not recorded[sid].get("owner_marked") for sid in waiting)
-            else f"Plan ask {ask_id}: every participant settled" if not unresolved and not waiting and not held
+    head = (f"Plan ask {ask_id}: counted participants settled" if advisers and not waiting
+            else f"Plan ask {ask_id}: every participant settled" if not unresolved and not waiting and not advisers and not held
             else f"Plan ask {ask_id}: custody has nothing more to deliver")
     return (f"{head} — {answered} answered" + (f", {unread} unreadable" if unread else "") + (f", {failed} failed" if failed else "")
             + (f", {len(unresolved)} unresolved ({', '.join(unresolved)}: outcome unknown — neither a failure nor a reply; nothing waits on it, "
@@ -369,5 +371,7 @@ def settled_frame(ask_id: str, participants: Sequence[Mapping[str, Any]], object
             + (f", {len(held)} settled in custody but not yet in the plan record ({', '.join(held)}: plan_task() collects them at $0)"
                if held else "")
             + (f", {len(waiting)} still owed ({', '.join(waiting)})" if waiting else "")
+            + (f"; advisers still working: {', '.join(advisers)} (not counted; replies land in the plan record; "
+               "plan_task() reads them; no further notice)" if advisers else "")
             + (f"; {len(own)} open objection{'' if len(own) == 1 else 's'} from this ask" if own else "; no open objection from this ask")
             + ". plan_task() reads the answers.")

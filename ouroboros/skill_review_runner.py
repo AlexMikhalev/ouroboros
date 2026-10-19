@@ -1372,12 +1372,12 @@ def run_skill_review_lifecycle_blocking(
             deps_status="not_run", deps_error="",
             extension_action=None, extension_reason=None,
         )
-    from ouroboros.reviewer_slot_config import ComposedPanel, compose_review_panel, composed_review_pool
+    from ouroboros.reviewer_slot_config import ComposedPanel, PanelCompositionError, compose_review_panel, composed_review_pool
     content_hash = _skill_content_hash(drive_root, skill_name, repo_path, binding)
     try:
         panel = None if owner_attestation else _panel or compose_review_panel(reviewers or (), reason, surface="skill",
                                                 chosen_by="ouroboros" if source == "tool" else "owner")
-    except ValueError as exc:
+    except PanelCompositionError as exc:
         previous = skill_review_history.load_history(drive_root, skill_name, limit=1)
         prior = _read_review_job(review_job_state_path(drive_root, skill_name))
         candidates = [prior, *previous]
@@ -1389,6 +1389,8 @@ def run_skill_review_lifecycle_blocking(
         # Current tick edits cannot revoke collection. The existing resume selector still
         # verifies every material/lifecycle axis; without that match this error refuses a new send.
         panel = ComposedPanel((), True, {"composition_error": str(exc)})
+    except ValueError:
+        panel = None  # the review collects its paid wave or returns its typed configuration refusal
     mark_stale_review_job_interrupted(drive_root, skill_name, current_content_hash=content_hash)
     dedupe_key = _review_dedupe_key(skill_name, content_hash) + (":owner_attestation" if owner_attestation else "")
     started_monotonic: Dict[str, float] = {}

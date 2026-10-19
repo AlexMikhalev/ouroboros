@@ -854,6 +854,17 @@ def claim_ask_completion(root: Any, task_id: str, ask_id: str, custody: Mapping[
     return record if claimed else None
 
 
+def release_ask_completion(root: Any, task_id: str, ask_id: str) -> None:
+    """Release an undelivered frame's claim under the record lock for the next callback."""
+    def release(record: Dict[str, Any]) -> Dict[str, Any]:
+        for ask in record.get("asks", []):
+            if ask.get("ask_id") == ask_id:
+                ask.pop("completion_announced", None)
+                break
+        return record
+    _update_plan_record(root, task_id, release)
+
+
 def collection_pending(value: Any) -> bool:
     """Body-only candidate selection, not a plan verdict or a packing obligation.
     Unknown record/participant shapes stay selectable. No sources or liveness are

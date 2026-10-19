@@ -14,6 +14,7 @@ import json
 import pathlib
 from typing import Any, Dict, List
 
+from ouroboros.reviewer_slot_config import PanelCompositionError
 from ouroboros.tools.registry import ToolContext, ToolEntry
 from ouroboros.tools.tool_result import ToolResult, _publish_tool_result
 
@@ -170,6 +171,12 @@ def _handle_skill_install(ctx: ToolContext, id: str = "", reason: str = "", repl
     task_id = str(getattr(ctx, "task_id", "") or "")
     try:
         panel = _skill_panel(reviewers, review_reason, reason_field="review_reason") if check == "review" else None
+    except PanelCompositionError as exc:
+        return _publish_tool_result(ctx, ToolResult(status="error", code="TOOL_ARG_ERROR", text=str(exc)))
+    except ValueError as exc:
+        return _publish_tool_result(ctx, ToolResult(status="error", code="TOOL_ERROR",
+            text=f"invalid review pool configuration blocks skill review: {exc}"))
+    try:
         result = run_in_lane(drive, "install", item_id, lambda: install_item(
             drive, item_id, replace=bool(replace), actor="ouroboros", reason=str(reason), task_id=task_id,
             turn_on_when_ready=True, check=check, check_notes=check_notes),
@@ -206,6 +213,12 @@ def _handle_skill_update(ctx: ToolContext, name: str = "", mode: str = "", diges
     drive = _drive(ctx)
     try:
         panel = _skill_panel(reviewers, reason) if check == "review" and mode != "keep" else None
+    except PanelCompositionError as exc:
+        return _publish_tool_result(ctx, ToolResult(status="error", code="TOOL_ARG_ERROR", text=str(exc)))
+    except ValueError as exc:
+        return _publish_tool_result(ctx, ToolResult(status="error", code="TOOL_ERROR",
+            text=f"invalid review pool configuration blocks skill review: {exc}"))
+    try:
         result = run_in_lane(drive, "update", skill, lambda: update_installed(
             drive, skill, mode=mode, digest=str(digest or ""), local_digest=str(local_digest or ""), actor="ouroboros",
             check=check, check_notes=check_notes,
@@ -227,7 +240,7 @@ def _handle_skill_update(ctx: ToolContext, name: str = "", mode: str = "", diges
 def _skill_panel(reviewers: Any, reason: str, *, reason_field: str = "reason") -> Any:
     from ouroboros.reviewer_slot_config import compose_review_panel
     if reviewers is not None and (not isinstance(reviewers, list) or any(not isinstance(row, str) for row in reviewers)):
-        raise ValueError("REVIEW_PANEL_ARGUMENT: reviewers must be a list of enabled row ids or handles.")
+        raise PanelCompositionError("REVIEW_PANEL_ARGUMENT: reviewers must be a list of enabled row ids or handles.")
     return compose_review_panel(reviewers or (), reason, surface="skill", reason_field=reason_field)
 
 

@@ -738,6 +738,7 @@ def settle_released_reply(usage_ctx: Any, *, request: Any, task_id: str, actor: 
             log.debug("plan ask %s: last-execution row for %s not recorded", ask_id, seat_id, exc_info=True)
     participants: List[Mapping[str, Any]] = []
     objections: List[Mapping[str, Any]] = []
+    completed = None
     try:
         record = plan_record.load_plan_record(state_root, task_id)
         ask, _ = _ask_and_participant(record, ask_id, "")
@@ -765,11 +766,18 @@ def settle_released_reply(usage_ctx: Any, *, request: Any, task_id: str, actor: 
             return  # without the recorded standing, only physical completion is known
     from ouroboros.owner_mailbox import write_task_message
 
+    delivered = False
     try:
-        write_task_message(pathlib.Path(str(usage_ctx.drive_root)), plan_packet.settled_frame(ask_id, participants, objections, custody=settled_wave),
-                           task_id, source_task_id=task_id, provenance="system", msg_id=f"plan-complete:{task_id}:{ask_id}")
+        delivered = write_task_message(pathlib.Path(str(usage_ctx.drive_root)), plan_packet.settled_frame(ask_id, participants, objections, custody=settled_wave),
+                                       task_id, source_task_id=task_id, provenance="system", msg_id=f"plan-complete:{task_id}:{ask_id}")
     except Exception:
         log.warning("plan ask %s settled-wave frame failed for %s", ask_id, task_id, exc_info=True)
+    finally:
+        if not delivered and completed is not None:
+            try:
+                plan_record.release_ask_completion(state_root, task_id, ask_id)
+            except Exception:
+                log.warning("plan ask %s: undelivered completion claim could not be released", ask_id, exc_info=True)
 
 
 def collect_pending(ctx: Any, record: Mapping[str, Any], *, state_root: pathlib.Path, task_id: str) -> Dict[str, Any]:

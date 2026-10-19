@@ -116,7 +116,9 @@ def test_current_contract_change_does_not_replace_a_recoverable_api_wave(late_sk
     assert len(h.calls) == 2
 
 
-def test_disabling_a_named_reviewer_cannot_rewrite_or_revoke_the_paid_panel(late_skill, monkeypatch):
+@pytest.mark.parametrize("pool_change", ["disabled_reviewer", "malformed_pool"])
+def test_pool_changes_cannot_rewrite_or_revoke_the_paid_panel(late_skill, monkeypatch, pool_change):
+    from ouroboros.reviewer_slot_config import reviewer_slot_config_error
     from tests.review_pool_rosters import pool_roster, pool_seat, set_review_pool
     h = late_skill
     set_review_pool(monkeypatch, pool_roster(pool_seat("seat-a", "fake/one"), pool_seat("seat-b", "fake/two")))
@@ -124,7 +126,11 @@ def test_disabling_a_named_reviewer_cannot_rewrite_or_revoke_the_paid_panel(late
     old = json.loads(h.history.read_bytes().splitlines()[-1])
     h.release.set()
     assert h.settled.wait(10)
-    set_review_pool(monkeypatch, pool_roster(pool_seat("seat-a", "fake/one", enabled=False), pool_seat("seat-b", "fake/two")))
+    if pool_change == "malformed_pool":
+        monkeypatch.setenv("OUROBOROS_SUBAGENTS", "{broken")
+        monkeypatch.setattr(skill_review, "reviewer_slot_config_error", reviewer_slot_config_error)
+    else:
+        set_review_pool(monkeypatch, pool_roster(pool_seat("seat-a", "fake/one", enabled=False), pool_seat("seat-b", "fake/two")))
     second = _handle_review_skill(h.ctx(), skill="late", reviewers=["seat-a"])
     new = json.loads(h.history.read_bytes().splitlines()[-1])
     assert load_review_state(h.root, "late").status == "clean", second

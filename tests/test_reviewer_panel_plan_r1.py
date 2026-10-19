@@ -69,7 +69,7 @@ def test_counted_completion_recovers_custody_answers_and_publishes_once(harness)
     assert review_ledger.load_record(harness.drive, ask["record_id"])["state"] == "settled"
     frames = _mailbox_entries(harness.drive, ctx.task_id)
     assert len(frames) == 1 and "counted participants settled" in frames[0]["text"]
-    assert "critic" in frames[0]["text"] and "still owed" in frames[0]["text"]
+    assert "advisers still working: critic" in frames[0]["text"] and "still owed" not in frames[0]["text"]
     plan_ask.settle_released_reply(ctx, **kwargs)
     plan_ask.settle_released_reply(ctx, request=kwargs["request"], task_id=ctx.task_id, actor=actors["critic"],
                                   slot=slots["critic"], settled_wave={sid: "ok" for sid in slots})

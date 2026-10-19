@@ -589,7 +589,7 @@ def panel_not_reached(rows: List[Dict[str, Any]]) -> List[Dict[str, str]]:
              "cause": str(row.get("failure_code") or row.get("error") or row.get("reported_cause") or (row.get("intention") or {}).get("error")
                           or row.get("operation_state") or row.get("status") or "unknown")}
             for row in rows if row.get("status") not in {*ANSWERED_STATUSES, "answered", "unparseable", "pending", "in_flight", "pending_dispatch"}
-            and not row.get("late_result_pending") and row.get("operation_state") not in {"in_flight", "pending_dispatch"}]
+            and not row.get("late_result_pending") and row.get("operation_state") not in {"in_flight", "custody_lost", "pending_dispatch"}]
 
 
 def _answer(seat: Dict[str, Any], part: str) -> Dict[str, Any]:
