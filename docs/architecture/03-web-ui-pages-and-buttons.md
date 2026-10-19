@@ -22,7 +22,7 @@ Independent iframes inherit no host tokens/stored choice; modules declare `rende
 - `theme_palette.js` ← `--chart-*` tokens into mounted Chart options, as canvas cannot inherit CSS; updates keep data and caller-authored option groups.
 - `page_header.js` / `page_icons.js` ← headers, tab strips (`bindTabStrip`), `renderSegmentedField` (writes `--segment-count`) and the icon set; `settings_controls.bindEffortSegments` keeps an empty (inherit) choice as a real value.
 - `ui_interactions.js` ← `bindDialogFocus`, `bindMenu`, `bindPopoverPosition`, `bindEnterSubmit`; every binding returns teardown.
-- `status_mark.js` ← every status mark; `row_menu_gesture.js` ← a row menu's long press (DESIGN §4, §10).
+- `status_mark.js` ← every status mark; `row_menu_gesture.js` ← a Project row menu's long press (DESIGN §10).
 - `scroll_fade.js` ← `bindScrollFade`: edge attributes from actually hidden content.
 - `api_client.js` / `api_types.js` / `model_route_types.js` / `decision_types.js` ← browser API calls with typed errors; mirrors of browser-facing contract shapes.
 - `ui_primitives.js` ← the one safe-field renderer, collector, tone/status and attribute-escape source; `ui_helpers.js` and `utils.js` re-export it, so author pages need no second renderer.

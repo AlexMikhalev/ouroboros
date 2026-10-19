@@ -2385,7 +2385,7 @@ opens under the finger, a long press's row menu included, ends the drag before i
 starts. Every gesture has a visible control, except a Project row's menu on touch:
 phone rows have no room for ⋯, so there a long press opens it, and the ⋯ stays in
 the row for the keyboard and screen readers, appearing when focused
-(`web/modules/row_menu_gesture.js` serves the feed's and the Projects' menus).
+(`web/modules/row_menu_gesture.js`; a feed row keeps its own press, which sinks and lifts it).
 
 Where the system or the host owns the very edge (Android's back gesture, the
 leftmost ~30 pt in Telegram on iOS), its gesture wins; a start a little further in
