@@ -174,7 +174,7 @@ export function createRoomWork({
     let outsideClick = null;
     let scheduled = 0;
     let lastInside = false;
-    let pressFolds = null;      // keyboard-grown rows a press in the list blurred: they fold once it ends
+    let pressing = false;       // a pointer press is being handled: the blur it causes folds nothing
     let latestLabel = null;
     let detailSequence = 0;
     let menuIntent = 0;
@@ -418,18 +418,17 @@ export function createRoomWork({
             episode: undefined };
         // The name stays selectable text: a drag that selected it does not navigate.
         bindContentButton(main, () => activateRow(view.row), () => rowIsTarget(view.row));
-        // Keyboard focus shows the whole name (CSS unclamps it). Not :focus-within: a press on Resume or ⋯
-        // must not grow the row under the pointer before mouse-up.
+        // Keyboard focus shows the whole name (CSS unclamps it), and only the row keyboard reads shows it. Not
+        // :focus-within, and a press never folds: nothing in the list moves under a pointer. A row grown under
+        // a press that blurred it would move the pressed row (or the ⋯ a menu opens from) before mouse-up; it
+        // folds when keyboard focus reads another row or the list closes.
         main.addEventListener('focus', () => {
             let keyboard = false;
             try { keyboard = main.matches?.(':focus-visible') === true; } catch { /* an engine without the selector */ }
+            if (keyboard) for (const other of views.values()) if (other !== view) other.el.dataset.reading = '0';
             el.dataset.reading = keyboard ? '1' : '0';
         });
-        // A press on another row blurs this one on mouse-down; folding it then would move the pressed row up
-        // under the pointer before mouse-up, and the click would land on the list. It folds after the press.
-        main.addEventListener('blur', () => {
-            if (pressFolds) pressFolds.add(view); else el.dataset.reading = '0';
-        });
+        main.addEventListener('blur', () => { if (!pressing) el.dataset.reading = '0'; });
         views.set(row.key, view);
         return view;
     }
@@ -760,6 +759,7 @@ export function createRoomWork({
         frozen = null;
         order = [];
         expanded.clear();
+        for (const view of views.values()) view.el.dataset.reading = '0';  // it reopens at rest
         // A list dismissed while a row still looks drops that look: the reader left before it answered.
         if ([...lookups.values()].some((found) => found.state === 'loading')) { navigationIntent += 1; live.textContent = ''; }
         lookups.clear();
@@ -910,11 +910,13 @@ export function createRoomWork({
     });
     listen(back, 'click', goBack);
     listen(doc, 'pointerdown', (event) => {
+        // The blur this press causes happens while its own event is handled; the flag ends with that task.
+        pressing = true;
+        setTimeout(() => { pressing = false; }, 0);
         const target = event.target;
         // The shared task-controls menu is a portal outside the list but part of its interaction.
         if (target?.closest?.('.task-control-menu')) return;
         lastInside = surface.contains(target) || trigger.contains(target);
-        pressFolds = open && lastInside ? new Set() : null;
         if (!open || lastInside) return;
         close({ restoreFocus: false });
         // The first outside press only dismisses the list: a press on the dimmed Main must not also close the room.
@@ -930,16 +932,6 @@ export function createRoomWork({
             }, 600);
         }
     }, true);
-    // The press is over: the rows it blurred fold after the click its release makes (a task later).
-    const endPress = () => {
-        const folds = pressFolds;
-        pressFolds = null;
-        if (folds?.size) setTimeout(() => folds.forEach((view) => {
-            if (doc.activeElement !== view.main) view.el.dataset.reading = '0';
-        }), 0);
-    };
-    listen(doc, 'pointerup', endPress, true);
-    listen(doc, 'pointercancel', endPress, true);
     listen(doc, 'focusin', (event) => {
         if (!event.target?.closest?.('.task-control-menu')) lastInside = surface.contains(event.target) || trigger.contains(event.target);
     }, true);
