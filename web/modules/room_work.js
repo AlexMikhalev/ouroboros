@@ -174,7 +174,7 @@ export function createRoomWork({
     let outsideClick = null;
     let scheduled = 0;
     let lastInside = false;
-    let pressing = false;       // a pointer press is being handled: the blur it causes folds nothing
+    let pressing = false;       // a pointer press is being handled: the focus moves it causes change no row
     let latestLabel = null;
     let detailSequence = 0;
     let menuIntent = 0;
@@ -419,10 +419,12 @@ export function createRoomWork({
         // The name stays selectable text: a drag that selected it does not navigate.
         bindContentButton(main, () => activateRow(view.row), () => rowIsTarget(view.row));
         // Keyboard focus shows the whole name (CSS unclamps it), and only the row keyboard reads shows it. Not
-        // :focus-within, and a press never folds: nothing in the list moves under a pointer. A row grown under
-        // a press that blurred it would move the pressed row (or the ⋯ a menu opens from) before mouse-up; it
-        // folds when keyboard focus reads another row or the list closes.
+        // :focus-within, and a press changes no row: nothing in the list moves under a pointer. A row folding on
+        // the focus a press gives it, or on the blur a press elsewhere causes, would move the pressed row (or
+        // the ⋯ a menu opens from) before mouse-up; a grown row folds when keyboard focus reads another row or
+        // the list closes.
         main.addEventListener('focus', () => {
+            if (pressing) return;
             let keyboard = false;
             try { keyboard = main.matches?.(':focus-visible') === true; } catch { /* an engine without the selector */ }
             if (keyboard) for (const other of views.values()) if (other !== view) other.el.dataset.reading = '0';

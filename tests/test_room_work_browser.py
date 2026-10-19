@@ -520,6 +520,14 @@ def test_main_rows_say_each_census_state_with_its_own_tone_and_controls(room_ui)
         anchor = page.evaluate("() => ({ click: window.__rwAnchor.click, now: window.__rwAnchor.now() })")
         assert anchor["click"] == anchor["now"] and menu.is_visible(), anchor
         page.keyboard.press("Escape")
+        menu.wait_for(state="hidden")
+        # Pressing the grown row itself, near its bottom edge, keeps it whole until the click goes to its card.
+        page.evaluate(_PRESS_RECORDER, ["rw-live"])
+        target = row_main(page, "rw-live")
+        target.click(position={"x": 12, "y": target.bounding_box()["height"] - 4})
+        wait_facts(page, "main", lambda f: f["surfaceHidden"], "the grown row's press went to its card")
+        press = page.evaluate("() => window.__rwPress")
+        assert press["pointerdown"] == press["click"], press
     evidence("main-states-console", transport.console)
 
 
