@@ -134,3 +134,43 @@ def test_owned_review_workers_holds_teardown_until_the_late_worker_retires(
     threading.Timer(_HELD_SEC, release.set).start()
     # The body ends while the worker still holds the call: only the fixture's teardown waits for it.
     assert actor["operation_id"] in smoke.wait_for_review_workers(before, 0, poll_sec=0).values()
+
+
+def _wave(*records):
+    return [{"raw_actor_records": list(records)}]
+
+
+def test_a_provider_outage_is_told_apart_from_a_review_that_answered(monkeypatch):
+    refused = {"status": "error", "transport_status": "provider_transport_error", "http_status": "429"}
+    unparseable = {"status": "error", "transport_status": "ok", "raw_text": "not a verdict"}
+    answered = {"status": "ok", "transport_status": "ok"}
+    for history, outage in ((_wave(refused), True), (_wave(refused, refused), True), (_wave(refused, answered), False),
+                            (_wave(unparseable), False), (_wave(), False), ([], False)):
+        monkeypatch.setattr(smoke, "load_history", lambda *_a, history=history, **_k: history)
+        assert smoke._provider_never_answered("skill") is outage, history
+
+
+def test_an_outage_is_waited_out_but_an_answered_failure_keeps_its_one_retry(monkeypatch):
+    sleeps, flows = [], []
+    monkeypatch.setattr(smoke.time, "sleep", sleeps.append)
+    monkeypatch.setattr(smoke, "_smoke_retry_refusal", lambda *_a: "")
+    monkeypatch.setattr(smoke, "_review_diag", lambda *_a: "")
+
+    def run(results, outage):
+        sleeps.clear()
+        flows.clear()
+        monkeypatch.setattr(smoke, "_run_review_flow", lambda *_a: flows.append(1) or results[len(flows) - 1])
+        monkeypatch.setattr(smoke, "_provider_never_answered", lambda _name: outage(len(flows)))
+        return smoke._review_with_one_settled_retry("skill", "skill")
+
+    pending, clean = ("pending", "quorum failure", "not_required", {}), ("clean", "", "not_required", {})
+    # Two outages, then the provider answers: waited out twice, no settled retry spent.
+    status, *_rest, note = run([pending, pending, clean], lambda calls: calls <= 2)
+    assert status == "clean" and len(flows) == 3 and sleeps == [smoke._OUTAGE_BACKOFF_SEC] * 2, (flows, sleeps)
+    assert "2 provider outage" in note
+    # A model that answered but failed: exactly one settled retry, never the outage wait.
+    status, *_rest, note = run([pending, pending, clean], lambda _calls: False)
+    assert status == "pending" and len(flows) == 2 and sleeps == [] and "one settled retry" in note
+    # A route that never answers: bounded outage waits, then the one settled retry, then red.
+    status, *_rest, note = run([pending] * 9, lambda _calls: True)
+    assert status == "pending" and len(sleeps) == smoke._OUTAGE_RETRIES and len(flows) == smoke._OUTAGE_RETRIES + 2

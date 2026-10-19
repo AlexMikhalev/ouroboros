@@ -582,7 +582,7 @@ _REVIEW_WINDOW_SEC = float(SETTINGS_DEFAULTS["OUROBOROS_LLM_TRANSPORT_READ_TIMEO
 # of a late worker whose send runs to that bound (owned_review_workers), plus
 # the catalog install, pack building and the cold a2a dependency install that
 # only follows a passing review. The CI job budget sits above it.
-_REVIEW_TEST_TIMEOUT_SEC = int(3 * _REVIEW_WINDOW_SEC + 600)
+_REVIEW_TEST_TIMEOUT_SEC = int(3 * _REVIEW_WINDOW_SEC + 900)  # + provider outages waited out (_OUTAGE_RETRIES)
 # Expected auto-granted settings keys per skill (grants are request-keyed,
 # not value-keyed; empty values grant fine and only bite at runtime).
 _REVIEW_EXPECTED_KEYS = {
@@ -771,11 +771,36 @@ def _smoke_retry_refusal(name: str, status: str) -> str:
     return ""
 
 
+# A route the provider is rate-limiting or failing answers no reviewer at all: every seat ends in a provider
+# transport error before the model reads anything. That is an outage of the live route, not a verdict, so it is
+# waited out on the provider's clock a bounded number of times. A model that answered, parseable or not, is never
+# retried here; it keeps the one settled retry below.
+_OUTAGE_RETRIES = 3
+_OUTAGE_BACKOFF_SEC = 90.0
+
+
+def _provider_never_answered(name: str) -> bool:
+    """Every reviewer of the latest wave failed in the provider's transport (a 429 or 5xx): no model answered."""
+    history = load_history(DATA_DIR, name, limit=1)
+    records = history[-1].get("raw_actor_records") if history else None
+    return bool(records) and all(isinstance(record, dict) and record.get("status") == "error"
+                                 and record.get("transport_status") == "provider_transport_error"
+                                 for record in records)
+
+
 def _review_with_one_settled_retry(slug: str, name: str):
     status, error, deps_status, payload = _run_review_flow(slug, name)
+    outages = 0
+    while (status not in ("clean", "warnings") or error) and outages < _OUTAGE_RETRIES \
+            and _provider_never_answered(name) and not _smoke_retry_refusal(name, status):
+        outages += 1
+        print(f"{slug}: the provider answered no reviewer (outage {outages} of {_OUTAGE_RETRIES}); "
+              f"retrying in {_OUTAGE_BACKOFF_SEC:.0f}s\n" + _review_diag(name, status, error, payload))
+        time.sleep(_OUTAGE_BACKOFF_SEC)
+        status, error, deps_status, payload = _run_review_flow(slug, name)
     failed = status not in ("clean", "warnings") or error or (slug in DEPS_SKILLS and deps_status != "installed")
     if not failed:
-        return status, error, deps_status, payload, ""
+        return status, error, deps_status, payload, f" after {outages} provider outage(s)" if outages else ""
     refusal = _smoke_retry_refusal(name, status)
     note = f" (not retried: {refusal})" if refusal else " after one settled retry"
     print(f"{slug}: first attempt not OK; original state kept{note}\n"
