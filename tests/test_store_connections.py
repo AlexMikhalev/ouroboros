@@ -6,6 +6,7 @@ import sqlite3
 import subprocess
 import sys
 import threading
+import time
 
 import pytest
 
@@ -135,6 +136,15 @@ def test_idle_reader_sees_a_later_independent_commit(tmp_path):
 
 
 def test_delete_and_persist_writers_interleave_with_full_durability(tmp_path, monkeypatch):
+    """An older body (SQLite's default DELETE journal) and this one (PERSIST) write the same store in
+    turn. Two bodies never run at once (the PID lock admits one), and within one install every process
+    picks the same mode (a boot lock-tier re-record no longer leaves the server in DELETE mode: see
+    test_store_import), so on Windows each turn of the older writer comes after this process let its
+    handles go, as its exit does. There a PERSIST connection keeps its journal open for as long as it
+    lives (the VFS reports UNDELETABLE_WHEN_OPEN and opens files without FILE_SHARE_DELETE), and the
+    DELETE-mode commit, which deletes the journal, fails with a disk I/O error (SQLITE_IOERR_DELETE)
+    while any such handle is open. POSIX closes that journal when the lock drops, so there this
+    process's cached writer stays open across the foreign DELETE commits, which the test keeps covering."""
     monkeypatch.setattr(store, "_journal_mode", lambda *_: "PERSIST")
     path = publish(tmp_path)
     with contextlib.closing(sqlite3.connect(path, isolation_level=None)) as old:
@@ -147,8 +157,96 @@ def test_delete_and_persist_writers_interleave_with_full_durability(tmp_path, mo
                 assert txn.conn.execute("PRAGMA synchronous").fetchone()[0] == 2
                 assert txn.conn.execute("PRAGMA journal_size_limit").fetchone()[0] == store.JOURNAL_SIZE_LIMIT
                 txn.set_meta("reply", number)
+            if os.name == "nt":  # this body's turn ends as its exit ends it there: its handles let go
+                store.close_connections(path)
             assert old.execute("SELECT value FROM meta WHERE key='reply'").fetchone()[0] == str(number)
         assert old.execute("PRAGMA journal_mode").fetchone()[0] == "delete"
+
+
+@pytest.mark.parametrize("wait_sec", [5.0, 0.0], ids=["budget", "no_budget"])
+def test_a_first_wal_open_waits_out_another_writer_within_its_budget(tmp_path, monkeypatch, wait_sec):
+    """A published store is a rollback-journal file until a first open turns it into WAL, and that
+    switch takes the write lock from inside a read transaction, where SQLite skips the busy handler.
+    Another connection writing at that moment (another thread's first open converting the same fresh
+    store, as on a Windows runner) failed it at once with "database is locked". The open now waits
+    out the writer within its own budget; with no budget it still refuses at once."""
+    monkeypatch.setattr(store, "_journal_mode", lambda *_: "PERSIST")
+    path = publish(tmp_path)
+    store.close_connections()
+    monkeypatch.setattr(store, "_journal_mode", lambda *_: "WAL")
+    writer = sqlite3.connect(path, isolation_level=None, check_same_thread=False)
+    writer.execute("BEGIN IMMEDIATE")  # another connection holds the write lock
+    released = threading.Timer(0.3, lambda: writer.execute("ROLLBACK"))
+    released.start()
+    started = time.monotonic()
+    try:
+        if not wait_sec:
+            with pytest.raises(sqlite3.OperationalError, match="locked"):
+                store.connect(path, store.TIER_ENFORCED, wait_sec=wait_sec)
+            assert time.monotonic() - started < 0.2, "no budget, no wait"
+            return
+        conn = store.connect(path, store.TIER_ENFORCED, wait_sec=wait_sec)
+        try:
+            assert conn.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
+        finally:
+            conn.close()
+        assert time.monotonic() - started >= 0.25, "it waited for the writer instead of failing"
+    finally:
+        released.join(5)
+        writer.close()
+
+
+def test_a_first_wal_open_never_waits_past_its_budget(tmp_path, monkeypatch):
+    """The waits of a first WAL open add up to its budget, not more: retries that a writer refuses at
+    once, then an attempt that a remaining reader holds in SQLite's busy handler, which may wait only
+    for what is left (the connection's own busy timeout would allow the whole budget again). The writer
+    lets go halfway, so the bounded open fails near 4 s and the unbounded one near 6 s; the 5 s line
+    leaves a second each way for a slow runner and a coarse timer."""
+    monkeypatch.setattr(store, "_journal_mode", lambda *_: "PERSIST")
+    path = publish(tmp_path)
+    store.close_connections()
+    monkeypatch.setattr(store, "_journal_mode", lambda *_: "WAL")
+    reader = sqlite3.connect(path, isolation_level=None, check_same_thread=False)
+    reader.execute("BEGIN")
+    reader.execute("SELECT * FROM meta").fetchall()  # a reader that stays through the budget
+    writer = sqlite3.connect(path, isolation_level=None, check_same_thread=False)
+    writer.execute("BEGIN IMMEDIATE")  # a writer that lets go halfway through it
+    released_at = []
+    released = threading.Timer(2.0, lambda: (writer.execute("ROLLBACK"), released_at.append(time.monotonic())))
+    released.start()
+    budget, started = 4.0, time.monotonic()
+    try:
+        with pytest.raises(sqlite3.OperationalError, match="locked"):
+            store.connect(path, store.TIER_ENFORCED, wait_sec=budget)
+        finished = time.monotonic()
+        # Only a writer that let go before the open ended put the reader's wait to the test.
+        assert released_at and released_at[0] < finished, "the writer was still holding when the open ended"
+        assert finished - started < budget + 1.0, "the open waited past its budget"
+    finally:
+        released.join(10)
+        writer.close()
+        reader.execute("ROLLBACK")
+        reader.close()
+
+
+def test_leaving_wal_with_another_wal_connection_open_still_refuses_at_once(tmp_path, monkeypatch):
+    """Only the switch INTO WAL waits. Leaving WAL needs every other WAL connection gone, and each keeps its
+    shared lock for its life, so an open asking for PERSIST on a WAL store (an older SQLite, an unknown
+    filesystem) with another connection idle in it refuses at once, instead of waiting out its whole budget
+    for the same refusal. The 1 s line sits far below the 4 s budget and far above a refusal at once."""
+    monkeypatch.setattr(store, "_journal_mode", lambda *_: "PERSIST")
+    path = publish(tmp_path)
+    store.close_connections()
+    idle = sqlite3.connect(path, isolation_level=None)
+    try:
+        assert idle.execute("PRAGMA journal_mode = WAL").fetchone()[0] == "wal"  # another body's WAL store
+        idle.execute("SELECT * FROM meta").fetchall()  # and its connection, idle and open for its life
+        started = time.monotonic()
+        with pytest.raises(sqlite3.OperationalError, match="locked"):
+            store.connect(path, store.TIER_ENFORCED, wait_sec=4.0)
+        assert time.monotonic() - started < 1.0, "leaving WAL refuses at once"
+    finally:
+        idle.close()
 
 
 def test_handoff_closes_other_threads_idle_connections_before_rename(tmp_path):

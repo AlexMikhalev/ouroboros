@@ -359,8 +359,10 @@ class _Telegram:
         self.log, self.server = [], threading.Event()
 
     def accepted_after(self, kind):
-        times = {k: t for k, t in self.log}
-        return times.get("accepted") is not None and times["accepted"] > times[kind]
+        """Accepted after ``kind`` by the log's order: two stamps within one tick of the clock compare equal
+        (Python 3.10's monotonic clock ticks every 15.6 ms on Windows)."""
+        kinds = [k for k, _ in self.log]
+        return "accepted" in kinds and kind in kinds and kinds.index("accepted") > kinds.index(kind)
 
     async def send_chat_action(self, chat_id, action="typing"):
         self.log.append(("written", time.monotonic()))
@@ -390,7 +392,7 @@ def test_a_hung_action_delays_the_answer_only_for_the_bound_and_may_still_land_a
         await asyncio.sleep(0)
         assert inflight.cancelled(), "the client stopped waiting for the hung action"
         telegram.server.set()  # Telegram processes the request it already had
-        await asyncio.sleep(0.1)
+        await _until(lambda: any(kind == "accepted" for kind, _ in telegram.log))  # on its own server thread
         assert telegram.accepted_after("message"), "an accepted action after the answer stays possible"
         assert [kind for kind, _ in telegram.log].count("written") == 1, "no new action started after the answer"
         await _stop(task)

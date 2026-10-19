@@ -16,6 +16,7 @@ import shutil
 import stat
 import subprocess
 import threading
+import time
 
 import pytest
 
@@ -143,6 +144,38 @@ def test_a_source_edit_after_the_baseline_is_refused_by_the_whole_tree_diff(tmp_
         provision(tmp_path, target)
     assert refused.value.returncode == 1 and refused.value.cmd[:3] == ["git", "diff", "--quiet"]
     assert (target / "dirty.cfg").read_bytes() == edit
+    nothing_left(tmp_path, target, "fill")
+
+
+def test_a_same_size_edit_git_would_trust_by_its_stat_is_still_refused(tmp_path, monkeypatch):
+    """Git compares times to the second, and Git for Windows reports a file's creation time as its
+    ctime: a same-size source edit whose time population puts back onto a row checkout wrote in that
+    same second looks unchanged to Git once the index is written later (proving run 39251921588). The
+    rows checkout wrote are hashed whatever their stat says, so the whole-tree diff still refuses the
+    edit. Emulated on every platform: ctime is not trusted, and the edit and the checkout share a time
+    older than every later index write."""
+    for key, value in (("GIT_CONFIG_COUNT", "1"), ("GIT_CONFIG_KEY_0", "core.trustctime"),
+                       ("GIT_CONFIG_VALUE_0", "false")):
+        monkeypatch.setenv(key, value)
+    target = source_tree(tmp_path)
+    real_git = trees._git
+
+    def edit_at_checkout(repo_dir, *args, **kwargs):
+        if args[:1] != ("reset",):
+            return real_git(repo_dir, *args, **kwargs)
+        (target / "dirty.cfg").write_bytes(b"v3 dirty\n")  # the baseline's b"v2 dirty\n", same size
+        result = real_git(repo_dir, *args, **kwargs)
+        earlier = time.time_ns() - 2_000_000_000
+        for path in (target / "dirty.cfg", pathlib.Path(repo_dir) / "dirty.cfg"):
+            os.utime(path, ns=(earlier, earlier))
+        real_git(repo_dir, "update-index", "-q", "--refresh", check=False)  # checkout's row takes that time
+        return result
+
+    monkeypatch.setattr(trees, "_git", edit_at_checkout)
+    with pytest.raises(subprocess.CalledProcessError) as refused:
+        provision(tmp_path, target)
+    assert refused.value.returncode == 1 and refused.value.cmd[:3] == ["git", "diff", "--quiet"]
+    assert (target / "dirty.cfg").read_bytes() == b"v3 dirty\n"
     nothing_left(tmp_path, target, "fill")
 
 

@@ -737,7 +737,7 @@ def review_pool_payload(snapshot: Optional[Dict[str, Any]] = None) -> Dict[str, 
     from ouroboros.configured_subagents import MAX_CONFIGURED_SUBAGENTS, SUBAGENTS_SETTING, parse_configured_subagents, roster_handles
     from ouroboros.provider_models import model_has_credentials_in_settings
     from ouroboros.review_pool_receipts import document_as_read
-    from ouroboros.reviewer_slot_config import review_pool_slots, review_pool_state, reviewer_slot_last_executions
+    from ouroboros.reviewer_slot_config import public_slot_executions, review_pool_slots, review_pool_state, reviewer_slot_last_executions
     from ouroboros.server_maintenance import review_pool_migration_payload
     from ouroboros.settings_integrity import runtime_environ
 
@@ -754,7 +754,7 @@ def review_pool_payload(snapshot: Optional[Dict[str, Any]] = None) -> Dict[str, 
         "limits": {"rows": MAX_CONFIGURED_SUBAGENTS},
         "catalog": {"present": bool(raw.strip()), "enabled": bool(raw.strip()) and document.get("enabled") is not False,
                     "rows": len(items), "eligible": sum(1 for item in items if item.get("review_eligible") is True)},
-        "pool": [], "excluded": [], "last_executions": reviewer_slot_last_executions(), "row_costs": {},
+        "pool": [], "excluded": [], "last_executions": public_slot_executions(reviewer_slot_last_executions()), "row_costs": {},
         "config_error": "", "migration": review_pool_migration_payload(env, document=settings_document),
         "pool_without_credentials": [],
     }

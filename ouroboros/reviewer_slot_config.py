@@ -864,6 +864,18 @@ def reviewer_slot_last_executions() -> Dict[str, Any]:
         return {}
 
 
+def public_slot_executions(entries: Dict[str, Any]) -> Dict[str, Any]:
+    """The slot-execution receipts as a gateway payload shows them (``GET /api/review-pool``): each seat's
+    measured cost the way the review card names it, ``cost: {kind, usd}``, never the retired ``cost_usd``
+    alias (frozen contracts §11.4). The receipts themselves keep their ledger spelling."""
+    from ouroboros.review_projection import _seat_cost
+
+    return {slot: {**{key: value for key, value in entry.items() if key not in ("cost_usd", "cost_kind")},
+                   "cost": _seat_cost(entry)}
+            if isinstance(entry, dict) and {"cost_usd", "cost_kind"} & entry.keys() else entry
+            for slot, entry in (entries or {}).items()}
+
+
 __all__ = [
     # The pool.
     "ConfiguredReviewerSlot",
@@ -875,6 +887,7 @@ __all__ = [
     "composed_pool_seats",
     "composed_review_pool",
     "main_review_row",
+    "public_slot_executions",
     "review_pool_rows",
     "review_pool_save_error",
     "review_pool_slots",
