@@ -57,4 +57,8 @@ test('the markup form is the same decorative anatomy', () => {
     const html = statusMarkHtml('nav-mark');
     assert.match(html, /^<span class="status-mark nav-mark" aria-hidden="true" data-shape="none" data-hue="ink" hidden>/);
     assert.equal((html.match(/<i><\/i>/g) || []).length, 3);
+    // A template that knows its mark paints it at once; a view outside the grammar draws nothing.
+    assert.match(statusMarkHtml('', { shape: 'moving', hue: 'ink' }),
+        /^<span class="status-mark" aria-hidden="true" data-shape="moving" data-hue="ink"><i>/);
+    assert.match(statusMarkHtml('', { shape: 'sparkle', hue: 'gold' }), /data-shape="none" data-hue="ink" hidden>/);
 });

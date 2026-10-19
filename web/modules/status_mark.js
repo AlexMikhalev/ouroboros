@@ -47,10 +47,12 @@ export function createStatusMark(doc = globalThis.document, extraClass = '') {
     return node;
 }
 
-/** The same anatomy as markup, for a template built as a string. */
-export function statusMarkHtml(extraClass = '') {
-    return `<span class="${MARK_CLASS}${extraClass ? ` ${extraClass}` : ''}" aria-hidden="true" data-shape="none" `
-        + 'data-hue="ink" hidden><i></i><i></i><i></i></span>';
+/** The same anatomy as markup, for a template built as a string; `view` paints it at once (else it starts hidden). */
+export function statusMarkHtml(extraClass = '', view = null) {
+    const shape = MARK_SHAPES.includes(view?.shape) ? view.shape : 'none';
+    const hue = MARK_HUES.includes(view?.hue) ? view.hue : 'ink';
+    return `<span class="${MARK_CLASS}${extraClass ? ` ${extraClass}` : ''}" aria-hidden="true" data-shape="${shape}" `
+        + `data-hue="${hue}"${shape === 'none' ? ' hidden' : ''}><i></i><i></i><i></i></span>`;
 }
 
 /** Paint `view` ({ shape, hue }) on a mark; a mark already showing it is not rewritten. Returns whether it changed. */
