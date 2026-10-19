@@ -403,7 +403,7 @@ def test_project_sidebar_and_menu_static_contracts():
     assert "project_seen_revision" in app
     assert "acknowledgeProjectAfterPaint" in app
     assert "inst.refreshHistory?.({ revision })" in app
-    assert "paint?.read" in app  # painted AND at the newest messages (DESIGN "Project unread dot")
+    assert "paint?.read" in app  # painted AND at the newest messages (DESIGN "Unread")
     assert "await markProjectViewed(project.id, revision)" in app
     assert "async function markProjectViewed" in app
     assert "await fetchJson('/api/ui/preferences'" in app

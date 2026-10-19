@@ -1,4 +1,4 @@
-"""A Project room is read where the reader can see the newest message (DESIGN "Project unread dot").
+"""A Project room is read where the reader can see the newest message (DESIGN "Unread").
 
 Real server, real retained chat history, real history endpoint and read cursor:
 a late answer keeps the time it was written, so it sorts into the middle of the
@@ -428,7 +428,7 @@ def test_a_room_read_on_one_client_clears_the_dot_on_another_at_its_next_state_r
 @pytest.mark.parametrize("engine", ["chromium", "webkit"])
 def test_a_question_revealed_from_main_is_not_reading_the_newer_messages_below_it(direct_server_with_data, engine):
     """Main's question mirror opens the room at the question; the newer replies below it are read only
-    once the reader reaches them (DESIGN "Project unread dot")."""
+    once the reader reaches them (DESIGN "Unread")."""
     from playwright.sync_api import sync_playwright
 
     from ouroboros.projects_registry import bind_task_to_project, get_project

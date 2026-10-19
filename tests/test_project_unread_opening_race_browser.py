@@ -243,7 +243,7 @@ def test_cancelling_a_rebased_opening_never_resumes_it(direct_server_with_data, 
             assert room.seen() == [] and len(room.older) == pages, (room.acks, room.older)
             assert set(race.chains()) == {race.chains()[0]}, ("no page of a new chain after cancellation", race.chains())
             # A searched read names no newest message, so state refreshes re-read the unread room
-            # (DESIGN "Project unread dot"); a named or arrived one is covered and re-reads nothing.
+            # (DESIGN "Unread"); a named or arrived one is covered and re-reads nothing.
             if kind != "searched":
                 assert len(race.recent) == before_return + (stage == "pager-return"), race.history
             _emit_ws_frame(room.page, {"type": "projects_changed"})

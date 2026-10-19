@@ -169,7 +169,7 @@ test('only the Project room paint path posts a read cursor', () => {
     assert.match(ackSource, /await markProjectViewed\(project\.id, revision\)/);
 });
 
-// A question opened from Main (DESIGN "Project unread dot"): landing on it is not
+// A question opened from Main (DESIGN "Unread"): landing on it is not
 // reading the newer messages below it. The reveal is one transaction — the question
 // owns the viewport before history I/O, its paint never joins an acknowledging
 // request, and nothing is acknowledged until it ends.

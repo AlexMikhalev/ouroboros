@@ -528,7 +528,7 @@ async function openProjectPanel(project, { closeDrawer = true, openOnly = false,
         }
         // Reopened at the newest message; after the panel is shown, so the column
         // has real geometry. An unread room lands on the message that arrived last
-        // (DESIGN "Project unread dot"). A question opened from Main is revealed below instead.
+        // (DESIGN "Unread"). A question opened from Main is revealed below instead.
         const unread = Math.max(0, Number(freshProjectRow(project).visible_revision) || 0)
             > Math.max(0, Number(state.projectSeenRevision?.[project.id]) || 0);
         if (!(taskId && quizId)) void inst.showLatest?.({ arrive: unread });
@@ -579,7 +579,7 @@ function freshProjectRow(project) {
 // addressed question owns the viewport before either history or detail I/O (its
 // chat-owned generation yields to later navigation), its paint supersedes any
 // request in flight, and no acknowledgement decides until the reveal has ended,
-// when this one does (DESIGN "Project unread dot") — unless a close or a later
+// when this one does (DESIGN "Unread") — unless a close or a later
 // showing retired it meanwhile: that navigation owns the room's read instead.
 async function revealProjectQuestion(project, inst, taskId, quizId) {
     const reveal = {};
@@ -599,7 +599,7 @@ async function revealProjectQuestion(project, inst, taskId, quizId) {
 // A Project can receive a new visible revision while its panel remains open.
 // Coalesce polling updates per Project, but never acknowledge a newer revision
 // until a history read covering it has been painted while the reader is at the
-// newest messages (DESIGN "Project unread dot"); `paintOnly` paints without that decision.
+// newest messages (DESIGN "Unread"); `paintOnly` paints without that decision.
 async function acknowledgeProjectAfterPaint(project, instance = null, { forcePaint = false, paintOnly = false } = {}) {
     if (!project?.id || navState.activeProjectId !== project.id) return;
     const inst = instance || projectInstances.get(project.id);

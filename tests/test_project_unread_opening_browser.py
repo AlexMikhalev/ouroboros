@@ -1,5 +1,5 @@
 """Opening an unread Project room shows the message that arrived last however far below the
-first history page it lies (owner decision 2026-10-11; DESIGN "Project unread dot").
+first history page it lies (owner decision 2026-10-11; DESIGN "Unread").
 
 Real server, real producer seam (``message_bus.send_with_budget``), real history endpoint and
 read cursor. A reply is buried by its children's words — card content, so the reply stays the
