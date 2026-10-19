@@ -5086,7 +5086,7 @@ textarea.chat-input::placeholder { color: var(--text-muted); }
     font-size: var(--type-meta);
     line-height: var(--line-meta);
 }
-.storage-progress > .chat-live-typing { align-self: flex-start; margin-top: calc((var(--type-meta) * var(--line-meta) - 4px) / 2); }
+.storage-progress > .status-mark { align-self: flex-start; margin-top: calc((var(--type-meta) * var(--line-meta) - var(--mark-fact)) / 2); }
 /* The places a first count has already finished, under its progress line: nothing is summed yet. */
 .storage-first-count { display: grid; gap: var(--space-1); margin: var(--space-2) 0 0; padding: 0; list-style: none; }
 .storage-first-count > li { display: flex; justify-content: space-between; gap: var(--space-3); color: var(--text-meta); font-size: var(--type-meta); line-height: var(--line-meta); }

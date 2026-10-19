@@ -3,14 +3,16 @@
 // browser's locale, which mixed languages in one line), counts like the rest of the app.
 
 import { fmt } from './i18n.js';
+import { statusMarkHtml } from './status_mark.js';
 
 /** Counts in one fixed format, like the file counts of result_files.js. */
 export const number = (n) => Number(n || 0).toLocaleString('en-US');
 
 export const plural = (n, one, many) => (Number(n) === 1 ? fmt(one, { n }) : fmt(many, { n, count: number(n) }));
 
-// The house working indicator (three dots), beside the sentence that says what is working.
-export const DOTS = '<span class="chat-live-typing" aria-hidden="true"><span></span><span></span><span></span></span>';
+// Work that runs now (a count, a listing, a cleanup): the shared moving mark in the line's ink, beside the
+// sentence that says what is working.
+export const DOTS = statusMarkHtml('', { shape: 'moving', hue: 'ink' });
 
 export const isSize = (value) => typeof value === 'number' && Number.isFinite(value);
 
