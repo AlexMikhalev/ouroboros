@@ -3,6 +3,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { MARK_HUES, MARK_SHAPES, markView, paintStatusMark, statusMarkHtml } from '../modules/status_mark.js';
+import { summarizeRoom } from '../modules/project_activity.js';
+import { roomStatusView } from '../modules/work_status.js';
+import { room } from './work_fixture.js';
 
 test('the owner move outranks everything and stands alone as the amber dot', () => {
     for (const mark of ['moving', 'still', 'pause', 'ring', 'none']) {
@@ -61,4 +64,18 @@ test('the markup form is the same decorative anatomy', () => {
     assert.match(statusMarkHtml('', { shape: 'moving', hue: 'ink' }),
         /^<span class="status-mark" aria-hidden="true" data-shape="moving" data-hue="ink"><i>/);
     assert.match(statusMarkHtml('', { shape: 'sparkle', hue: 'gold' }), /data-shape="none" data-hue="ink" hidden>/);
+});
+
+test('the owner move a server room lists reads the same on the bar and the sidebar, an unconfirmed room included', () => {
+    const turn = [{ kind: 'question', quiz_id: 'q-1', task_id: 't-1' }];
+    for (const activity of ['working', 'waiting', 'paused', 'unknown']) {
+        const listed = room(activity, { turn });
+        const bar = roomStatusView({ room: listed, works: [] });
+        const row = summarizeRoom(listed);
+        assert.deepEqual(markView({ mark: bar.mark, owner: bar.owner }), { shape: 'dot', hue: 'owner' }, activity);
+        assert.deepEqual(markView({ mark: row.mark, owner: row.owner }), { shape: 'dot', hue: 'owner' }, activity);
+        const quiet = room(activity);
+        assert.equal(roomStatusView({ room: quiet, works: [] }).owner, false, activity);
+        assert.equal(summarizeRoom(quiet).owner, false, activity);
+    }
 });

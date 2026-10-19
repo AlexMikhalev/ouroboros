@@ -158,7 +158,7 @@ export function roomStatusView(state, { connected = true, ready = true, boot = n
     // The owner's own question says itself: the word takes the amber ink, beside the owner's dot.
     case 'waiting': return view('online', activityWord(room), asked(room) ? 'wait' : 'held', mark, turn);
     case 'paused': return view('online', activityWord(room), 'held', mark, turn);
-    case 'unknown': return view('online', activityWord(room), 'unknown', mark);  // unconfirmed: nothing for the owner
+    case 'unknown': return view('online', activityWord(room), 'unknown', mark, turn);  // a listed turn still waits
     default: return ready ? view('online', 'Online', 'online', mark)
         : { ...view('starting', 'Starting…', 'starting', 'none'), ...startingStatus(boot) };
     }

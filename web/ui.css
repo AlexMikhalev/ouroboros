@@ -815,7 +815,8 @@ textarea.ui-control { resize: vertical; }
    One small family for every surface, created and painted by web/modules/status_mark.js and drawn only here. The
    shape says what the work does (three moving dots, the same dots still, the pause's two bars, a faint ring, one dot);
    the hue says whether there is something for the owner. Dots are 4px, a single fact 7px; no halos, shadows or glyphs.
-   Only the moving dots animate. A chosen row's selection colour never tints a mark: it sets --mark-ink. */
+   Only the moving dots animate. The ink hue is the surface's own ink (a chosen row's selection colour included);
+   --mark-ink is the one hook a surface sets to give its marks another ink. */
 :root {
     --mark-dot: 4px;
     --mark-gap: 3px;
