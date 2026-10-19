@@ -399,6 +399,15 @@ and Send waits for both pending Context and Effort saves; a refused
 save keeps the draft, says why and returns to the saved value — unsaved values are
 never shown as saved.
 
+**"+" holds the composer's actions.** Where the paperclip stood, "+" (More actions, a
+finger-sized target that keeps the row's height) opens a menu sheet above itself: Attach
+file first, then the sections later controls add, each under its label; drag and paste
+still attach, and a pointer that opens it from the field leaves the focus in the field.
+The dictation mic has a slot between the field and Send that takes no room until an
+engine is chosen. Contributed chips have a slot at the end of the capsule row that takes
+only the room the capsules leave (never a second line: the chips that do not fit fold
+into one "+N" whose list holds them) and steps aside with them.
+
 ### `.muted`
 
 `.muted` is a **colour-only utility**: `color: var(--text-meta)`, nothing else.
@@ -1373,6 +1382,24 @@ recorded failure reasons, repeated ones grouped with their counts; Logs Raw
 keeps the complete source/failure facts, and a missing recorded reason is stated
 explicitly. Existing task-detail hydration and replay refresh this projection.
 
+### Living cards
+
+A living card is an object Ouroboros made inside its own message (`show_card`), never a host decision: no status
+chip, no amber, no answer field. The bubble is the object, so the card adds no box of its own: its title
+(`--type-section`, 600) leads, then its body — components drawn exactly as on the Widgets board, a skill's widget, or
+an app in a tray — and a foot that says `Ouroboros made this` in meta ink with the card's capsules on the right:
+`Keep on Widgets` for a component card (then `Kept on Widgets` with `Undo`, or `Remove` when it was kept before; on
+the Widgets page the kept card says `kept from the chat` and its menu carries `Remove`) and `Make it a skill` for an
+app, which only puts a request into the draft. Until the body arrives, and whenever it cannot be read, the card shows
+its plain words (the text Telegram gets) with one status line — `Loading the card…`, the failure with Retry, `This
+card is no longer available.`, `This skill is off.` — never an empty box. A press on a card's control is the owner's:
+it says `Sending…`, then `Sent ✓` or the honest failure, and a control meant once locks after it counted. A frame in
+a message (an app, a skill's widget) is at least 120 px and at most 70 % of the window, with `Expand` / `Collapse`
+beyond; at most three run at once, started near the view, and a far one rests as its words with `Open`. What an app
+hands back lands as one line in the owner's draft: nothing in a card ever sends. Copy takes the plain words, Reply
+and the row menu work as on any message, and a card that grows while the room follows its newest message keeps it
+in view.
+
 ### Chat attachments
 
 The owner's photos and files are part of the owner's message, shown the way
@@ -1481,6 +1508,64 @@ point (56 px), and released past it the row replies exactly as its Reply does; i
 settles back either way, past the point with a rubber band
 (`web/modules/chat_row_swipe.js`). Rightwards stays the drawer's; a field, a slider,
 selected words, anything that scrolls sideways and an open menu keep their finger.
+A saved reply's registered actions (Read aloud, a skill's message action) come from one registry: icon
+controls named for their action between Reply and Copy, Copy keeping its corner, and items after the row's own
+doors in the row menu, in words. An action that is on now names its state (Stop while reading aloud) and wears
+the crimson ink; a work card offers none.
+
+### Skills in the page
+
+A skill adds controls only where the host opens a place (the composer's "+"
+menu and capsule row, a saved reply's actions), and the host draws them: the
+skill's label verbatim, one glyph from the host set, the host's capsule or
+icon control, never the skill's markup. In "+", after Attach file, each skill
+has a section under its name with its items in the owner's order; the host's
+own items close the menu under Ouroboros's name: Add dictation… while no
+engine can dictate here, and Make a button with Ouroboros…, which starts a request in
+the draft for the owner to finish and send. A chip is one of the row's
+capsules: the skill's name, then the value its source answers in the meta ink
+(24 characters; the rest and its description on the chip's title), with a dot
+when the value has a status tone. It is read on its own refresh (15 seconds at
+least) only while a room shows it on a visible page; a source that fails says
+"—" with the reason and is asked again later, less often. "+N", the narrowest
+capsule, lists what folds; with no room even for it (a phone's row, which ☰
+leads), each chip is listed in "+" under its skill's name. A skill's trusted page module works
+only through its small context (its provider, a notice, words into the draft)
+and never draws into the composer or the feed. A module that fails is off for
+this page with one notice naming it; the rest of the page keeps working. A
+start that did not finish (the page froze or crashed while page modules
+started) skips them all next time and says so, with Start with plugins;
+`?plugins=off` starts without them on purpose and offers Restart with plugins.
+Main's More menu offers Restart without plugins on every surface, the macOS
+app's Help menu Start without plugins; a page that a module froze is left
+through that menu or by reopening it, which then starts without them.
+
+### Voice controls
+
+Dictation and Read aloud are host controls over engines that skills provide;
+an engine is never chosen or replaced silently, and each one names where its
+audio or text goes: On this device, On this computer, On your Ouroboros
+server (its host), or Goes to the vendor it names. The composer has no mic
+until a speech-to-text engine is chosen and can run here; until then "+"
+offers Add dictation…, a sheet of the live engines, built-in Browser speech
+(free; the skill's own words say which vendor hears the audio in each
+browser; choosing it turns it on, or finds it in Browse while it is not
+installed) and Whisper from OuroborosHub (its Skills entry when installed,
+the Browse search when not). The mic is a quiet
+finger-sized control between the field and Send; its chevron lists the
+engines with their destinations, Get another engine… and Turn off dictation.
+While recording, the slot holds a level dot and the time, Stop in the mic's
+place wearing the crimson tone, and Cancel; the draft stays visible. Stop
+transcribes; the words go in at the caret saved at Stop when the draft has
+not changed since, otherwise a sheet above the composer holds them with
+Insert and Copy. Dictation never sends. Esc, Cancel, the page's Panic, a
+hidden room and the engine leaving end a recording; a chosen engine that
+cannot run here is named with its reason in the chooser. Read aloud is a saved
+reply's action (Replies): the reply's words with code announced, not read; one
+reply at a time, Stop on the one being read; the page's Panic and leaving it
+stop it. With no engine chosen it uses one on this device. The row menu's Read aloud
+voice… lists Automatic (a voice on this device) and every voice, "On
+this device" only when the browser marks it local, otherwise "Online voice".
 
 ### Conversation activity block
 
@@ -1911,6 +1996,7 @@ has migrated. Migrated today:
 - `web/onboarding.css` (the whole first-run wizard)
 - `web/model_roles.css` (shared role editor)
 - `web/room_work.css` (room work disclosure, rows and reading return)
+- `web/cards.css` (living cards in the feed)
 - `web/style.css` regions paired by `design-system:migrated-begin` /
   `design-system:migrated-end`: harness accounts; Dashboard → Updates (status
   card, one action row, collapsed Recovery with one restore list) and Storage;

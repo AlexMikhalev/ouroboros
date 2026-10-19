@@ -26,8 +26,10 @@ def _ui_client_routes() -> list[BaseRoute]:
         api_ui_i18n_regenerate_post,
     )
     from ouroboros.gateway.ui_preferences import api_ui_preferences_get, api_ui_preferences_post
+    from ouroboros.gateway.contributions import api_ui_contributions
 
     return [
+        Route("/api/ui/contributions", endpoint=api_ui_contributions, methods=["GET"]),
         Route("/api/ui/preferences", endpoint=api_ui_preferences_get, methods=["GET"]),
         Route("/api/ui/preferences", endpoint=api_ui_preferences_post, methods=["POST"]),
         Route("/api/ui/i18n", endpoint=api_ui_i18n_get, methods=["GET"]),
@@ -37,6 +39,15 @@ def _ui_client_routes() -> list[BaseRoute]:
         Route("/api/ui/i18n/export", endpoint=api_ui_i18n_export_get, methods=["GET"]),
         Route("/api/ui/i18n/regenerate", endpoint=api_ui_i18n_regenerate_post, methods=["POST"]),
     ]
+
+
+def _owner_answer_routes() -> list[BaseRoute]:
+    """The owner's answers: decision cards (``/api/decisions``, every family) and the
+    living cards Ouroboros shows in its messages (``/api/cards/*``: reads, pins)."""
+    from ouroboros.gateway.cards import card_routes
+    from ouroboros.gateway.task_decision import api_decision_answer
+
+    return [Route("/api/decisions", endpoint=api_decision_answer, methods=["POST"]), *card_routes()]
 
 
 def collect_routes(
@@ -66,6 +77,7 @@ def collect_routes(
         api_skill_toggle,
     )
     from ouroboros.gateway.widgets import api_widgets
+    from ouroboros.gateway.contributions import api_extension_host_asset
     from ouroboros.gateway.files import (
         api_chat_upload,
         api_chat_upload_delete,
@@ -140,7 +152,6 @@ def collect_routes(
     from ouroboros.gateway.tasks import (
         api_task_artifact,
         api_task_cancel,
-    api_decision_answer,
     api_task_hurry, owner_tree_control_routes,
         api_task_resume,
         api_task_events,
@@ -177,11 +188,8 @@ def collect_routes(
         Route("/api/extensions", endpoint=api_extensions_index, methods=["GET"]),
         Route("/api/extensions/{skill}/manifest", endpoint=api_extension_manifest, methods=["GET"]),
         Route("/api/extensions/{skill}/module/{entry:path}", endpoint=api_extension_module, methods=["GET"]),
-        Route(
-            "/api/extensions/{skill}/settings_section",
-            endpoint=api_extension_settings_section,
-            methods=["GET"],
-        ),
+        Route("/api/extensions/{skill}/ui/{revision}/{path:path}", endpoint=api_extension_host_asset, methods=["GET"]),
+        Route("/api/extensions/{skill}/settings_section", endpoint=api_extension_settings_section, methods=["GET"]),
         Route(
             "/api/extensions/{skill}/{rest:path}",
             endpoint=api_extension_dispatch,
@@ -253,7 +261,7 @@ def collect_routes(
         Route("/api/tasks/{task_id}/hurry", endpoint=api_task_hurry, methods=["POST"]),
         *owner_tree_control_routes(),
         Route("/api/tasks/{task_id}/resume", endpoint=api_task_resume, methods=["POST"]),
-    Route("/api/decisions", endpoint=api_decision_answer, methods=["POST"]),
+        *_owner_answer_routes(),
         Route("/api/schedules", endpoint=api_schedules_list, methods=["GET"]),
         Route("/api/schedules", endpoint=api_schedules_upsert, methods=["POST"]),
         Route("/api/schedules/{schedule_id}/action", endpoint=api_schedules_action, methods=["POST"]),

@@ -243,9 +243,10 @@ answer through §7.
 
 **Message types.** `ws.messages` in the contract lists every built-in type with each direction's shape:
 - **Client to core:** `chat` and `command`.
-- **Core to client, stored as history rows:** `chat` (a message or a progress line), `photo`, `video`, `document`, `links` and `quiz`.
+- **Core to client, stored as history rows:** `chat` (a message or a progress line), `photo`, `video`, `document`, `links`, `quiz` and `card` (a living card, §5 "Living cards").
 - **Core to client, signals only:**
   - `quiz_state` updates a question card; history shows the merged state.
+  - `card_state` says a shown living card changed: read it again (§5 "Living cards").
   - `log` carries one runtime event row in `data` (`data.type` names the event) for live activity displays; the task's durable facts come from §6.
   - `message_annotation`, the routing outcome shown on an owner message, is that row's `chat_annotation` in history.
   - `task_named` gives a card its title; history rows carry `suggested_name`.
@@ -281,7 +282,7 @@ In a Project response, `window.latest_message` names the latest eligible non-own
 - **Always present:** `text` (live frames call it `content`), `role` (`user`, `assistant` or `system`), `ts`, `is_progress`, `system_type` (the row's kind; `""` for an ordinary message) and `task_id`.
 - **Identity:** stored rows carry `history_id` (`"<chat|progress>:<offset>"`, the same on every re-read), `history_position` (`{source, offset}`) and a stable `row_address` computed before projection (none without a persisted source). `client_message_id` correlates owner messages and some quiz publications; owner authorship follows `role`.
 - **References:** `reply_to` (an owner row's: the row he replied to; an Ouroboros answer's: the owner message its turn answers) is `{address, chat_id, role, author_label, kind, snippet, ts, task_id}` (`snippet`: at most 160 whitespace-collapsed characters) or `{address, unresolved: true}`. A `relay_entry` row's `relay` holds the owner's words passed into the room: `quotes`, every message passed on, each with `text`, `attachments` and `source` (where and when he wrote it), the singular fields repeating the first. A reply to a relay, in its source room, carries `reply_to_relay`.
-- **Deliveries:** `msg_type` is `document`, `photo`, `video`, `links` or `quiz`, with `filename`, `mime`, `download_url`, `caption` and `size_bytes`; `actions` and `title` for links; `quiz` for a question (`quiz.quiz_id`, `quiz.state`, the recorded answer).
+- **Deliveries:** `msg_type` is `document`, `photo`, `video`, `links`, `quiz` or `card`, with `filename`, `mime`, `download_url`, `caption` and `size_bytes`; `actions` and `title` for links; `quiz` for a question (`quiz.quiz_id`, `quiz.state`, the recorded answer); `card` for a living card (`card.card_id`, `card.kind`, `card.title`, `card.revision` as first published; the row's `text` is its plain fallback).
 - **Progress rows** (`is_progress: true`) carry the task-progress facts of live `chat` progress frames (`ChatOutbound`).
 - **Rows that are not messages.** Do not show these as bubbles:
   - replay evidence (`system_type` `quiz_answer`, `quiz_closed` or `task_evidence`, or a row with `summary_kind` and `historical_terminal`), facts for cards whose rows lie on other pages. A `task_evidence` carrier may be an in-room parent's only evidence (zero tool calls included; `task_terminal_status` only when the parent is terminal): mint a parent card only from the parent's own rows, carrier or live state, never from a child's `parent_task_id`; a child whose parent has no such evidence here renders as its own card and re-nests when that evidence arrives.
@@ -299,6 +300,7 @@ The core writes each stored row and its live frame with an identical `ts` string
 | `quiz` | `msg_type: "quiz"` | `task_id` and `quiz_id` (`quiz.quiz_id`) are equal |
 | a Main pointer `chat` with `system_type: "project_question_pointer"` | the pointer row | `task_id` and `quiz_id` are equal |
 | `photo`, `video`, `document` or `links` | `msg_type` equal to the frame's `type` | `task_id` and `ts` are equal |
+| `card` | `msg_type: "card"` | `card.card_id` is equal |
 | any other `chat` | a row with the same `is_progress`, `role` and `system_type` | `task_id`, `ts` and `content` = `text` are all equal |
 
 Only `role:"user"` rows merge by `client_message_id`: on a System frame it only correlates the answered submission and is not persisted, so stored System replies use the other-chat rule. Never match on `ts` or `task_id` alone: one task writes many rows with close timestamps, and the same words can come from different tasks.
@@ -324,6 +326,16 @@ The socket has no resume cursor: frames sent while you were disconnected are not
   - `409 history_delta_reset`: since an `after_cursor`, more arrived than one read replays, a stored row could not be read, owner-message annotations changed, a task the window shows settled or changed after it settled, or a shown skill operation ended; read the newest page again (in a busy room this is a common answer, not a rare one);
   - `503 history_source_unavailable` or `migrating`.
 - **Incomplete windows.** `window.complete` is true only when nothing bounded the read; `window.truncated_by` names each cause (`quota`, `page`, `lineage_cap`, a stream gap such as `chat_malformed_jsonl`, or `chat_importing`/`progress_importing`: older rows exist below the archive import's frontier and are not readable yet; the older page that would cross it answers 503 `reason_code: migrating`, retry later). Never treat an incomplete window as an empty conversation. `coverage` reports which stored coordinates were delivered, for clients that page; it says nothing about chronology.
+
+### Living cards
+
+Ouroboros can put an interactive card into its own message: a `card` frame (`CardOutbound`), in history a `msg_type: "card"` row. Both carry only the card's identity `card: {card_id, kind, title, revision}` and its plain `fallback_text` (the row's `text`), which a surface that cannot draw the card shows instead.
+- **Body.** `GET /api/cards/{card_id}` (`CardResponse`) returns the current card with exactly one body: `components`, a declarative tree drawn like a declarative widget (`docs/CREATING_SKILLS.md`) with `data` as the values its path fields read and no skill route; `widget`, `{skill, tab_id, input?}`, that skill's tab from `GET /api/widgets` drawn inline (it may no longer be live); or `app`, `{sha256, size, url}`. A card that is gone answers `404 card_not_found`: show the fallback text.
+- **Apps.** `GET /api/cards/{card_id}/app` returns the app's HTML as `text/plain` with `nosniff` and `no-store`. Run it only inside an opaque-origin sandboxed frame built from those bytes (`srcdoc`, never `allow-same-origin`) whose policy blocks fetch, WebSockets and loads, never as a page of the core's origin; navigation and WebRTC are outside any page policy (`docs/WIDGET_HOST_PROTOCOL.md` §9). What the app produces goes into the owner's draft; only the owner's Send sends it.
+- **Changes.** A `card_state` frame (`CardStateOutbound`) says the card got a new body (`card.revision` grew) or a press was recorded (`submissions_summary`); read the card again. History keeps the row as first published; `GET /api/cards/{card_id}` is the current card.
+- **Presses** on a component card's `action` or `form` go to `POST /api/decisions` (§7).
+- **Keeping a card.** `POST /api/cards/{card_id}/pin` keeps a component card on the Widgets page as a snapshot (`CardPinResponse`); an app or widget card answers `409 card_not_pinnable` and the 51st pin `409 pins_full`. `DELETE /api/cards/{card_id}/pin` removes it. Both broadcast `extension_lifecycle` with `skill: "_cards"`. `GET /api/widgets` lists kept cards after the skills' widgets, with `skill: "_cards"`, `pinned_card: true` and the snapshot in `render`; their presses use the same decisions.
+- **Drawing a card (what the builtin client does).** Show the row's `fallback_text` until the body arrives, and whenever it cannot be read (with a retry for a failure, a plain note for `404`); never an empty box. Draw `components` with no skill route (only inline `data:` media), `data` as what path fields read; local components (tabs) never call the core. Each press is a new `request_id` and carries the `revision` it was drawn from; a press that got no answer, a `5xx` or `202 owed` is retried with the same `request_id` and the same values, and after a reload a `once` control's or an action's press recorded `owed` in `submissions_summary` is retried under its `request_id` (a form's next press with values is a new press); a `once` control stays locked after its press was delivered or forwarded (here, from `submissions_summary`, or a `409 card_action_once`); a `409 card_stale` reads the card again (a kept copy says it is out of date). A `widget` card draws the tab `GET /api/widgets` lists for its `{skill, tab_id}`, and says the skill is off when there is none. An `app` runs only as `docs/WIDGET_HOST_PROTOCOL.md` §9 says: an opaque `allow-scripts` frame that cannot fetch or load, whose submit fills the owner's draft and sends nothing. A card's frames in a message are sized and disposed there too.
 
 ## 6. Projects and tasks
 
@@ -386,6 +398,8 @@ data: {"seq":12,"type":"task_result","task_id":"…","data":{…}}
 **Closing without answering.** For a root task's quiz, send the same endpoint and `decision_id` with a `request_id`, `action: "close"` and an optional `reason` of at most 2000 characters, without `option_index` or `comment`; a blank or omitted owner reason records `Closed by the owner without an answer.`, and a non-string or longer one answers `400 close_reason_invalid`. Closure shares the first-winner rule with answers; show the returned `state`, `closed_reason` and `question_delivery`: a recorded closure is no proof its author received it.
 
 **Removing unknown late delivery from current decisions.** For an answered quiz with unknown late-answer delivery, send `action: "dismiss"` with `decision_id` and `request_id` only (no answer, comment or reason). It removes only the outstanding delivery item, neither resending the answer nor marking it delivered; the recorded answer and unknown outcome stay in history. Another, ineligible state is refused; read the returned facts.
+
+**Pressing a living card's control.** Send the same endpoint with `decision_id` `card:<card_id>:<action_id>` (the control's `submit.id`), a `request_id`, the card `revision` the control was drawn from (`400 revision_required` without it; a card that changed since answers `409 card_stale` with the current `revision`, and nothing is recorded), and for a `form` its field values as `values` (field names to text of at most 4000 characters, numbers, booleans or null; at most 50); other values, or `values` on an `action`, answer `400 values_invalid`. Each press is its own record: the same `request_id` returns the recorded press with `duplicate: true` and retries a delivery still owed, whatever the card became since; a control declared `once` keeps only its first press, and a later one answers `409 card_action_once` with `winner` (its `request_id`, time and `delivery`; a winner still `owed` is retried under its `request_id`). `delivery` says where the press went: `delivered` into the authoring task's mailbox (not proof it was read), `forwarded` as the owner's own message in the card's chat because that task no longer reads mail (their words only, the pressed label and each value, as a Reply to the card's row), or `owed` (`202` with `reason_code`: resend the same `request_id`). `404 card_not_found` or `action_not_found` names a card or control that does not exist now; a replaced card can drop a control.
 
 **Other decisions.** Model-wait choices (`model_wait:<task_id>:<wait_id>`) and persisted routing choices (`routing:<client_message_id>:<token>`; no new routing pickers are produced) use the same endpoint and idempotency rule.
 
@@ -504,6 +518,61 @@ A refused action answers `SkillActionRefusal`: `error`, the `status_code` it was
   - `declarative`: a component description the interface draws; the components are described in `docs/CREATING_SKILLS.md`.
   - `module`: reviewed JavaScript run in a sandboxed frame. [`WIDGET_HOST_PROTOCOL.md`](WIDGET_HOST_PROTOCOL.md) is the complete host protocol: frame, document policy, message grammar, fetch relay, events, theme, size, downloads, links and the dispose handshake.
 - `GET /api/extensions/{skill}/module/{entry}` serves reviewed module code (never cached, any origin may load it).
+
+**Contributions (controls and speech engines):** `GET /api/ui/contributions`
+(`UiContributionsResponse`, `Cache-Control: no-store`) returns `contributions`,
+`offers.stt`, `icons`, `problems` (skill → warning strings), `preferences` and
+`voice`. The same fields appear beside `skills`/`live` in `GET /api/extensions`;
+`live.contributions` contains the loaded extensions' captured entries.
+Instruction skills contribute only while enabled and allowed by their current
+review gate; extension entries belong to their loaded publication. Invalid
+semantic entries are dropped individually and reported, also by skill preflight.
+
+Each contribution has `key` (`<skill>:<id>`), `skill`, `skill_label` (manifest name),
+`id`, `label`, `title`, `icon`, `order`, `revision` and `render: {kind, url}`,
+plus either `placement` or `provides`. Placement entries carry `action` and chips
+carry `source: {url, refresh_s}`. For `skill.request`, `action.url` and `route_url`
+name the host-computed absolute route; providers use `route_url`. Optional
+provider fields are `runtime`, `destination`, `languages`, `formats`,
+`install_size`, `max_bytes` and `max_seconds`. `icons` is the validator's icon
+catalog. `offers.stt` lists non-live built-in providers as
+`{skill, skill_label, id, label, destination, install_size, enabled: false, installed}`;
+`installed: false` names a built-in this install has not installed (clients send the
+owner to the Skills page's Browse, where the built-in source installs it).
+There is no marketplace offer until its catalog exposes contribution metadata;
+clients can link to the Skills entry instead.
+
+`render.kind: host` runs trusted same-origin code and requires an extension with
+`page_module` permission and its ordinary hash-bound grant/review authority.
+`GET /api/extensions/{skill}/ui/{revision}/{path}` serves only captured `ui/`
+assets of that live revision: `.js` as `text/javascript`, CSS, JSON and images by
+type, with no-store and nosniff. Example entry:
+`/api/extensions/voice/ui/<revision>/ui/voice.js`; relative imports stay in that
+revision. Missing, non-UI, unsupported, unloaded or stale paths answer 404.
+Like `module/`, a GET under `ui/<revision>/` is host-owned, never the skill's own
+route. These modules are distinct from the opaque-origin widget frame protocol.
+
+`GET`/`POST /api/ui/preferences` persist `voice: {stt:"", tts:"", tts_voice:""}`
+(`tts_voice`: the chosen tts provider's voice id, empty for its own pick) and
+`contributions: {hidden:[], order:[]}` in the install-wide preference file.
+POST merges named nested keys, replaces each supplied list, and rejects unknown
+nested keys, non-string keys, strings over 120 characters and lists over 64 items
+with 400. A missing provider never clears or substitutes a saved key.
+The contribution response includes these preferences and `voice[kind]` as
+`{key, available, reason}`: reason is empty when available, `not_selected` for an
+empty choice or `provider_unavailable` for a missing chosen engine. Client API
+availability is a separate browser fact. Re-read on `extension_lifecycle`, WS
+open, the end of a skill lifecycle job (its `chat` row with `system_type:
+"skill_lifecycle"` and `lifecycle.phase` completed, failed or cancelled) and
+`ouro:skill-lifecycle`; owner toggles invalidate instruction entries too.
+
+Server STT uses POST of raw audio to `route_url`, with its recorded `Content-Type`
+and optional `?lang=` (the builtin client sends none). Reply: `{text}`, `{text:"", status:"no_speech"}` or
+`{error:{code,message}}`. The existing 512 KiB extension-route cap is unchanged.
+Optional `max_bytes` is 1..524288 and `max_seconds` 1..600; `formats` is a subset
+of `audio/webm`, `audio/ogg`, `audio/mp4`, `audio/mpeg`, `audio/wav`. The recorder
+honors these limits before upload; 393216 bytes at 32 kbps for 60 seconds is a
+provider declaration, never a host exception by skill name.
 
 **The skill's own routes:** everything else under `/api/extensions/{skill}/` belongs to the skill.
 - A route that does not exist answers 404, and a skill that is not running answers 409.

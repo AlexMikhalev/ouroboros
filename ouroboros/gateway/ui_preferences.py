@@ -1,6 +1,6 @@
 """Owner-local UI preference endpoints, stored in ``state/ui_preferences.json``.
 
-Keys: ``widget_order``, ``widget_size``, ``widget_start_mode`` (values from
+Keys: ``voice`` (``stt``, ``tts``, ``tts_voice``), ``contributions``, ``widget_order``, ``widget_size``, ``widget_start_mode`` (values from
 ``extension_ui_validation.WIDGET_START_MODES``), ``nested_subagents_expanded``, the
 empty-Main ``welcome`` copy, the two side-section widths and ``project_seen_revision``.
 A POST may carry any subset of keys; an unknown key answers 400.
@@ -8,6 +8,7 @@ A POST may carry any subset of keys; an unknown key answers 400.
 from __future__ import annotations
 
 import pathlib
+import copy
 from contextlib import contextmanager
 from typing import Any
 
@@ -20,6 +21,10 @@ from ouroboros.utils import atomic_write_json, read_json_dict
 
 DEFAULT_UI_PREFERENCES: dict[str, Any] = {
     "widget_order": [],
+    # Engine choices are contribution keys; tts_voice is the chosen provider's voice id
+    # (empty = the provider's own pick, a voice on this device).
+    "voice": {"stt": "", "tts": "", "tts_voice": ""},
+    "contributions": {"hidden": [], "order": []},
     # Owner override of a widget card's launch policy, keyed "<skill>:<tab_id>" with a
     # value from the validator's WIDGET_START_MODES. Bounds only: keys are never
     # checked against live widgets, so a temporarily disabled or removed skill keeps
@@ -110,9 +115,32 @@ def _normalize_preferences(
     *,
     fill_defaults: bool = True,
 ) -> dict[str, Any]:
-    prefs = dict(DEFAULT_UI_PREFERENCES) if fill_defaults else {}
+    prefs = copy.deepcopy(DEFAULT_UI_PREFERENCES) if fill_defaults else {}
     if not isinstance(raw, dict):
         return prefs
+    for group, keys in (("voice", ("stt", "tts", "tts_voice")), ("contributions", ("hidden", "order"))):
+        if group not in raw:
+            continue
+        value = raw[group]
+        if not isinstance(value, dict) or any(key not in keys for key in value):
+            raise ValueError(f"{group} must be an object using only {', '.join(keys)}")
+        cleaned = dict(prefs.get(group, {}))
+        for key, item in value.items():
+            if group == "contributions":
+                if not isinstance(item, list) or len(item) > 64:
+                    raise ValueError(f"{group}.{key} must be a list of at most 64 keys")
+                values = item
+            else:
+                values = [item]
+            if any(not isinstance(v, str) or len(v) > 120 for v in values):
+                raise ValueError(f"{group}.{key} keys must be strings of at most 120 characters")
+            try:
+                for v in values:
+                    v.encode("utf-8")
+            except UnicodeEncodeError:
+                raise ValueError(f"{group}.{key} keys must be valid Unicode") from None
+            cleaned[key] = list(dict.fromkeys(values)) if group == "contributions" else item
+        prefs[group] = cleaned
     if "widget_order" in raw:
         value = raw.get("widget_order")
         if value is None:
@@ -237,6 +265,9 @@ async def api_ui_preferences_post(request: Request) -> JSONResponse:
         with _preferences_lock(path):
             prefs = _stored_preferences(path)
             incoming = _normalize_preferences(body, fill_defaults=False)
+            for group in ("voice", "contributions"):
+                if group in incoming:
+                    prefs[group] = {**prefs[group], **incoming.pop(group)}
             if "project_seen_revision" in incoming:
                 from ouroboros.projects_registry import get_project
 

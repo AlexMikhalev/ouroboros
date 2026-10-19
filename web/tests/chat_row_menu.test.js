@@ -4,10 +4,11 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createChatRowMenu } from '../modules/chat_row_menu.js';
+import { createMessageActions } from '../modules/message_actions.js';
 import { cardMenuActions, emptyWorkState } from '../modules/work_status.js';
 import { installDomDouble } from './dom_double.js';
 
-function fixture() {
+function fixture({ actions = undefined } = {}) {
     const env = installDomDouble();
     const { doc, el } = env;
     const feed = el('div', { className: 'chat-messages' });
@@ -37,7 +38,7 @@ function fixture() {
     const cards = new Map();
     // chat.js's own wiring: the card's Stop… items come from its work, else from the card's own task controls.
     const menu = createChatRowMenu({ feed, replies, cardOf: (id) => cards.get(id),
-        actionsOf: (record) => cardMenuActions(works, record, activity) });
+        actionsOf: (record) => cardMenuActions(works, record, activity), actions });
     const openMenu = () => doc.body.children.find((node) => node.classList.contains('chat-row-menu')) || null;
     const items = () => (openMenu()?.children || []).map((node) => node.dataset.rowAction);
     return { ...env, feed, cards, bubble, plain, copy, link, words, menu, started, copied, opened, activity, works, openMenu, items,
@@ -273,6 +274,31 @@ test('destroy closes an open menu and leaves no listener on the feed or the docu
     assert.equal(f.doc.captures.get('click')?.size || 0, 0);
     assert.equal(f.doc.captures.get('pointerdown')?.size || 0, 0);
     f.restore();
+});
+
+test('a bubble\'s menu lists the registered actions after its own doors, in their present words; a work card none', () => {
+    const actions = createMessageActions();
+    const ran = [];
+    let speaking = false;
+    actions.register({ key: 'read_aloud', label: 'Read aloud', applies: (row) => row.role === 'assistant',
+        state: () => (speaking ? { label: 'Stop' } : null), run: (row, ctx) => ran.push([row.address, ctx.anchor]) });
+    actions.register({ key: 'mine', label: 'Mine only', applies: (row) => row.role === 'user', run() {} });
+    const f = fixture({ actions });
+    try {
+        f.words.emit('contextmenu', { clientX: 1, clientY: 1 });
+        assert.deepEqual(f.items(), ['reply', 'copy', 'project', 'read_aloud']);
+        assert.equal(f.openMenu().children[3].textContent, 'Read aloud');
+        f.openMenu().children[3].click();
+        assert.deepEqual(ran, [['row:1@t#a', f.bubble]], 'the action runs on this row');
+        assert.equal(f.openMenu(), null);
+        speaking = true;
+        f.words.emit('contextmenu', { clientX: 1, clientY: 1 });
+        assert.equal(f.openMenu().children[3].textContent, 'Stop', 'the words follow the action\'s own state');
+        f.openMenu().emit('keydown', { key: 'Escape', target: f.openMenu().children[0] });
+        const { summary } = workCard(f);
+        summary.emit('contextmenu', { clientX: 1, clientY: 1 });
+        assert.equal(f.items().includes('read_aloud'), false, 'a work card is not a reply row');
+    } finally { f.close(); }
 });
 
 test('on touch the row sinks while the finger holds, lifts with a haptic while its menu is open, and settles back', (t) => {

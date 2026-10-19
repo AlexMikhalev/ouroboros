@@ -214,6 +214,171 @@ where the parser knows the repair, a `fix_hint` rendered into the message
 (`... — fix: ...`), so a refused registration tells you how to fix the
 manifest instead of only what was wrong.
 
+## Contributing controls and speech engines
+
+`contributes` is an optional list of up to 32 mappings on instruction or extension
+skills. Each needs a unique `id` matching `[a-z0-9_]{1,40}` and exactly one of
+`placement` or `provides`. Shape errors reject the manifest; semantic errors drop
+only that entry, with a repair warning in preflight and the contribution catalog.
+There is no additional PluginAPI registration call.
+
+| Field | Contract |
+|---|---|
+| `label`, `title` | Required nonblank label ≤40 characters, optional title ≤200; displayed verbatim. |
+| `icon`, `order` | Optional host icon name (the `icons` list of `/api/ui/contributions`), optional integer order (default 0). |
+| `placement` | `composer.plus`, `composer.chips` or `message.action`. |
+| `action` | Required on placements: `draft.insert` with text ≤4000, `notice` with text ≤300, `open.tab`, or `skill.request`. No verb sends as the owner. |
+| `action.route`, `with`, `then` | `skill.request` POSTs to its own relative route; `with: none` (default), `draft` or `message`; `then: keep_draft` (default) or `clear_draft`. The host supplies the absolute URL. |
+| `source` | Required only for chips: `{route, refresh_s}`; relative GET route, refresh integer 15..3600 seconds; reply `{text, tone?: ok|warn|bad|muted, title?}`. |
+| `provides`, `runtime` | Engine kind `stt` or `tts`; required runtime `server` or `client`. Server engines declare a relative POST `route`; clients register from their host module. |
+| `destination` | Required for engines: `device`, `host` or `vendor:<Name>`. Describe the real processing destination. |
+| `languages`, `formats` | Optional lists of up to 64 nonblank strings ≤120 characters. Formats: `audio/webm`, `audio/ogg`, `audio/mp4`, `audio/mpeg`, `audio/wav`. |
+| `install_size` | Optional nonblank text ≤120 characters, shown by install offers. |
+| `max_bytes`, `max_seconds` | Optional STT limits: integers 1..524288 bytes and 1..600 seconds. These do not raise the host route cap. |
+| `render` | Defaults to `{kind: declarative}`. `{kind: host, entry: ui/name.js}` names a trusted same-origin ES module; only relative `.js` entries under `ui/`. |
+
+Routes are plain relative paths without traversal, URL schemes, queries or
+fragments. Host render and client runtime require `type: extension` and declared
+`page_module` permission. A client provider also needs `render.kind: host`; it
+has no server route. Data-only entries need no page permission and remain valid
+on instruction skills. Extension providers and controls appear only while their
+extension is loaded; instruction contributions follow enablement and review.
+
+A template item can be entirely declarative:
+
+```yaml
+contributes:
+  - id: explain_simpler
+    placement: composer.plus
+    label: Explain simpler
+    icon: sparkle
+    action: {verb: draft.insert, text: "Explain your last answer more simply."}
+```
+
+A server speech engine uses its normal registered route:
+
+```yaml
+contributes:
+  - id: dictation
+    provides: stt
+    label: Local dictation
+    runtime: server
+    route: transcribe
+    destination: host
+    languages: [auto, en, ru]
+    formats: [audio/webm, audio/mp4, audio/wav]
+    install_size: "~500 MB"
+    max_bytes: 393216
+    max_seconds: 60
+```
+
+The request body is raw audio (`Content-Type` is the recorded type); a client
+may add `?lang=`, but the builtin one sends none, so detect the language
+yourself. Return `{text}`, `{text:"", status:"no_speech"}` or
+`{error:{code,message}}`. Keep uploads under both declared limits and the existing
+512 KiB route cap. The recorder enforces the declared limits; do not require a
+multipart wrapper or a skill-specific host upload exception.
+
+A capsule-row chip reads a small status route and opens its Widgets tab:
+
+```yaml
+contributes:
+  - id: quota
+    placement: composer.chips
+    label: Usage
+    source: {route: chip, refresh_s: 60}
+    action: {verb: open.tab}
+```
+
+Host modules and their relative imports load from captured revision URLs such as
+`/api/extensions/<skill>/ui/<revision>/ui/name.js`; CSS, JSON and images under
+`ui/` are captured too. Editing disk files does not change a loaded generation;
+unload or a new revision makes its old URLs return 404. Export `mount(ctx)` and
+return `{dispose}`; release resources when disposed. These are trusted page
+modules, distinct from sandboxed widget modules or model-written mini-apps.
+Every skill gets `page_module` through the ordinary grant: the owner's, or the
+auto-grant setting once its release is accepted (a built-in's trusted source counts).
+
+### What placed controls do
+
+A `composer.plus` item appears in the composer's "+" menu, after Attach file,
+in a section under the skill's name, in the owner's arrangement and otherwise
+by `order`. A `composer.chips` chip is one of the capsule row's capsules: its
+`label`, then the `text` its source answers (the first 24 characters; longer
+text and the answer's `title` become the chip's description), with a dot for a
+`tone` of `ok`, `warn` or `bad` (`muted`, or none, shows no dot). The host
+reads the source every `refresh_s` (15 seconds at least) and only while a room
+shows the chip on a visible page; after a failed read it shows "—" with the
+reason and asks again later, doubling the wait up to sixteen refreshes. Chips
+that do not fit beside the host's capsules fold into one "+N" chip whose list
+holds them, so keep the label and the text short. A press does the chip's
+`action`.
+
+A `message.action` appears on Ouroboros's saved replies, never on the owner's
+own rows or on work cards: an icon control between the reply's Reply and Copy
+(its accessible name is `label`, its tooltip `title`) and an item in the row's
+menu, in words. Its `skill.request` with `with: message` POSTs JSON
+`{text, row_id}`: the reply's plain words and its row address. With
+`with: draft` it POSTs `{text}`, the visible room's draft; with `none`, `{}`.
+A 2xx answer may carry `{notice}`, shown as one line (otherwise "<label>:
+done."). A failure shows one line naming the label and keeps the draft;
+`then: clear_draft` clears the draft only after a 2xx and only while it still
+holds the words that were sent. `draft.insert` puts its text into the visible
+room's draft at the caret and never sends; `open.tab` opens the Widgets page at
+the skill's card; `notice` shows its text.
+
+### Page modules
+
+The host imports every live `render.kind: host` entry from its revision URL
+and calls the module's exported `mount(ctx)` once per contribution (several
+contributions may share one file). `mount` may return `{dispose()}`, directly
+or through a promise; the host calls `dispose` when the skill is disabled,
+updated or removed, on this page's Panic and when the page goes away, and
+aborts `ctx.signal` at the same moment. The context is frozen and versioned; a
+capability a later version adds is absent from an older context, never a stub.
+
+| `ctx` field | Meaning |
+|---|---|
+| `api` | `1`, the context version. |
+| `skill`, `key` | The skill's directory name and this contribution's key (`<skill>:<id>`). |
+| `signal` | An `AbortSignal`, aborted when the module is disposed. |
+| `providers.register(kind, impl)` | Registers the client provider this contribution declares (`provides` equal to `kind`, `runtime: client`) and returns its unregister. Any other kind throws. |
+| `notice(text)` | One line in the page, prefixed with the skill's name. |
+| `draft.insert(text)` | Puts words into the visible room's draft at the caret, never sends; answers false when there is no draft. |
+| `theme.dark`, `theme.reducedMotion` | The painted theme and the motion preference, read when asked. |
+| `origin.secure`, `origin.loopback` | The page is a secure context; it is served from this computer. |
+
+A client speech provider is a plain object the host calls; it never draws.
+A `stt` provider is `{label, destination?, available() → {ok, code?},
+start({lang, signal}) → {stop() → Promise<{text} | {no_speech: true}>,
+cancel()}}`: the host calls `start` inside the owner's press (recognizers need
+the gesture), holds the page's one microphone lease for it, and puts the text
+into the draft itself. A `tts` provider is `{label, voices() → [{id, label,
+lang, local}], speak(text, {voice, lang, signal}) → Promise<void>, stop()}`;
+`local` is true only when the platform says the voice runs on the device, and
+`speak` settles when the words end, are stopped, or `signal` aborts. A
+provider's `destination` (`device`, `host` or `vendor:<Name>`) says where
+audio or text goes; the host shows it beside the engine's name. An engine the
+owner chose that cannot run is reported with its reason; the host never picks
+another one in its place.
+
+There is no composer, feed or other page DOM in the context: placements are
+the way into those. A module that cannot be imported, throws or rejects in
+`mount`, does not start within the host's module bound
+(`WIDGET_REQUEST_TIMEOUT_MS`, `web/modules/widget_job.js`) or registers a
+provider it does not declare is off for that page: its providers are
+unregistered and the owner sees one notice naming the skill. It stays off
+until the page reloads or the skill's revision changes; the other modules and
+the page keep working.
+
+Recovery never depends on the modules. While modules start, the host keeps a
+boot marker in the page's storage; a page that finds one (the last start froze
+or crashed, however long ago) starts without page modules and offers Start
+with plugins, which alone clears it. Opening the page with `?plugins=off` does the same
+on purpose; Main's More menu (Restart without plugins) and the macOS app's
+Help menu (Start without plugins) reload it that way. Declarative contributions
+stay available in both cases.
+
 ## Lifecycle: install → review → enable → execute
 
 ```mermaid
@@ -630,6 +795,7 @@ calls and runtime behaviours:
 | `net` | The skill may make outbound network calls. |
 | `fs` | The skill may write outside its state dir (review item still enforces confinement). |
 | `subprocess` | The skill may spawn child processes (review items + cwd-confinement still enforce). |
+| `page_module` | With its hash-bound grant, reviewed extension code may run as a trusted same-origin contribution module in the owner’s page. |
 | `widget` | The skill may call `register_ui_tab` and `register_settings_section`. |
 | `ws_handler` | The skill may call `register_ws_handler` and `send_ws_message`. |
 | `route` | The skill may call `register_route`. |
@@ -1077,8 +1243,8 @@ def register(api):
     )
 
     # HTTP routes — mounted at /api/extensions/<skill>/<path>. GET/HEAD under
-    # manifest, module/... and settings_section are host-owned (see "Loading
-    # more than one file").
+    # manifest, module/..., ui/<revision>/... and settings_section are
+    # host-owned (see "Loading more than one file").
     api.register_route("search", handler=http_search, methods=("POST",))
 
     # WebSocket message handlers (inbound) and broadcasts (outbound).
@@ -1628,6 +1794,19 @@ with `{card_id, column_id}` and share busy/error state. A `status` component can
 also observe `refreshing` (v6.71.0): a background poll refetch that already has
 data keeps the content and shows a thin indicator instead of a loading swap —
 your declared `loading` label is reused unless you declare a `refreshing` one.
+
+### Your widget inside Ouroboros's messages
+
+Ouroboros can show an installed skill's widget inline in its own chat message
+with `show_card(widget={skill, tab_id, input?})`. Only a live tab qualifies (the
+tool refuses a disabled, unreviewed or unloaded skill and names the live tabs),
+and the card refers to the widget instead of copying it: the chat draws the tab
+`GET /api/widgets` lists for that skill, so a later disable or upgrade applies
+there too. Nothing extra is declared for this; keep the widget usable at a
+compact height, since a message gives it less room than the Widgets page.
+Ouroboros's own component cards (`show_card(components=...)`) reuse this
+catalog without routes: their `action`/`form` controls bind
+`submit: {id, once?}`, and a press returns to Ouroboros as owner input.
 
 ### Async job error contract
 

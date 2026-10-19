@@ -31,6 +31,7 @@ from ouroboros.gateway.history_paging import (
     replay_evidence_rows, room_lens, room_view_fingerprint, select_history_page, latest_arrival, notes_stamp, parse_around,
     IMPORTING, PROJECTION_FAILED, _PROBE_ROWS, _RECENT_WINDOW_BYTES, _RECENT_WINDOW_ROWS,
 )
+from ouroboros.gateway.history_deliveries import delivery_fields
 from ouroboros.cost_projection import carry_cost_meta, live_root_cost_projection
 from ouroboros.outcomes import normalize_outcome_axes
 from ouroboros.history_retention import retention_summary
@@ -830,30 +831,14 @@ def _collect_chat_rows(
                 from ouroboros.review_execution_projection import normalize_review_executions
 
                 rec["executions"] = normalize_review_executions(entry.get("executions"))
-            # Delivered document rows carry lightweight media metadata (no
-            # base64); surface a msg_type + download_url so the frontend
-            # rebuilds the file bubble on reload instead of a bare text line.
             if entry.get("type") == "routing_options":
                 # LLM-context grounding row (#198, decision 4=A): the web
                 # surface renders the richer picker card from the annotation,
                 # so the plain-text list never double-renders here.
                 continue
-            if entry.get("type") == "document":
-                rec["msg_type"] = "document"
-                rec["filename"] = str(entry.get("filename") or "file")
-                rec["mime"] = str(entry.get("mime") or "application/octet-stream")
-                rec["download_url"] = str(entry.get("download_url") or "")
-                rec["download_url_compat"] = str(entry.get("download_url_compat") or "")
-                rec["caption"] = str(entry.get("caption") or "")
-                if "size_bytes" in entry:
-                    rec["size_bytes"] = coerce_int(entry.get("size_bytes"), 0)
-            elif entry.get("type") in {"photo", "video"} and entry.get("download_url"):
-                rec.update(msg_type=str(entry["type"]), mime=str(entry.get("mime") or ""),
-                           download_url=str(entry["download_url"]),
-                           download_url_compat=str(entry.get("download_url_compat") or ""),
-                           caption=str(entry.get("caption") or ""))
-            elif entry.get("type") == "links":
-                rec.update(msg_type="links", actions=list(entry.get("actions") or []), title=str(entry.get("title") or ""))
+            # Delivered media, links and cards: a msg_type with their bubble's fields, never base64 or a card body.
+            if delivery := delivery_fields(entry):
+                rec.update(delivery)
             elif entry.get("type") == "quiz" and isinstance(entry.get("quiz"), dict):
                 quiz = dict(entry["quiz"])
                 _qtid = str(entry.get("task_id") or "")

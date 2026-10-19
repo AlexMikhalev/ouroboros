@@ -251,8 +251,6 @@ def _forward_late_quiz_answer(
     The typed late_answer metadata bypasses the room's ordinary-reader route.
     A fresh head receives the complete frame and the asker keeps its holds.
     """
-    from supervisor import message_bus
-
     chat_id, reason = _late_answer_destination(drive_root, task_id, block)
     if chat_id is None:
         return False, reason
@@ -263,27 +261,46 @@ def _forward_late_quiz_answer(
         # An answered block always has a comment or a valid index; a block
         # that has neither cannot be spoken as the owner's words.
         return False, "answer_unreadable"
-    client_message_id = f"quiz_late_answer:{task_id}:{quiz_id}"
+    return deliver_as_owner_message(
+        drive_root, chat_id, text, f"quiz_late_answer:{task_id}:{quiz_id}", source=source,
+        # Provenance rides its OWN field; the real transport (the web card, or
+        # the skill that relayed the owner's tap) is the message's source.
+        task_metadata={"late_answer": {
+            "task_id": task_id, "quiz_id": quiz_id,
+            # Host-authored exact frame authority in the existing accepted
+            # message. Discharged quiz GC cannot orphan a queued answer.
+            "answer_snapshot": {"task_id": task_id, "quiz": dict(block)},
+        }},
+    )
+
+
+def deliver_as_owner_message(
+    drive_root: pathlib.Path, chat_id: int, text: str, client_message_id: str, *,
+    source: str = "web", task_metadata: Optional[Dict[str, Any]] = None,
+) -> Tuple[bool, str]:
+    """Accept ``text`` as the owner's own message in ``chat_id`` through the NAMED ingress.
+
+    The canonical chat row is the acceptance receipt and ``client_message_id`` the
+    idempotency key (a crash after acceptance never authorizes another enqueue), so a
+    retry re-enters the same delivery instead of duplicating it. A late quiz answer
+    and a press on a living card whose author ended both arrive this way.
+    """
+    from supervisor import message_bus
+
     bridge = message_bus.get_bridge()
     try:
         row, rejoined = message_bus.accept_local_message(
             bridge, drive_root, text,
             chat_id=chat_id, user_id=1, source=str(source or "web"),
             client_message_id=client_message_id,
-            # Provenance rides its OWN field; the real transport (the web card, or
-            # the skill that relayed the owner's tap) is the message's source.
-            task_metadata={"late_answer": {
-                "task_id": task_id, "quiz_id": quiz_id,
-                # Host-authored exact frame authority in the existing accepted
-                # message. Discharged quiz GC cannot orphan a queued answer.
-                "answer_snapshot": {"task_id": task_id, "quiz": dict(block)},
-            }},
+            **({"task_metadata": task_metadata} if task_metadata else {}),
         )
     except ValueError:
-        # This id was already accepted, but under other bytes: a delivery
+        # This id was already accepted, but under other bytes: a quiz delivery
         # accepted before the row carried only the owner's words (it carried
-        # the host frame then). It WAS delivered once; a retry rejoins it
-        # instead of failing forever or enqueueing a second owner turn.
+        # the host frame then), or a card press whose card was retitled since.
+        # It WAS delivered once; a retry rejoins it instead of failing forever
+        # or enqueueing a second owner turn.
         accepted = message_bus.accepted_chat_message(drive_root, chat_id, client_message_id)
         if accepted is None:
             raise
@@ -311,7 +328,7 @@ def _forward_late_quiz_answer(
             stamp_project_thread(message_bus.DATA_DIR, echo)
             bridge.broadcast(echo)
         except Exception:
-            log.debug("Late quiz answer echo failed for %s", quiz_id, exc_info=True)
+            log.debug("Owner message echo failed for %s", client_message_id, exc_info=True)
     else:
         from supervisor.message_ingress import dispatch_completed
 
@@ -436,6 +453,10 @@ async def answer_decision(drive_root: pathlib.Path, body: Any, *, source: str = 
         from ouroboros.gateway.task_model_wait import answer_model_wait_decision
 
         return await answer_model_wait_decision(drive_root, body)
+    if decision_id.split(":", 1)[0] == "card":  # its own fields (values) and its own per-press semantics
+        from ouroboros.gateway.card_decision import answer_card_decision
+
+        return await answer_card_decision(drive_root, body, source=source)
     raw_comment = body.get("comment")
     if raw_comment is not None and not isinstance(raw_comment, str):
         return _refused("comment must be a string", 400, reason_code="comment_invalid")
@@ -728,4 +749,4 @@ async def recover_question_deliveries(drive_root: pathlib.Path, *, limit: int = 
     return report
 
 
-__all__ = ["answer_decision", "api_decision_answer", "recover_question_deliveries"]
+__all__ = ["answer_decision", "api_decision_answer", "deliver_as_owner_message", "recover_question_deliveries"]

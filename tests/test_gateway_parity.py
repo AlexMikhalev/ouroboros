@@ -723,7 +723,7 @@ def test_decision_comment_limit_and_optional_index_pinned_across_python_and_js()
         if (getattr(annotation, "__forward_arg__", None) or str(annotation)).startswith("NotRequired[")
     }
     assert optional == {"option_index", "comment", "reason", "revision", "action", "auto_continue",
-                        "model", "credential_profile_id", "use_local", "persist_role"}
+                        "model", "credential_profile_id", "use_local", "persist_role", "values"}
     decisions = (pathlib.Path(__file__).resolve().parent.parent / "web" / "modules" / "decision_types.js").read_text(
         encoding="utf-8"
     )
@@ -731,6 +731,7 @@ def test_decision_comment_limit_and_optional_index_pinned_across_python_and_js()
     assert request_decl
     assert "@property {number=} option_index" in request_decl.group(1)
     assert "@property {string=} comment" in request_decl.group(1)
+    assert "@property {Object=} values" in request_decl.group(1)  # a card press's optional form values
 
     # The settled quiz card replayed from history carries the recorded answer:
     # the chosen index when there was one, and the owner's verbatim words —

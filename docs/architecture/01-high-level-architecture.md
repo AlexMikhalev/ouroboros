@@ -8,6 +8,9 @@ launcher.py spawns server.py (Starlette+uvicorn) — HTTP + WebSocket on configu
 web/ — Web UI, a SPA of ES modules; chapter 3 owns the pages and the modules not listed here (§3)
   ui.css — the shared palette/control stylesheet of the SPA, onboarding and author pages (§3 Navigation)
   modules/ — browser modules (§3)
+    media_capture.js — One page audio lease, device replacement and lifecycle release
+    speech_providers.js, voice_recorder.js, dictation.js — The page's speech hub and strict selection, bounded Opus/AAC/WAV recording, cancellable transcription and draft-insertion decisions
+    voice_controls.js, dictation_chooser.js, read_aloud.js — The composer's dictation mic, "+" → Add dictation…, Read aloud on replies (DESIGN "Voice controls")
     ui_primitives.js — safe-field, escaping and tone/status helpers (§3 Navigation)
     i18n.js, settings_language.js, ui_i18n_types.js — interface language: a DOM overlay over rendered chrome from the translation memory, translated at the producer; chat prose, logs, code and owner names are never walked (§3 Settings; §7 `OUROBOROS_UI_LANGUAGE`)
     page_header.js, ui_interactions.js, scroll_fade.js — header/tab strip and the segmented-choice generator; dialog, menu and popup binders; scroll-edge fade (§3 Navigation)
@@ -17,7 +20,10 @@ web/ — Web UI, a SPA of ES modules; chapter 3 owns the pages and the modules n
     welcome_preference.js, host_notice_text.js — Main's empty state from the hidden `welcome` preference; known host sentences without the leading pictograph (DESIGN "Chat authorship and System rows")
     project_answer.js — Main's Project lifecycle rows and folded mirrored answers (§3 Main rows)
     work_portal.js, task_episodes.js, project_handoff.js — one Main card per work: the portal and its binding sources, Continue episodes, the binding receipt's words (§3 Project handoff receipts)
-    chat_reply.js, chat_reply_quote.js, chat_row_menu.js, routing_receipt.js, text_fit.js — replies and host-derived quotes, the row menu, the owner message's routing receipt line, word-cut fitting (§3 Chat and Projects; DESIGN "Replies")
+    chat_reply.js, chat_reply_quote.js, chat_row_menu.js, message_actions.js, routing_receipt.js, text_fit.js — replies and host-derived quotes, the row menu, saved-row actions, the owner message's routing receipt line, word-cut fitting (§3 Chat and Projects; DESIGN "Replies")
+    composer.js — a room's composer: "+" menu, slots, Send (§3)
+    chat_cards.js, card_components.js, card_frames.js — living cards in the feed and kept on Widgets; the sandboxed app frame (CLIENT_CONTRACT §5)
+    contributions.js, composer_plus.js, composer_chips.js, host_modules.js — the contributions store and verbs; skills' "+" items and capsule-row chips; trusted page modules and their recovery (CLIENT_CONTRACT §11; DESIGN "Skills in the page")
     project_reference.js — the one Project pointer control and the only raiser of `ouro:open-project` (DESIGN "References and actions")
     project_activity.js, work_status.js, work_types.js — Project dots and room words from the server's `rooms`/`works`; their typedefs (§3 Liveness census)
     room_work.js, project_read_state.js — a room's header work list without execution authority; its read receipt (§3 Project rooms)
@@ -32,7 +38,8 @@ web/ — Web UI, a SPA of ES modules; chapter 3 owns the pages and the modules n
     review_command.js — `/review` chooser and send (§3 Chat and Projects)
     review_presentation.js, plan_record_presentation.js, review_record_card.js, review_dom_patch.js, harness_presentation.js — read-side Review Checkpoint grouping, a review record's panel and reviewer lines, keyed DOM patching, the sole owner of harness identity markup (§3 Child cards and executor presentation)
     acceptance_incident_presentation.js — a stored task-acceptance incident, read-only; no reviewer authority (§6 Result review)
-    widgets.js, widget_module.js, widget_frame.js, widget_card.js, widget_reorder.js, widget_list.js, widget_size.js, widget_chart.js, widget_job.js, masonry.js — Widgets page leaves: host and card registry, framed mounts, card chrome, list-request policy, helpers and masonry (§3)
+    widgets.js, widget_render.js, widget_module.js, widget_frame.js, widget_card.js, widget_reorder.js, widget_list.js, widget_size.js, widget_chart.js, widget_job.js, masonry.js — Widgets page leaves: host and card registry, the declarative renderer, framed mounts, card chrome, list-request policy, helpers and masonry (§3)
+skills/browser_speech/, skills/device_voice/, skills/templates/ — built-ins (`skills/builtin.json`): speech engines (ui/stt.js, ui/tts.js) and the "+" starters
 supervisor/ — background thread inside server.py (§5)
   active_activity.py — process-local direct actors/call observations for `/api/state`; private reply expectation/handoff facts, no spurious queue rows (§3 Direct turns and the activity block)
   message_bus.py — local message bus for the Web UI and transport skills; re-exports the ingress names
@@ -64,6 +71,7 @@ supervisor/ — background thread inside server.py (§5)
   evolution_lifecycle.py — evolution campaign state and cycle lifecycle (§6 Background consciousness)
   events.py, event_observation.py — worker→supervisor dispatch and the pending idle-input index; `main_llm_call_state` binds the active attempt/round/call
   subagent_task_truth.py — delegation-truth enrichment of the subagent `task_done` frame (§11.1)
+  card_delivery.py — a card's chat row, `card`/`card_state` frames, `chat.card` and the `chat.outbound` fallback text
   event_taxonomy.py, events_budget.py, events_chat_delivery.py, events_coop_checkpoint.py, events_evolution_done.py, events_mind_controls.py, events_project_routing.py, events_runtime_controls.py, events_schedule_task.py, events_subagent_admission.py, events_task_done.py, events_worker_reports.py — `EVENT_HANDLERS` leaves, one event family each; `event_taxonomy.py` declares each `EVENT_Q` disposition; `events_project_routing.py` alone writes routing refusals (§5)
   task_dispatch.py, workspace_preparation.py — admitted worker payload; off-loop preparation with durable phases (§5)
   log_addressing.py — audience of task-scoped log events: project binding wins, chat id 0 is `HIDDEN_CHAT_ID`, A2A frames are dropped at the `push_log` choke (§4 WebSocket protocol; §12)
@@ -139,6 +147,7 @@ ouroboros/ — agent core and shared runtime (§6)
   owner_hurry.py — owner "hurry": a typed task-local latch, never a chat message, written on its own keys, as `write_task_result`'s status-regression guard could drop concurrent terminal fields (§5)
   question_answers.py, room_reader.py — answer delivery (asker, admitted successor, fresh head) and the room's sole live reader (§5 Bridge intake)
   owner_quiz.py — canonical questions: answer/close first-winner, publication address, retained delivery debt, terminal reconcile of paired `owner_wait` (§3, §11.1)
+  card_store.py — living cards (`show_card`): `state/cards` records with recorded presses, content-addressed apps, Widgets pins (§4)
   owner_wait.py — cognition serialization, native waits, acknowledged restart handoffs (§5, §6)
   model_sleep.py, model_detach.py, sleep_custody.py — warm/cold sleep, same-id `continue_in_background` and body acceptance (§6 The model's own sleep)
   task_carrier.py — actual attempt ownership, separate from historical direct-chat origin (§5)
@@ -298,6 +307,7 @@ ouroboros/ — agent core and shared runtime (§6)
   launcher_background.py — Desktop background mode: close vs quit, the one consent question, second-launch activation (§9); `DesktopApi`, the alert half the bridge's `MainApi` inherits (§3)
   launcher_appearance.py, launcher_window_chrome.py — Windows caption tint; macOS per-document title bar and appearance (§3)
   launcher_tray.py, launcher_tray_macos.py — Windows notification-area icon; macOS menu-bar item, Dock reopen, quit marking (§9)
+  desktop_media.py — GTK display probe and own-loopback audio permission grant; other shells keep native prompts
   desktop_notifications.py — Desktop system notifications, one adapter per platform; submitted/unknown/typed refusal, click token back to the page (§3; DESIGN §9)
   desktop_autostart.py, windows_autostart.py — Host sign-in adapter table: Windows registry, macOS LaunchAgent, Linux systemd/XDG state (Runtime topology below)
   plan_intention_ledger.py — An ask's `intention` review-ledger record; never a verdict
@@ -332,7 +342,8 @@ ouroboros/ — agent core and shared runtime (§6)
   extension_loader.py — Extension loading: in-process pure-Python via `PluginAPIImpl`, child-process proxies for isolated-dep and native extensions (§13)
   extension_process_runner.py — Extension child processes: scrubbed env, per-skill deps, timeouts, graceful host errors
   extension_route_stream.py — Portable stdio response frames and ASGI relay for out-of-process extension routes (§3 Out-of-process extension responses)
-  extension_ui_validation.py — The host-owned declarative-schema-v1 widget validator
+  extension_ui_validation.py — The host-owned declarative-schema-v1 widget and contribution validator
+  extension_contributions.py — Manifest staging, captured host assets and revision URLs
   extension_isolated_deps.py — non-reentrant reader/writer leases for `sys.path`; the dependency RLock serializes importer-cache sweeps, not plugin execution
   extension_health.py — Durable process-qualified per-skill health at `data/state/skills/<name>/health.json`; server observation is authoritative, worker observation a handoff-qualified view
   extension_plugin_api.py, extension_registry_state.py, extension_liveness.py, extension_child_catalog.py, extension_import_staging.py, extension_surface_names.py — the extension runtime's leaves: the `PluginAPI`, live-surface registries, liveness, child-catalog validation, staged import trees, surface naming
@@ -393,7 +404,7 @@ ouroboros/ — agent core and shared runtime (§6)
   gateway/ — Gateway Boundary v1 (below): browser-facing route ownership and the frontend contract SSOT
     contracts.py — Active WS/HTTP envelope contract owner
     reference_contracts.py — stored-row identity (`row_address`, `reply_to`) shared by live chat and attachment frames
-    decision_contracts.py, history_contracts.py, attachment_contracts.py, schedule_contracts.py, health_contracts.py — Typed leaves re-exported by contracts.py: decisions, paged Chat, attachments, schedules, health; each ingress owns validation
+    decision_contracts.py, history_contracts.py, attachment_contracts.py, schedule_contracts.py, health_contracts.py, card_contracts.py, update_contracts.py — Typed leaves re-exported by contracts.py: decisions, paged Chat, attachments, schedules, health, living cards, updates; each ingress owns validation
     ui_i18n_contracts.py, model_route_contracts.py, mcp_import_contracts.py, client_contracts.py, management_contracts.py — Language, model-route, MCP import, client and management envelopes; browser twins: §11
     endpoint_index.py — `HTTP_ENDPOINTS` index, re-exported by contracts.py, and its `HTTP_SHAPES`/`WS_SHAPES` bindings; routers own the Route objects
     schema.py — Executable gateway contract: JSON Schema derived from the TypedDicts, validating ingress; `contract_document`: `GET /api/contract`
@@ -409,7 +420,8 @@ ouroboros/ — agent core and shared runtime (§6)
     task_continue.py — POST owner Continue `{action_nonce}`; one nonce answers one admission (owner_continue.py; §6 Owner Continue)
     main_decisions.py — Main's current questions and human-required controls, gaps explicit (§3)
     work_status.py, work_projection.py, work_contracts.py — one status per work and room in `/api/state` (§3 Liveness census)
-    task_decision.py — The one `POST /api/decisions` ingress with family-parsed ids (`quiz:` here, `routing:` → routing_decision.py, `interaction:` reserved); writes `KIND_QUIZ_ANSWER` (owner_quiz.py; §11.1)
+    task_decision.py — The one `POST /api/decisions` ingress with family-parsed ids (`quiz:` here, `routing:` → routing_decision.py, `card:` → card_decision.py, `interaction:` reserved); writes `KIND_QUIZ_ANSWER` (owner_quiz.py; §11.1)
+    cards.py, card_decision.py — `/api/cards/*` reads (apps as inert text) and pins; a press is recorded, then mailed as `KIND_CARD_INPUT` or sent as the owner's message
     task_model_wait.py — Shared model-wait decision effects over the existing mailbox, with live-owner/revision checks
     routing_decision.py — Resolves a click on a persisted `needs_manual_target` card (no new ones are produced), recovers the original text, dispatches the internal steer/promote events, confirms through routing_wait receipts
     logs.py — Read-only runtime log tail; storage.py — Storage routes
@@ -424,12 +436,13 @@ ouroboros/ — agent core and shared runtime (§6)
     update_progress.py — Process-local stages owned by the synchronous update executor; status projection and WS invalidation, never recovery authority
     schedules.py — Cron schedule HTTP surface
     files.py — File Browser and chat upload
-    ui_preferences.py — `state/ui_preferences.json`: widget order and widths, per-card start modes (`extension_ui_validation.WIDGET_START_MODES`), nested subagent expansion, the empty-Main `welcome` copy
+    ui_preferences.py — Install-wide `state/ui_preferences.json`: widgets, layout, welcome, voice choice and contribution arrangement
     ui_i18n.py — `GET/POST /api/ui/i18n*`: interface language and translation memory (i18n_memory.py); the language POST is a locked owner-settings write of `OUROBOROS_UI_LANGUAGE`
     models.py — Model catalog, provider probes, local-model lifecycle
     extensions.py — Extensions/skills HTTP surface (routes: §4)
+    contributions.py — Live contributions, offers, voice availability, captured assets and UI preference types (CLIENT_CONTRACT §11)
     extension_receipts.py — Process-qualified extension index/toggle/reconcile receipt projection
-    widgets.py — GET /api/widgets: the Widgets card list from the in-memory extension snapshot; no discovery, reconcile, hashing or writes on the read path; homes the widget TypedDicts
+    widgets.py — GET /api/widgets: the Widgets card list from the in-memory extension snapshot plus pinned cards; no discovery, reconcile, hashing or writes on the read path; homes the widget TypedDicts
     skill_publish.py — Read-only publish preflight with scan cache; one five-state response; no task or GitHub effect (§6 Skill publication)
     marketplace.py, skill_sources.py, skill_my_skills.py — ClawHub; sources, catalog, installs; My skills
     skill_source_contracts.py — Source/catalog/install envelopes; browser twin skill_source_contract_types.js
@@ -440,14 +453,15 @@ ouroboros/ — agent core and shared runtime (§6)
     harness_maintenance.py — Owner maintenance HTTP surface over the shared host service (§6 Vendor program maintenance; routes: §4)
     host_service.py — Loopback-only Host Service API (§12)
     host_notify.py — POST /notify beside the Host Service: a granted skill's sentence becomes one signed `skill_notice` System row in the owner's chat (§12)
-    history.py — Shared Chat room/quiz/media/review/terminal projection and cost-breakdown factories
+    history.py, history_deliveries.py — Shared Chat room/quiz/media/review/terminal projection and cost-breakdown factories; delivery rows' `msg_type`
     history_paging.py — a room's own pages over the dialogue store, frozen room-bound cursors, gaps, the import frontier, a Project's `latest_arrival`; no stored history copy (§3 History reads and the SSE v2 transport)
     cost_breakdown.py — Ledger-derived dashboard buckets and root-task detail over the same physical-attempt authority
     projects.py — GET/POST /api/projects, /from-task, /update, /delete
     _helpers.py — Shared request-root/coercion/JSON error envelope and `run_sync_to_completion`, the settled worker wait for request-owned blocking work
   tools/ — Auto-discovered tool plugins
     registry.py — Tool registry SSOT: loads tool modules, exposes schemas, executes safely; owns the shell-guard/process-tool membership sets
-    core.py — File/data tools (read_file, list_files, write_file, edit_text), delivery tools (send_photo, send_video, send_file, send_links), search_code, escalate, forward_to_worker
+    core.py — File/data tools (read_file, list_files, write_file, edit_text), delivery tools (send_photo, send_video, send_file, send_links, show_card), search_code, escalate, forward_to_worker
+    cards.py — `show_card`: a validated card body, stored before its `send_card` event
     core_file_tools.py, core_secret_paths.py, core_artifacts.py — File reads/lists; delegated action/runtime helpers; human artifact delivery (§6 Credential mutation and diagnostic redaction)
     shell.py — Process tools `run_command`/`run_script` (§9)
     shell_guards.py — Shared process-path inspection helpers and target extractors; process admission is owned by registry_guard_process.py (§6)

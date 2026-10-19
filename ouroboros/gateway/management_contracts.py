@@ -10,6 +10,7 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional, Union
 
 from ouroboros.gateway.widgets import ExtensionLiveSnapshot
+from ouroboros.gateway.contributions import UiContributionsResponse
 
 try:  # Python 3.11+
     from typing import Literal, NotRequired, Required, TypedDict  # type: ignore[attr-defined]
@@ -74,7 +75,7 @@ class InstalledSkill(TypedDict, total=False):
     category: List[str]  # the source's category ids for this skill, [] when it has none
 
 
-class ExtensionsIndexResponse(TypedDict):
+class ExtensionsIndexResponse(UiContributionsResponse):
     """``GET /api/extensions``: every installed skill and what the extension loader has live.
     A passive read: no network, no repair."""
 

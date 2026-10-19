@@ -993,6 +993,26 @@ export function initSkills(ctx = {}) {
     container.addEventListener('submit', onSubmit);
     container.addEventListener('toggle', onToggle, true);
     window.addEventListener('ouro:page-shown', onPageShown);
+
+    // Another surface asks for one installed skill's entry ({skill}) or a Browse search ({query}): the dictation
+    // chooser's engines (dictation_chooser.js).
+    const onOpenSkills = async (event) => {
+        const { skill = '', query = '' } = event?.detail || {};
+        closeMenus();
+        if (!await ctx.showPage?.('skills')) return;
+        if (!skill) { selectTab('browse'); await browse?.searchFor(query); return; }
+        selectTab('installed');
+        const found = () => container.querySelector(`.skills-card[data-skill="${CSS.escape(skill)}"]`);
+        if (found()) return found().scrollIntoView({ block: 'nearest' });
+        const observer = new MutationObserver(() => {
+            if (!found()) return;
+            observer.disconnect();
+            found().scrollIntoView({ block: 'nearest' });
+        });
+        observer.observe(document.getElementById('page-skills'), { childList: true, subtree: true });
+        setTimeout(() => observer.disconnect(), 10000);  // an entry that never comes leaves the page as it is
+    };
+    window.addEventListener('ouro:open-skills', onOpenSkills);
     paintFilters(null);
 
     return { destroy() {
@@ -1014,5 +1034,6 @@ export function initSkills(ctx = {}) {
         container.removeEventListener('submit', onSubmit);
         container.removeEventListener('toggle', onToggle, true);
         window.removeEventListener('ouro:page-shown', onPageShown);
+        window.removeEventListener('ouro:open-skills', onOpenSkills);
     } };
 }
