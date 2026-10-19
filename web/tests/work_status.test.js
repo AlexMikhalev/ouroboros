@@ -11,7 +11,7 @@ import {
     ACTION_FINALIZE, ACTION_HURRY, ACTION_PAUSE, ACTION_RESUME, ACTION_STOP_EARLIER, ACTION_STOP_NOW,
     TASK_CONTROL_LABELS, requestStopAll,
 } from '../modules/task_control_menu.js';
-import { pausePhaseLabel, taskActivityPresentation } from '../modules/task_phase_chip.js';
+import { desiredLiveCardPhase, pausePhaseLabel, taskActivityPresentation } from '../modules/task_phase_chip.js';
 import { markView } from '../modules/status_mark.js';
 import {
     OUTCOME_TONES, activityWord, applyCardWorkViews, cardControls, cardMenuActions, cardWorkView, emptyWorkState,
@@ -191,7 +191,7 @@ test('a held Continue with three helpers of its failed earlier attempt: one work
     assert.deepEqual([card.resume, card.menu, Boolean(card.work)], [false, true, true]);
     assert.deepEqual(cardWorkView(state.works[0]), { phase: 'working', text: 'Working',
         secondary: 'Continue starts when 3 helpers of the earlier attempt finish', classes: 'working',
-        motion: true, waiting: false });
+        tone: 'live', waiting: false });
     // A count says itself the same from one helper to eighteen; the structure does not change.
     const many = { ...state.works[0], because: [{ code: 'earlier_attempt_finishing', count: 18,
         text: 'Continue starts when 18 helpers of the earlier attempt finish' }] };
@@ -368,7 +368,7 @@ test('a work card says its work\'s word and short reason; plain running, finaliz
     assert.equal(view('sleeping').text, 'Waiting · sleeping');
     assert.deepEqual([view('model_access').text, view('model_access').secondary],
         ['Waiting', 'The model needs you: sign in or restore access']);
-    assert.deepEqual([view('queued_and_pausing', 0).text, view('queued_and_pausing', 0).motion], ['Pausing… · by you', false]);
+    assert.deepEqual([view('queued_and_pausing', 0).text, view('queued_and_pausing', 0).tone], ['Pausing… · by you', 'neutral']);
     assert.equal(view('working_call'), null, 'its own model-call words already say Sending');
     assert.equal(view('finalizing_failed'), null, 'its outcome beside Finalizing… is its own');
     assert.equal(view('unknown'), null);
@@ -381,8 +381,38 @@ test('a work card says its work\'s word and short reason; plain running, finaliz
     const records = new Map([['o', { groupId: 'o' }], ['child', { groupId: 'o', isSubagent: true }]]);
     assert.equal(applyCardWorkViews(records, stateOf('paused_by_owner')), true);
     assert.equal(records.get('o').workView.text, 'Paused · by you');
+    assert.deepEqual(records.get('o').workLook, { mark: 'pause', owner: false }, 'the work\'s own shape, nobody\'s move');
     assert.equal(records.get('child').workView, undefined, 'a helper card keeps its own presenter');
     assert.equal(applyCardWorkViews(records, stateOf('paused_by_owner')), false, 'an equal view is no change');
+});
+
+// The work's look reaches its card apart from the word: a running parent whose helper waits for the owner keeps
+// its own live word with the owner's amber dot (the server takes the turn from every member), and the look survives
+// the card's outcome, its record adapter and its painter (docs/DESIGN.md "Status marks").
+test('a work card keeps its work\'s look beside its own words: the owner\'s dot reaches a running parent', () => {
+    const parent = structuredClone(CASES.working_call.works[0]);
+    assert.equal(cardWorkView(parent), null, 'plain running work keeps the card\'s own words');
+    parent.turn = [{ kind: 'question', task_id: 'helper', quiz_id: 'q1' }];
+    const body = { supervisor_ready: true, works_complete: true, works: [parent], rooms: {} };
+    const state = reconcileWorkState(emptyWorkState(), body, 42);
+    const record = { groupId: parent.episode.task_id };
+    assert.equal(applyCardWorkViews(new Map([['w', record]]), state), true);
+    assert.deepEqual([record.workView, record.workLook], [null, { mark: 'moving', owner: true }]);
+    const view = desiredLiveCardPhase(record);
+    assert.deepEqual([view.text, view.tone, view.owner, view.mark], ['Working', 'live', true, 'moving']);
+    // The outcome owns the chip while its work finalizes; the owner's move stays its dot.
+    const late = desiredLiveCardPhase({ ...record, finalizingHold: true, observedOutcome: 'done' });
+    assert.deepEqual([late.text, late.tone, late.owner, late.secondary], ['Done', 'ok', true, 'Finalizing…']);
+    // The work's own word that is the owner's move takes the amber body too.
+    const limit = structuredClone(CASES.spending_limit.works[0]);
+    const waits = { ...record, workView: cardWorkView(limit), workLook: { mark: limit.mark, owner: limit.turn.length > 0 } };
+    assert.deepEqual([desiredLiveCardPhase(waits).text, desiredLiveCardPhase(waits).tone, desiredLiveCardPhase(waits).owner],
+        ['Paused · spending limit', 'owner', true]);
+    // Unconfirmed work proves nothing: no look, so the card's own words and shape stand.
+    const kept = reconcileWorkState(state, { supervisor_ready: true, works_complete: false, works: [], rooms: {} }, 42);
+    applyCardWorkViews(new Map([['w', record]]), kept);
+    assert.deepEqual([record.workView, record.workLook], [null, null]);
+    assert.equal(desiredLiveCardPhase(record).owner, false);
 });
 
 test('the census pause words are the short reason words, and only the projection may say who paused', () => {

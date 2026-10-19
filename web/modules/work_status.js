@@ -209,7 +209,8 @@ export function workQuestion(work) {
 /**
  * What the card of a work's current episode says (one work, one status): the work's word with its short
  * reason in the chip, or its reason sentence beside it. Plain running work, finalizing work (its outcome beside
- * Finalizing…) and unconfirmed work keep the card's own words; so does a card whose episode is not live.
+ * Finalizing…) and unconfirmed work keep the card's own words; so does a card whose episode is not live. The word
+ * is the live one only while the work plainly runs; its mark is the work's own (applyCardWorkViews keeps it).
  */
 export function cardWorkView(work) {
     if (!work || !work.confirmed || !work.episode?.live || work.activity === 'unknown' || work.transition === 'finalizing') return null;
@@ -221,22 +222,30 @@ export function cardWorkView(work) {
         .filter(Boolean).join(' · ');
     const sentence = first && !shortReason(first.code) ? reasonBesideWord(first, activityWord(work)) : '';
     const running = work.activity === 'working';
-    const tone = list(work.turn).length ? 'warn' : running ? (work.transition === 'pausing' ? 'working waiting' : 'working')
+    const classes = list(work.turn).length ? 'warn' : running ? (work.transition === 'pausing' ? 'working waiting' : 'working')
         : work.activity;
     return {
-        phase: running ? 'working' : work.activity, text: word, secondary: sentence, classes: tone,
-        motion: running && work.transition === 'none', waiting: !running || work.transition !== 'none',
+        phase: running ? 'working' : work.activity, text: word, secondary: sentence, classes,
+        tone: running && work.transition === 'none' ? 'live' : 'neutral', waiting: !running || work.transition !== 'none',
     };
 }
 
-/** Every card's work view from one state; true when a card's view changed (its chip repaints with its next write). */
+/**
+ * Every card's work view from one state; true when a card's view changed (its chip repaints with its next write).
+ * Apart from the optional word, a confirmed work's live current episode keeps the work's look: its mark and
+ * whether something in it waits for the owner (the server takes the turn from every member, a helper's included).
+ */
 export function applyCardWorkViews(records, state) {
     let changed = false;
     for (const record of records?.values?.() || []) {
         if (record?.isSubagent) continue;
-        const view = cardWorkView(state?.episodes?.get(String(record.groupId || '')));
-        if (JSON.stringify(view) !== JSON.stringify(record.workView || null)) changed = true;
+        const work = state?.episodes?.get(String(record.groupId || ''));
+        const view = cardWorkView(work);
+        const look = work?.confirmed && work.episode?.live ? { mark: String(work.mark || 'none'), owner: list(work.turn).length > 0 }
+            : null;
+        if (JSON.stringify([view, look]) !== JSON.stringify([record.workView || null, record.workLook || null])) changed = true;
         record.workView = view;
+        record.workLook = look;
     }
     return changed;
 }

@@ -36,9 +36,6 @@
     outline: 2px solid var(--focus-accent-border);
     outline-offset: 2px;
 }
-.chat-live-phase.waiting { color: var(--status-warn-fg); background: var(--status-warn-bg); }
-.chat-live-card[data-model-waiting="1"]:not([data-finished="1"]) .chat-live-phase { animation: none; }
-.chat-live-card[data-model-waiting="1"] > .chat-live-summary-button .chat-live-typing { display: none; }
 /* The recovery rows carry the current activity. Preserve any real narration,
    but fold the otherwise empty running-card reserve during a wait. */
 .chat-live-card[data-model-waiting="1"]:not([data-expanded="1"]) > .chat-live-summary-button .chat-live-activity:empty,

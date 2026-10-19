@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { activeModelWaits, createModelWaitController, isModelWaitReference, MODEL_WAIT_REASONS, mergeModelWaits, modelWaitAction, modelWaitRoleLabel, unsavedPersistenceNotice } from '../modules/model_wait.js';
 import { desiredLiveCardPhase } from '../modules/task_phase_chip.js';
 import { emptyWorkState, roomStatusView } from '../modules/work_status.js';
+import { installDom, restoreDom } from './chat_dom_fixture.js';
 import { room } from './work_fixture.js';
 
 const row = (patch = {}) => ({ wait_id: 'wait-light', revision: 1, task_attempt: 1,
@@ -131,6 +132,36 @@ test('waiting has no computation animation and yields to real work and terminal 
     assert.equal(desiredLiveCardPhase({ modelWaiting: true }).text, 'Waiting for access');
     assert.equal(desiredLiveCardPhase({ modelWaiting: true, cancelPendingPolicy: 'immediate' }).text, 'Cancelling…');
     assert.equal(desiredLiveCardPhase({ modelWaiting: true, finished: true }, 'done').text, 'Done');
+});
+
+// A wait that resumes by itself is a neutral chip with still dots; one only the owner can end (sign-in, automatic
+// continuation off, unobservable access, an unproven account: the host's `requires_owner_action`) is his move, amber.
+// A parked task runs no wait loop, so its old waits ask nothing of the owner (gateway/main_decisions.owner_actions).
+test('only a wait that needs the owner turns the card amber, and a parked card ignores its old waits', () => {
+    const look = (record) => { const view = desiredLiveCardPhase(record); return [view.text, view.tone, view.owner, view.mark]; };
+    assert.deepEqual(look({ modelWaiting: true }), ['Waiting for access', 'neutral', false, 'still']);
+    assert.deepEqual(look({ modelWaiting: true, modelOwnerAction: true }), ['Waiting for access', 'owner', true, 'still']);
+    assert.deepEqual(look({ modelWaiting: false, modelOwnerAction: true }), ['Working', 'live', false, 'moving']);
+    assert.deepEqual(look({ modelWaiting: true, modelOwnerAction: true, parkedPhase: 'budget_paused' }),
+        ['Paused', 'neutral', false, 'pause']);
+});
+
+test('the controller tells its card whether an admitted wait needs the owner, from the host\'s own fact', (t) => {
+    const env = installDom();
+    t.after(() => restoreDom(env.prior));
+    const root = document.createElement('div');
+    const timelineEl = document.createElement('div');
+    root.append(timelineEl);
+    const record = { root, timelineEl, phaseEl: document.createElement('span'), finished: false };
+    const controller = createModelWaitController({ getRecord: () => record });
+    t.after(() => controller.destroy());
+    const tone = () => [record.modelWaiting, record.modelOwnerAction, record.phaseEl.dataset.chipTone];
+    controller.observe('task', { model_waits: { 'wait-light': row() } });
+    assert.deepEqual(tone(), [true, false, 'neutral']);
+    controller.observe('task', { model_waits: { 'wait-light': row({ revision: 2, auto_continue: false, requires_owner_action: true }) } });
+    assert.deepEqual(tone(), [true, true, 'owner']);
+    controller.observe('task', { model_waits: { 'wait-light': row({ revision: 3, state: 'resolved' }) } });
+    assert.deepEqual(tone(), [false, false, 'live']);
 });
 
 test('a requested Settings save that did not land is told only once its wait resolved', () => {

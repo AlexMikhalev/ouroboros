@@ -82,7 +82,9 @@ def test_model_phase_card_header_reconnect_and_terminal(project_chat, chat_id, t
             details(exact)
 
     show("queued", "Queued", "Request accepted · waiting for admission")
-    expect(chip).to_have_attribute("data-motion", "0")
+    # A call waiting for admission goes on by itself: still dots on a neutral chip (status marks).
+    expect(chip.locator(":scope > .status-mark")).to_have_attribute("data-shape", "still")
+    expect(chip).to_have_attribute("data-chip-tone", "neutral")
     pausing = {"activity_id": "settling-other", "chat_id": chat_id, "kind": "managed_task", "phase": "budget_pausing"}
     ui["state"]["active_chat_activities"].append(pausing)
     page.evaluate("state => window.chat.hydrateStateSnapshot(state)", with_work_fields(ui["state"]))
@@ -121,6 +123,9 @@ def test_model_phase_card_header_reconnect_and_terminal(project_chat, chat_id, t
     # width, a phone and a narrower phone; details opened show the exact phase and cost reason.
     for width in (1100, 390, 320):
         page.set_viewport_size({"width": width, "height": 722})
+        # WebKit switches the shell on its media-query change after the resize: measure the shell the width settles in.
+        page.wait_for_function("w => document.documentElement.dataset.layout"
+                               " === (w >= window.ouroLayout.dockedMinWidth ? 'docked' : 'stack')", arg=width)
         expect(title).to_be_visible()
         assert title.evaluate("el => el.getBoundingClientRect().width >= 120"), f"title squeezed at {width}px"
         assert chip.evaluate("el => el.getBoundingClientRect().width < 140"), f"chip crowds the title at {width}px"
@@ -135,7 +140,7 @@ def test_model_phase_card_header_reconnect_and_terminal(project_chat, chat_id, t
         disclosure.click()
     page.set_viewport_size({"width": ui["width"], "height": 850})
     show("rejoining", "Rejoining", "Rejoining the same model operation")
-    expect(chip).to_have_attribute("data-motion", "0")
+    expect(chip.locator(":scope > .status-mark")).to_have_attribute("data-shape", "still")
     show("response_ready", "Working", "Response available")
     show("response_received", "Working", "Response received · processing")
     stale = deepcopy(ui["state"])
@@ -146,5 +151,6 @@ def test_model_phase_card_header_reconnect_and_terminal(project_chat, chat_id, t
     page.evaluate("state => window.chat.hydrateStateSnapshot(state)", with_work_fields(stale))
     expect(chip).to_have_text("Done")
     assert phase_detail.text_content() == "", "a stale model observation never survives the terminal"
-    expect(chip).to_have_attribute("data-motion", "0")
+    expect(chip.locator(":scope > .status-mark")).to_have_attribute("data-shape", "dot")
+    expect(chip).to_have_attribute("data-chip-tone", "ok")
     page.screenshot(path=str(_evidence_dir(tmp_path) / f"phase-terminal-{suffix}.png"), animations="disabled")

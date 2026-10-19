@@ -80,9 +80,10 @@ try {
         instance.hydrateStateSnapshot({...body, active_chat_activities_complete: true, supervisor_ready: true},
             Infinity, generation + 1);
         const card = walkCard(document.byId.get('chat-messages'), task);
+        const mark = card.querySelector('[data-live-phase]').firstElementChild;
         return {phase: card.querySelector('[data-live-phase]').textContent,
             resume: Boolean(find(card, '[data-resume-run]')),
-            typing: card.querySelector('[data-live-typing]').style.display};
+            mark: mark.hidden ? 'none' : `${mark.dataset.shape}/${mark.dataset.hue}`};
     });
     process.stdout.write(JSON.stringify(results));
 } finally {instance.destroy(); restoreDom(env.prior);}
@@ -139,11 +140,12 @@ def test_warm_owner_pause_registry_and_fence_reach_the_rendered_card(tmp_path, m
     finally:
         registry.clear()
     # The card of the work's current episode says the work's word and who paused; Resume is its work's control.
+    # Its status mark is the server's: the owner's own Pause stands as its bars in ink, never his move.
     assert _js_pause_cards(samples) == [
-        {"phase": "Paused · by you · review work finishing", "resume": True, "typing": "none"},
-        {"phase": "Paused · by you", "resume": True, "typing": "none"},
+        {"phase": "Paused · by you · review work finishing", "resume": True, "mark": "pause/ink"},
+        {"phase": "Paused · by you", "resume": True, "mark": "pause/ink"},
         # A resumed direct turn reads its own census phase (``preparing``), a managed task ``working``.
-        {"phase": "Preparing" if kind == "direct_chat" else "Working", "resume": False, "typing": ""},
+        {"phase": "Preparing" if kind == "direct_chat" else "Working", "resume": False, "mark": "moving/ink"},
     ]
 
 
