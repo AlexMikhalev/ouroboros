@@ -132,7 +132,11 @@ WAL every open connection also holds locks on the `-shm` index, so these readers
 refuse a WAL index before opening it (`store.is_wal_index`, `WalIndexRefused`;
 the Files panel answers 403), a folder copy leaves it out (the copy rebuilds its
 own from the copied `-wal`, which carries no lock) and search skips SQLite's
-journal and WAL files. The connection, tier,
+journal and WAL files. Under WAL a download or copy of a live store's database
+file holds its state as of the last checkpoint (newer commits are still in its
+`-wal`, which a folder copy takes along, but at another moment), so an exact copy
+is one taken after Ouroboros stops, when its last close has checkpointed the log
+into the file. The connection, tier,
 file-identity and transaction core is `ouroboros/store.py`, shared with the
 current-facts store; `usage_store` keeps the money error vocabulary over it.
 
