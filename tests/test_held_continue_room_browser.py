@@ -33,9 +33,9 @@ def test_held_continue_with_three_helpers_is_one_working_row_with_stop_earlier_a
     rw.open_project(page, rw.PROJECT)
     transport.refresh()
 
-    # The room works: its word in the bar, never amber, and the sidebar's three dots move.
+    # The room works: its word in the bar beside its moving mark, never amber, and the sidebar's three dots move.
     closed = rw.wait_facts(page, "project", lambda f: f["badge"] == "Working" and not f["disabled"], "the room working")
-    assert closed["tone"] == "live" and not closed["amber"], closed
+    assert (closed["tone"], closed["mark"]) == ("live", "moving ink"), closed
     page.wait_for_function("(selector) => document.querySelector(selector)?.dataset.state === 'working'", arg=MARKER)
     marker = page.locator(MARKER)
     assert (marker.get_attribute("data-motion"), marker.get_attribute("data-amber")) == ("1", "0")
