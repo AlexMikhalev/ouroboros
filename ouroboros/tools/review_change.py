@@ -568,7 +568,8 @@ def wave_facts(ctx: ToolContext, wave: _Wave, *, outcome: Dict[str, Any], forens
         "blocked": bool(outcome.get("blocked")) and not (
             str(outcome.get("block_reason") or "") == "review_late_result_pending" and not _seats_open(forensic)),
         "block_reason": str(outcome.get("block_reason") or ""),
-        "dispatch_refusal": refusal, "pending": _seats_open(forensic), "degraded_reasons": degraded,
+        "dispatch_refusal": refusal, "pending": _seats_open(forensic), "lost_seat_terminal": True,
+        "degraded_reasons": degraded,
         "critical_findings": critical, "advisory_findings": advisory, "additional_findings": additional,
         "tests": {"policy": "NOT_RUN", "result": "unknown"},
         "preflight": {"status": "not_performed", "record_id": ""},

@@ -584,10 +584,13 @@ def _answered(seat: Dict[str, Any]) -> bool:
     return str(seat.get("status") or "") in ANSWERED_STATUSES
 
 
-def counted_pending(rows: List[Dict[str, Any]], *, pending: bool = False) -> bool:
-    """Physical adviser custody survives, but never keeps the counted wave open."""
-    opened = [row for row in rows if row.get("late_result_pending") or row.get("status") == "pending"
-              or row.get("operation_state") in {"in_flight", "custody_lost", "pending_dispatch"}]
+def counted_pending(rows: List[Dict[str, Any]], *, pending: bool = False, lost_is_terminal: bool = False) -> bool:
+    """Physical adviser custody survives, but never keeps the counted wave open. ``lost_is_terminal`` (a
+    ``review_change`` wave, which no gate holds): a seat whose custody is lost is a failed seat of a settled
+    record (outcome unknown, never re-sent), never open."""
+    opened = [row for row in rows if not (lost_is_terminal and row.get("operation_state") == "custody_lost") and (
+              row.get("late_result_pending") or row.get("status") == "pending"
+              or row.get("operation_state") in {"in_flight", "custody_lost", "pending_dispatch"})]
     return any(not (row.get("additional") or (row.get("review_plan") or {}).get("additional"))
                for row in opened) if opened else pending
 
@@ -1017,7 +1020,7 @@ def build_wave_record(facts: Dict[str, Any], *, surface: str, record_id: str = "
     if drive_root is not None:
         _retain_wave_sources(drive_root, task_id, record_id, rows, structured)
     refusal = facts.get("dispatch_refusal")
-    pending = counted_pending(rows, pending=bool(facts.get("pending")))
+    pending = counted_pending(rows, pending=bool(facts.get("pending")), lost_is_terminal=bool(facts.get("lost_seat_terminal")))
     assigned_rows = [seat for seat in rows if not seat.get("additional")]
     verdict = reduce_verdict(assigned_rows, gate_blocked=bool(facts.get("blocked")),
                              gate_reason=str(facts.get("block_reason") or ""), dispatch_refusal=refusal, pending=pending)
