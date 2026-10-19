@@ -15,7 +15,7 @@ import { bindComposerFileTargets, cleanupUploadedAttachments, createChatMedia, s
 import { attachmentCaption, attachmentViews, composerText, createComposerAttachments, createUnconfirmedSends } from './chat_attachments.js';
 import { createChatDecision } from './chat_decision.js';
 import { createRoomWork } from './room_work.js';
-import { applyCardWorkViews, cardControls, cardMenuActions, emptyWorkState, openCardControls, ownStopPress, reconcileWorkState, roomStatusView } from './work_status.js';
+import { applyCardWorkViews, cardControls, cardMenuActions, changedOffers, emptyWorkState, openCardControls, ownStopPress, reconcileWorkState, roomStatusView } from './work_status.js';
 import { createMainWaiting } from './main_waiting.js';
 import { createHostStart } from './host_starting_status.js';
 import { createModelWaitController, isModelWaitReference } from './model_wait.js';
@@ -607,8 +607,10 @@ export function createChatInstance({
 
     function hydrateStateSnapshot(data, snapshotRequestedAt = Infinity) {
         if (data) void refreshChildProjectHolds();
+        const before = workState;
         workState = reconcileWorkState(workState, data, chatId, ws.isConnected?.() !== false);
         applyCardWorkViews(liveCardRecords, workState);
+        changedOffers(liveCardRecords, before, workState).forEach(syncCancelRunButton);
         syncHeaderControlState(data ?? { accounting: { available: false } });
         portals.sync(data);
         mainWaiting?.snapshot(data, snapshotRequestedAt);

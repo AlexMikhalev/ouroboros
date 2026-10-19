@@ -292,6 +292,16 @@ export function cardControls(state, taskId) {
         menu: Boolean(grouped && workMenuActions(grouped).length) };
 }
 
+/**
+ * The cards whose work offer (`cardControls` menu or resume) differs between two bodies' states. Their Stop… and
+ * Resume are re-synced: a finished card whose work has left the body drops the Stop… an earlier body gave it.
+ */
+export function changedOffers(records, before, after) {
+    const offer = (state, id) => { const controls = cardControls(state, id); return `${controls.menu}|${controls.resume}`; };
+    return [...(records?.values?.() || [])].filter((record) => record?.root
+        && offer(before, record.groupId) !== offer(after, record.groupId));
+}
+
 /** The items a card's Stop… menu offers now: its work's controls, else the card's own task controls. */
 export function cardMenuActions(state, record, activity = null) {
     const { work } = cardControls(state, record?.groupId);

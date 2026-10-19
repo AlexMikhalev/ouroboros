@@ -686,3 +686,34 @@ test('a progress-only root the census omits loses Stop authority at once, then s
         assert.equal(fx.status(), 'Online');
     } finally { fx.instance.destroy(); restoreDom(fx.prior); }
 });
+
+test('a finished card keeps the Stop… of a work the body still lists and drops it with the next body', async () => {
+    const id = 'post-task-tail';
+    const fx = makeInstance({ details: { [id]: { task_id: id, status: 'completed', phase: 'done', ts: '2026-10-19T09:00:05Z' } } });
+    const row = { activity_id: id, chat_id: 1, kind: 'managed_task', phase: 'working' };
+    const listed = work(row, { controls: [{ action: 'stop', target: id }] });
+    // One body; a read the instance makes itself (a terminal's re-read) answers the same.
+    const body = (rows, works) => {
+        fx.state.census = { active_chat_activities: rows, active_chat_activities_complete: true, supervisor_ready: true,
+            ...projection(1, works, works.length ? room('working') : null, true) };
+        fx.instance.hydrateStateSnapshot(fx.state.census, Infinity);
+    };
+    const stop = () => fx.card(id).querySelector('[data-cancel-run]');
+    try {
+        fx.handlers.get('chat')({ chat_id: 1, task_id: id, role: 'assistant', is_progress: true,
+            content: 'Delivering the files', ts: '2026-10-19T09:00:00Z' });
+        body([row], [listed]);
+        assert.ok(stop(), 'a listed work offers its Stop… on its card');
+        fx.handlers.get('log')({ chat_id: 1, data: { type: 'task_done', task_id: id, status: 'completed',
+            ts: '2026-10-19T09:00:05Z' } });
+        await fx.settle();
+        // The census has let the task go while its work (the post-task tail) is still listed.
+        body([], [listed]);
+        await fx.settle();
+        assert.equal(fx.card(id).dataset.finished, '1');
+        assert.ok(stop(), 'the finished card keeps the Stop… of a work the server still lists');
+        body([], []);
+        // A boolean: a failing comparison would otherwise print the whole stub DOM around the button.
+        assert.equal(Boolean(stop()), false, 'the first body without the work takes its Stop… off the finished card');
+    } finally { fx.instance.destroy(); restoreDom(fx.prior); }
+});
