@@ -257,11 +257,13 @@ def _held_elsewhere(database, script):
             holder.wait()
 
 
-def test_an_index_read_opened_before_this_process_connects_leaves_the_connection_its_locks(tmp_path):
+@pytest.mark.parametrize("name", ["current.sqlite", "current-shm"])
+def test_an_index_read_opened_before_this_process_connects_leaves_the_connection_its_locks(tmp_path, name):
     """Who holds the database when a read of its index starts says nothing about when the read's
     descriptor closes: a connection this process makes meanwhile holds the index's locks by then, and
-    the close would drop them (astra's and Opus's probe). By name, the read never opens."""
-    database = tmp_path / "current.sqlite"
+    the close would drop them (astra's and Opus's probe). By name, the read never opens, a database
+    itself named like an index (``current-shm``, its index ``current-shm-shm``) included."""
+    database = tmp_path / name
     with _held_elsewhere(database, _UPDATER) as update:
         try:
             reader = store.open_for_read(database.with_name(database.name + "-shm"))  # before any connection here
@@ -373,6 +375,30 @@ def test_a_base_linked_back_to_its_own_index_name_is_no_index_and_never_recurses
     assert sorted(path.name for path in (tmp_path / "odd-copy").iterdir()) == ["b", "b-shm"]
     _, manifest = capture.write_workspace_patch_artifacts(repo, tmp_path / "capture", task={})
     assert manifest["status"] == "ready_with_changes", manifest["errors"]
+
+
+def test_a_file_named_like_the_index_of_a_link_to_a_database_is_an_ordinary_file(tmp_path):
+    """SQLite names an index after its database's real path, so it sits beside the real file, never
+    beside a link to it: a ``report-shm`` next to a link ``report -> actual.sqlite`` is the user's own
+    file (actual.sqlite's index would be actual.sqlite-shm). It reads, copies and is listed for the
+    drive settlement like any file (following the link made it an index and settlement dropped it)."""
+    from ouroboros import task_custody
+    from ouroboros.gateway import files
+
+    folder = tmp_path / "artifacts"
+    folder.mkdir()
+    with contextlib.closing(sqlite3.connect(folder / "actual.sqlite")) as conn:
+        conn.execute("CREATE TABLE t(v)")
+    try:
+        (folder / "report").symlink_to("actual.sqlite")
+    except OSError:
+        pytest.skip("symbolic links need a privilege here")
+    (folder / "report-shm").write_text("the user's report\n", encoding="utf-8")
+    assert store.is_wal_index(folder / "report-shm") is False and store.is_wal_index(folder / "report") is False
+    assert store.read_file_bytes(folder / "report-shm") == b"the user's report\n"
+    files._copy_path(folder, tmp_path / "copy")
+    assert (tmp_path / "copy" / "report-shm").read_text(encoding="utf-8") == "the user's report\n"
+    assert sorted(task_custody._listed(folder)) == ["actual.sqlite", "report-shm"]
 
 
 def test_the_genesis_deliverable_manifest_lists_a_held_index_as_excluded(tmp_path):

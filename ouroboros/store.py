@@ -353,13 +353,15 @@ class WalIndexRefused(PermissionError):
 
 
 def is_wal_index(path: Any) -> bool:
-    """Whether PATH is a SQLite WAL index: its real name (a symbolic link stands for the file it
-    names) ends in ``-shm``, folded as a case-insensitive volume folds it, after the name of the
-    SQLite database beside it, a base whose own real name does not end in ``-shm`` (never probed, so
-    no pair of names leads back here). Every WAL connection holds locks on the index (POSIX record
-    locks, which closing any descriptor of the file drops; Windows byte-range locks, which fail a
-    read across them), and its bytes are shared memory a copy rebuilds from the log: the store's
-    raw readers (``open_for_read`` and what reads through it, ``copy_file_bytes``) refuse it and the
+    """Whether PATH is a SQLite WAL index. SQLite names the index after its database's real path, so
+    the index sits beside the real database file, never beside a link to it: PATH's real name (a
+    symbolic link stands for the file it names) ends in ``-shm``, folded as a case-insensitive volume
+    folds it, and the file it extends, a sibling in that real directory, is no symbolic link and is a
+    SQLite database by its header, read only when it is no index itself (the same rule, on a strictly
+    shorter name, so the question always ends). Every WAL connection holds locks on the index (POSIX
+    record locks, which closing any descriptor of the file drops; Windows byte-range locks, which fail
+    a read across them), and its bytes are shared memory a copy rebuilds from the log: the store's raw
+    readers (``open_for_read`` and what reads through it, ``copy_file_bytes``) refuse it and the
     copies and captures that apply this rule leave it out, whichever process holds the database and
     whenever this one connects. The ``-wal`` log carries no lock and reads as any file does."""
     path = pathlib.Path(path)
@@ -367,10 +369,8 @@ def is_wal_index(path: Any) -> bool:
         path = pathlib.Path(os.path.realpath(path))
     if len(path.name) <= 4 or path.name[-4:].casefold() != "-shm":
         return False
-    base = path.with_name(path.name[:-4])
-    if os.path.islink(base):
-        base = pathlib.Path(os.path.realpath(base))
-    return base.name[-4:].casefold() != "-shm" and is_sqlite_file(base)
+    database = path.with_name(path.name[:-4])
+    return not os.path.islink(database) and is_sqlite_file(database)
 
 
 def refuse_wal_index(path: Any) -> None:
