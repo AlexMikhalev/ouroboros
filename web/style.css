@@ -2035,7 +2035,7 @@ html[data-layout="docked"] .app-page-header[data-empty] {
 
 /* Subdued progress messages. */
 .chat-bubble.progress {
-    border-left: 2px solid rgba(220, 38, 38, 0.2);
+    border-left: 2px solid var(--accent-18);
     padding-left: 14px;
     max-width: min(100%, 760px);
     margin-right: 0;
@@ -2977,7 +2977,7 @@ html[data-layout="docked"] .app-page-header[data-empty] {
 }
 
 .chat-live-line.expandable[data-expanded="1"] {
-    background: rgba(59, 130, 246, 0.08);
+    background: var(--surface-tray);
 }
 
 .chat-live-line-toggle {
@@ -3232,7 +3232,7 @@ html[data-layout="docked"] .app-page-header[data-empty] {
     line-height: 1;
 }
 .md-checkbox.is-checked {
-    border-color: rgba(34, 197, 94, 0.38);
+    border-color: var(--status-ok-border);
     background: var(--status-ok-bg);
 }
 .md-quote {
@@ -4738,7 +4738,7 @@ textarea.chat-input::placeholder { color: var(--text-muted); }
 .log-type.errors { color: var(--status-error-fg); }
 .log-type.tasks { color: var(--status-warn-fg); }
 .log-type.system { color: var(--text-muted); }
-.log-type.consciousness { color: #d68cff; }
+.log-type.consciousness { color: var(--project); }
 
 .log-task-card {
     border-color: var(--accent-12);
@@ -6474,7 +6474,7 @@ button.skills-mark { cursor: pointer; min-height: 0; }
 .widget-metric > span { color: var(--text-secondary); font-size: 12px; }
 .widget-metric > strong { font-size: 18px; }
 .widget-metric small { color: var(--text-secondary); font-size: 11px; font-weight: 500; }
-.widget-callout { font-size: 13px; line-height: 1.45; background: rgba(96, 165, 250, 0.06); }
+.widget-callout { font-size: 13px; line-height: 1.45; background: var(--surface-tray); }
 .widget-metric[data-tone="ok"], .widget-callout[data-tone="ok"] { border-left-color: var(--status-ok-fg); }
 .widget-metric[data-tone="warn"], .widget-callout[data-tone="warn"] { border-left-color: var(--status-warn-fg); }
 .widget-metric[data-tone="danger"], .widget-callout[data-tone="danger"] { border-left-color: var(--status-error-fg); }
@@ -6511,7 +6511,7 @@ button.skills-mark { cursor: pointer; min-height: 0; }
 .widget-table th,
 .widget-table-status { white-space: nowrap; }
 
-.widget-table a { color: #93c5fd; overflow-wrap: anywhere; }
+.widget-table a { color: var(--status-info-fg); overflow-wrap: anywhere; }
 .widget-table-status { font-weight: 600; }
 .widget-table-status[data-tone="ok"] { color: var(--status-ok-fg); }
 .widget-table-status[data-tone="warn"] { color: var(--status-warn-fg); }
@@ -6642,7 +6642,7 @@ button.skills-mark { cursor: pointer; min-height: 0; }
     bottom: -2px;
     height: 2px;
     border-radius: 1px;
-    background: var(--accent, #7c5cff);
+    background: var(--accent);
     opacity: 0.5;
     animation: widget-refresh-pulse 1.2s ease-in-out infinite;
 }
@@ -9210,8 +9210,6 @@ body.keyboard-open .project-panel {
 :root[data-theme="light"] .files-preview-frame { background: var(--bg-secondary); }
 :root[data-theme="light"] .skill-review-summary-main { color: var(--system-text); }
 :root[data-theme="light"] .skill-review-summary-side { color: var(--text-meta); }
-:root[data-theme="light"] .widget-table a { color: var(--user-sender); }
-:root[data-theme="light"] .log-type.consciousness { color: var(--project); }
 :root[data-theme="light"] .chat-bubble .message pre { background: var(--code-bg); }
 :root[data-theme="light"] .md-code-block .hljs-comment,
 :root[data-theme="light"] .md-code-block .hljs-quote { color: var(--text-meta); }
