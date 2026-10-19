@@ -814,6 +814,17 @@ def test_an_existing_windows_install_gets_the_windows_skill_once_on_update(data,
     assert not (data / "skills" / "native" / WINDOWS).exists()
 
 
+def test_an_existing_install_turns_on_the_built_ins_on_everywhere_once_on_update(data, monkeypatch, lifecycle):
+    """Templates is an instruction (no dependencies, nothing to load) and Device voice an extension: an update
+    installs both and turns both on, as a new install's starter does."""
+    on(monkeypatch, "darwin")
+    _starter(data, "upgrade")
+
+    _boot(data, monkeypatch)
+
+    assert {name: load_enabled(data, name) for name in EVERYWHERE} == {name: True for name in EVERYWHERE}
+
+
 @pytest.mark.parametrize("choice", [None, {"enabled": False, "actor": "owner_ui"}])
 def test_an_existing_unix_copy_is_turned_on_once_unless_the_owner_chose(data, monkeypatch, lifecycle, choice):
     on(monkeypatch, "darwin")

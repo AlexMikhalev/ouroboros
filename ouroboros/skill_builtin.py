@@ -451,12 +451,14 @@ def _requested_on(drive: pathlib.Path, skill: Any) -> bool:
 
 
 def _wants_lifecycle_work(drive: pathlib.Path, skill: Any) -> bool:
-    """A built-in extension accepted without a review that is on, or asked to turn on (it stays off until
-    its dependencies are ready)."""
+    """A built-in accepted without a review that asked to turn on, or a built-in extension so accepted that is on
+    (an extension stays off until its dependencies are ready; an instruction has none, only its turn-on)."""
     from ouroboros.skill_acceptance import accepted_without_review
 
-    if skill is None or skill.source != "native" or not skill.manifest.is_extension() or not accepted_without_review(skill):
+    if skill is None or skill.source != "native" or not accepted_without_review(skill):
         return False
+    if not skill.manifest.is_extension():
+        return _requested_on(drive, skill)
     return bool(skill.enabled) or _requested_on(drive, skill)
 
 
