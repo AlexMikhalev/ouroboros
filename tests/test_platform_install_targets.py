@@ -43,11 +43,11 @@ def _run_install_command(args, *, env, timeout, capture_output=False, text=False
                 finally:
                     if proc is not None:
                         proc.wait(timeout=10)
-                        if isinstance(failure, subprocess.TimeoutExpired):
-                            # Windows communicates through reader threads and its
-                            # initial timeout carries no output. Drain only after
-                            # the tree is reaped, retaining the original timeout.
-                            failure.stdout, failure.stderr = proc.communicate(timeout=10)
+                if proc is not None and isinstance(failure, subprocess.TimeoutExpired):
+                    # A failed reap must retain its report, not attempt a drain.
+                    # Windows' initial timeout has no output; join its readers
+                    # only after successful reap, retaining the original timeout.
+                    failure.stdout, failure.stderr = proc.communicate(timeout=10)
             finally:
                 try:
                     container.close()
@@ -254,10 +254,18 @@ def test_install_command_cleanup_failure_stays_red(monkeypatch, timeout):
         def spawn(self, *args, **kwargs):
             self.proc = super().spawn(*args, **kwargs)
             containers.append(self)
+            communicate = self.proc.communicate
+
+            def before_reap_only(*args, **kwargs):
+                assert not getattr(self, "reaped", False), "drain hid failed reap"
+                return communicate(*args, **kwargs)
+
+            self.proc.communicate = before_reap_only
             return self.proc
 
         def reap(self):
             assert not super().reap()
+            self.reaped = True
             return "injected cleanup failure after real reap"
 
         def close(self):
@@ -280,7 +288,8 @@ def test_install_command_cleanup_failure_stays_red(monkeypatch, timeout):
 
 @pytest.mark.serial
 @pytest.mark.parametrize("text", [False, True], ids=["bytes", "text"])
-def test_install_timeout_drains_initially_missing_output(monkeypatch, text):
+@pytest.mark.parametrize("newline", ["\n", "\r\n"], ids=["lf", "crlf"])
+def test_install_timeout_drains_initially_missing_output(monkeypatch, text, newline):
     """Real pipes, with the Windows initial-timeout shape also exercised on POSIX."""
     class MissingInitialOutput(ProcessContainer):
         def spawn(self, *args, **kwargs):
@@ -298,11 +307,13 @@ def test_install_timeout_drains_initially_missing_output(monkeypatch, text):
             return proc
 
     monkeypatch.setattr(sys.modules[__name__], "ProcessContainer", MissingInitialOutput)
-    code = ("import sys,time; print('stdout', flush=True); "
-            "print('stderr', file=sys.stderr, flush=True); time.sleep(60)")
+    stdout = ("stdout" + newline).encode()
+    stderr = ("stderr" + newline).encode()
+    code = (f"import sys,time; sys.stdout.buffer.write({stdout!r}); sys.stdout.buffer.flush(); "
+            f"sys.stderr.buffer.write({stderr!r}); sys.stderr.buffer.flush(); time.sleep(60)")
     with pytest.raises(subprocess.TimeoutExpired) as raised:
         _run_install_command([sys.executable, "-c", code], env=os.environ,
                              timeout=3, capture_output=True, text=text)
     assert raised.value.timeout == 3
-    assert raised.value.stdout == ("stdout\n" if text else b"stdout\n")
-    assert raised.value.stderr == ("stderr\n" if text else b"stderr\n")
+    assert raised.value.stdout == ("stdout\n" if text else stdout)
+    assert raised.value.stderr == ("stderr\n" if text else stderr)
