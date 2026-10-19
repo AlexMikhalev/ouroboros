@@ -288,8 +288,9 @@ def test_a_chat_muted_by_rejection_idles_the_cue_until_a_message_reaches_it(mod)
 
 def test_a_delivered_message_lets_the_next_read_renew_at_once(mod, monkeypatch):
     """A message clears the chat's indicator on the client: a still-prepared reply gets its
-    action back on the next read instead of a full spacing later; a failed one keeps the spacing."""
-    monkeypatch.setattr(mod, "_REFRESH_SEC", 0.5)
+    action back on the next read instead of a full spacing later; a failed one keeps the spacing.
+    The spacing is far longer than the wait for the renewal, so a cue that waited it out would fail."""
+    monkeypatch.setattr(mod, "_REFRESH_SEC", 5.0)
     host, rec = _Host({4}), _Rec()
 
     async def scenario():
