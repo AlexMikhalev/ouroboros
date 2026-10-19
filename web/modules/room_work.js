@@ -402,7 +402,7 @@ export function createRoomWork({
         const chev = decorative(element('span', 'rw-chev'));
         where.append(chev);
         state.append(rowDots, rowLead, word, secondary, where);
-        // The episode's own focus line, one quiet line under the state (work_status.SHOW_WORK_FOCUS).
+        // The episode's own focus line, quieter, under the state (work_status.workRowView's `focus`).
         const focus = element('span', 'rw-focus');
         focus.hidden = true;
         main.append(nameEl, state, focus);

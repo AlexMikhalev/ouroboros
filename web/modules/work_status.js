@@ -17,10 +17,6 @@ import {
     taskControlBusy,
 } from './task_control_menu.js';
 
-// The focus line (the episode's own `update_focus` text under a row's state) is built but not shown:
-// the row draws it only while this is on.
-export const SHOW_WORK_FOCUS = false;
-
 // A known outcome keeps its status colour; an unfinished lifecycle (Finalizing…) is said beside it.
 export const OUTCOME_TONES = { done: 'done', warn: 'caution', cancelled: 'caution', error: 'failed', timeout: 'failed',
     lifecycle_error: 'failed' };
@@ -190,7 +186,8 @@ export function workRowView(work = {}, { stopping = '' } = {}) {
             : work.activity === 'waiting' && asked(work) ? 'wait'
                 : work.activity === 'working' && !pausing ? 'live' : work.activity === 'queued' ? 'queued' : 'held';
     const dots = outcome || tone === 'unknown' ? '' : work.activity === 'working' ? 'moving' : work.activity === 'queued' ? 'still' : '';
-    const focus = SHOW_WORK_FOCUS && work.focus && String(work.focus.text || '').trim() ? String(work.focus.text).trim() : '';
+    // The work's own focus line: what its author says it is doing, under the state (update_focus).
+    const focus = String(work.focus?.text || '').trim();
     return { word, secondary, tone, dots, amber: tone !== 'wait' && list(work.turn).length > 0, focus };
 }
 
