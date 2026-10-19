@@ -352,6 +352,7 @@ def test_a_kept_folder_names_its_reason_and_the_next_run_frees_it(tmp_path, monk
     ("task_result_unreadable", "unreadable_record"),
     ("custody_error: ValueError('torn')", "unreadable_record"),
     ("generation_closed", "restart"),
+    ("store_busy", "busy"),  # a store still leased inside the drive: busy right now, tried next pass
     ("not_own_drive", "other"),  # a code with no owner-facing group stays "for another reason"
 ])
 def test_the_fail_closed_mailbox_and_call_inventory_codes_name_their_owner_facing_reason(code, reason):

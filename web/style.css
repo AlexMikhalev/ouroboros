@@ -261,10 +261,13 @@ html[data-layout="stack"] .resize-handle { display: none; }
 }
 
 /* Sidebar activity reuses the live-card's three 4px dots (`.chat-live-typing`
-   supplies the size, 3px gap and 1.4s bounce). The dots take the row's own
-   foreground, like the shared status-sentence dot, so they never out-shout the
-   title and follow its hover/active ink; a confirmed wait is the one amber
-   fact; queued and unknown work stay static at a quieter step of that ink. */
+   supplies the size, 3px gap and 1.4s bounce) as the room's one mark in the
+   server's work projection: three moving dots for work, three still dots for
+   queued work, one dot for a wait or a pause, a hollow ring when unconfirmed.
+   The dots take the row's own foreground, like the shared status-sentence dot,
+   so they never out-shout the title and follow its hover/active ink; amber is
+   the one hue, while something in the room waits for the owner; queued and
+   unknown work stay static at a quieter step of that ink. */
 .nav-activity-marker {
     pointer-events: none;
 }
@@ -282,14 +285,18 @@ html[data-layout="stack"] .resize-handle { display: none; }
 .nav-activity-marker[hidden] { display: none; }
 
 /* Same specificity as the later shared `.chat-live-typing span` accent rule
-   would lose on order; name the composed marker so the row ink wins: the dots never out-shout the name. */
+   would lose on order; name the composed marker so the row ink wins: the dots never out-shout the name, and
+   what waits for the owner is the one amber. */
 .nav-activity-marker.chat-live-typing span { background: currentColor; }
-.nav-activity-marker[data-state="waiting"] span { background: var(--amber); }
+.nav-activity-marker[data-amber="1"] span { background: var(--amber); }
 .nav-activity-marker[data-state="queued"],
 .nav-activity-marker[data-state="unknown"] { opacity: 0.55; }
+/* One fact is one dot; an unconfirmed room is one hollow ring. */
+.nav-activity-marker:is([data-state="dot"], [data-state="unknown"]) span:not(:first-child) { display: none; }
+.nav-activity-marker[data-state="unknown"] span { box-sizing: border-box; background: transparent; border: 1px solid currentColor; }
 
 /* Only confirmed computation inherits the bounce. */
-.nav-activity-marker[data-state="waiting"] span,
+.nav-activity-marker[data-state="dot"] span,
 .nav-activity-marker[data-state="queued"] span,
 .nav-activity-marker[data-state="unknown"] span,
 .nav-activity-marker[data-state="idle"] span { animation: none; }

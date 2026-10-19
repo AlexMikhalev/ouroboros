@@ -1,4 +1,4 @@
-"""Owner D10: Pause of an answered root while its retained late acceptance is live.
+"""The owner's Pause of an answered root while its retained late acceptance is live.
 
 The real historical review owner, its retained operation and settlement, the
 owner's Pause ingress, the assignment tick's Pause census and the Resume seam.
@@ -281,8 +281,8 @@ def test_resume_opening_the_fence_inside_a_restored_control_read_still_runs_the_
 
 def test_root_budget_fence_that_is_not_the_owner_pause_still_refuses_unsent_late_work(
         late, tmp_path, monkeypatch):  # noqa: F811
-    """Only the owner's closed Pause makes unsent late work wait (D10); a root budget
-    fence read with that Pause open on both sides refuses at once and buys nothing."""
+    """Only the owner's closed Pause makes unsent late work wait; a root budget fence
+    read with that Pause open on both sides refuses at once and buys nothing."""
     from ouroboros.acceptance_late import run_historical_acceptance
     from supervisor.events_budget import _set_root_budget_pause_locked
     from tests._budget_pause_exact_helpers import _install_queue
@@ -303,7 +303,7 @@ def test_root_budget_fence_that_is_not_the_owner_pause_still_refuses_unsent_late
     assert pointer['preparation_outcome']['reason'] == 'root_budget_fence' and not late.calls
 
 
-@pytest.mark.parametrize('bound', ['global', 'root', 'deadline', 'restart', 'panic', 'cancel'])
+@pytest.mark.parametrize('bound', ['global', 'root', 'deadline', 'restart', 'panic', 'cancel', 'successor'])
 def test_preparing_acceptance_resume_keeps_pause_under_existing_rails(late, tmp_path, monkeypatch, bound):  # noqa: F811
     from ouroboros.owner_pause import read_fence
     from ouroboros.task_results import write_task_result
@@ -335,6 +335,11 @@ def test_preparing_acceptance_resume_keeps_pause_under_existing_rails(late, tmp_
         elif bound in {'restart', 'panic'}:
             flag = 'owner_restart_no_resume.flag' if bound == 'restart' else 'panic_stop.flag'
             (f.root / 'state' / flag).write_text(bound, encoding='utf-8')
+        elif bound == 'successor':
+            # A Continue of this answered root that may already write: no overlapping writers.
+            q.RUNNING['successor-1'] = {'attempt': 1, 'worker_id': 0, 'task': {
+                'id': 'successor-1', 'root_task_id': 'successor-1',
+                'metadata': {'continuation': {'predecessor_task_id': f.tid}}}}
         else:
             from ouroboros.cancel_intents import request_cancel
             request_cancel(f.root, f.tid, source='owner', reason='Stop', allow_settled_target=True)
@@ -343,6 +348,11 @@ def test_preparing_acceptance_resume_keeps_pause_under_existing_rails(late, tmp_
         assert not result['ok'], result
         assert read_fence(f.root, f.tid) == before
         assert not late.calls and read_usage_records(f.root) == money
+        if bound == 'successor':
+            assert result['error'] == 'owner_pause_effects_unsettled', result
+            assert {'kind': 'continuation_successor', 'task_id': 'successor-1'} in result['blockers'], result
+            q.RUNNING.pop('successor-1')
+            assert q.resume_budget_paused_task(f.tid)['ok'], 'the same Resume is admitted once the successor ended'
     finally:
         _end_preparer(proc, log)
 

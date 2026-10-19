@@ -184,15 +184,11 @@ def _resume_outstanding(current: Dict[str, Any], fence: Dict[str, Any]) -> bool:
     (``reopen_for_resume``); that grant would release whatever shares its fence.
     """
     from ouroboros.budget_pause import STATE_RESUME_GRANTED, STATE_RESUMED
-    from ouroboros.post_task_checkpoint import late_phase_pause_record
 
     row = current.get("budget_pause") if isinstance(current.get("budget_pause"), dict) else {}
     grant = row.get("grant") if isinstance(row.get("grant"), dict) else {}
-    late = late_phase_pause_record(current).get("grant") or {}
-    return bool(fence.get("fence_id") and (
-        grant.get("owner_pause_fence_id") == fence["fence_id"]
-        and not grant.get("revoked_at") and row.get("state") in {STATE_RESUME_GRANTED, STATE_RESUMED}
-        or late.get("fence_id") == fence["fence_id"] and not late.get("revoked_at")))
+    return bool(fence.get("fence_id") and grant.get("owner_pause_fence_id") == fence["fence_id"]
+                and not grant.get("revoked_at") and row.get("state") in {STATE_RESUME_GRANTED, STATE_RESUMED})
 
 
 def install_fence(root_drive: Any, root_task_id: str, *, request_id: str,
@@ -208,11 +204,11 @@ def install_fence(root_drive: Any, root_task_id: str, *, request_id: str,
     retry's ``actor_id`` is revalidated under the logical launch lock; its
     physical row carries the grant, while the fence stays on the logical root. A
     terminal root refuses: a finished tree has nothing to pause — unless its
-    answered task still owns late work (D10): an open post-task checkpoint
-    read under this lock, or a live review operation the caller attests
-    (``late_work``). Raises ``OwnerPauseRefused`` without any write on
-    refusal; any write failure propagates, so the caller never acknowledges
-    an undurable Pause.
+    answered task still owns late work: an open post-task checkpoint read
+    under this lock (the Pause ends that upkeep at once), or a live review
+    operation the caller attests (``late_work``). Raises
+    ``OwnerPauseRefused`` without any write on refusal; any write failure
+    propagates, so the caller never acknowledges an undurable Pause.
     """
     from ouroboros.post_task_checkpoint import post_task_synthesis_is_open
     from ouroboros.task_results import (
@@ -387,7 +383,6 @@ def _finish_resume_publication(root_drive: Any, root_task_id: str, task_id: str,
     from ouroboros.store import STORE_WAIT_SEC
     from ouroboros._usage_wait import ACQUISITION_SLICE_SEC
     from ouroboros.cancel_intents import _validated_single_cancel_target, cancel_pending
-    from ouroboros.post_task_checkpoint import late_phase_pause_record
     from ouroboros.task_results import load_task_result
 
     started = time.monotonic()
@@ -409,10 +404,9 @@ def _finish_resume_publication(root_drive: Any, root_task_id: str, task_id: str,
                 if task_id != root_task_id and _validated_single_cancel_target(root_drive, root_task_id) != task_id:
                     raise OwnerPauseRefused("root_resume_authority_changed")
                 row = load_task_result(root_drive, task_id, strict=True) or {}
-                grants = (((row.get("budget_pause") or {}).get("grant") or {}, "owner_pause_fence_id"),
-                          (late_phase_pause_record(row).get("grant") or {}, "fence_id"))
-                if not grant_id or not any(grant.get("grant_id") == grant_id and grant.get(key) == fence_id
-                                            and not grant.get("revoked_at") for grant, key in grants):
+                grant = (row.get("budget_pause") or {}).get("grant") or {}
+                if (not grant_id or grant.get("grant_id") != grant_id
+                        or grant.get("owner_pause_fence_id") != fence_id or grant.get("revoked_at")):
                     raise OwnerPauseRefused("root_resume_authority_changed")
                 if (any(cancel_pending(root_drive, member, strict=True) for member in {root_task_id, task_id})
                         or row.get("status") == "cancelled"):
