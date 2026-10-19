@@ -18,6 +18,7 @@ from ouroboros import headless, storage, task_custody
 from ouroboros import store as task_store
 from ouroboros import subagent_worktrees as sw
 from ouroboros.storage_free import FreeSpace
+from tests._store_journal_shared import tree_state
 from tests.test_store import document, publish
 
 OLD = "2026-10-01T00:00:00+00:00"
@@ -191,13 +192,13 @@ def test_preview_is_pure(tmp_path, monkeypatch):
 
     monkeypatch.setattr(body_candidate, "retention_verdict", lambda *a, **k: calls.append("retention_verdict"))
     monkeypatch.setattr(task_results, "write_task_result", lambda *a, **k: calls.append("write_task_result"))
-    before = sorted((str(path), path.stat().st_mtime_ns) for path in root.rglob("*"))
+    before = tree_state(root, mtimes=True)  # a store as its committed content
 
     view = _preview(_owner(probes), root, tmp_path)
 
     assert view["state"] == "ready" and _group(view, "work_folders")["count"] == 2
     assert calls == []
-    assert sorted((str(path), path.stat().st_mtime_ns) for path in root.rglob("*")) == before
+    assert tree_state(root, mtimes=True) == before
     assert not (root / "logs" / "events.jsonl").exists()
 
 

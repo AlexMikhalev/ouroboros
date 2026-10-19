@@ -266,7 +266,11 @@ def test_export_closes_connections_and_leaves_delete_file(tmp_path, money):
     assert not path.with_name(path.name + "-journal").exists()
 
 
-def test_replaced_file_drops_the_old_cached_connection(tmp_path):
+def test_replaced_file_drops_the_old_cached_connection(tmp_path, monkeypatch):
+    # Only a rollback-journal file is replaced under an idle handle: an idle WAL handle keeps a shared
+    # lock that every handoff out of WAL waits for, and a WAL file renamed over leaves its log to the
+    # next file of that name (sqlite.org/howtocorrupt.html, "mispairing database files and hot journals").
+    monkeypatch.setattr(store, "_journal_mode", lambda *_: "PERSIST")
     path = publish(tmp_path)
     replacement = publish(tmp_path / "new")
     with store.open_store(tmp_path, write=True) as txn:

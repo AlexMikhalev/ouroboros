@@ -12,6 +12,7 @@ from ouroboros.task_finalization import build_swarm_efficiency
 from ouroboros.task_results import list_task_results, write_task_result
 from ouroboros.task_status import find_child_tasks
 from ouroboros.utils import append_jsonl
+from tests._store_journal_shared import tree_state
 
 pytestmark = pytest.mark.scale
 
@@ -73,12 +74,9 @@ def test_listing_does_not_write_to_runtime_or_inspected_root(tmp_path, monkeypat
     write_task_result(inspected, "task", "completed")
     if existing_journal:
         append_jsonl(inspected / "logs/events.jsonl", {"type": "original_evidence"})
-    before = {path.relative_to(tmp_path): (path.read_bytes(), path.stat().st_mtime_ns)
-              for path in tmp_path.rglob("*") if path.is_file()}
+    before = tree_state(tmp_path, mtimes=True, directories=False)  # a store as its committed content
     assert len(list_task_results(inspected)) == 1
-    after = {path.relative_to(tmp_path): (path.read_bytes(), path.stat().st_mtime_ns)
-             for path in tmp_path.rglob("*") if path.is_file()}
-    assert after == before
+    assert tree_state(tmp_path, mtimes=True, directories=False) == before
 
 
 def test_a_listing_of_three_hundred_thousand_entries_is_walked_completely(tmp_path, monkeypatch):

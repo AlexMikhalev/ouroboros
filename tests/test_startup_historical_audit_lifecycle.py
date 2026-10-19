@@ -19,6 +19,7 @@ import pytest
 
 from ouroboros import usage_store
 from ouroboros.startup_historical_audit import HistoricalAudit, _report_fields
+from tests._store_journal_shared import committed_content
 from tests._usage_store_testing import ledger_rows
 from tests.fixtures_usage_store import (  # noqa: F401  (pytest fixtures)
     ARCHIVE_SEGMENT_REL,
@@ -92,8 +93,11 @@ def archived_root(data_root, monkeypatch):
 
 
 def _money_bytes(root: pathlib.Path) -> list:
-    paths = [root / usage_store.STORE_REL, root / usage_store.LEDGER_REL, root / ARCHIVE_SEGMENT_REL]
-    return [(path.name, path.read_bytes()) for path in paths]
+    """The money's bytes; the store's committed content stands for its own, which a first WAL
+    open rewrites in the header and a checkpoint changes without a commit."""
+    store = root / usage_store.STORE_REL
+    return [(store.name, committed_content(store))] + [
+        (path.name, path.read_bytes()) for path in (root / usage_store.LEDGER_REL, root / ARCHIVE_SEGMENT_REL)]
 
 
 # --------------------------------------------------------------------------
