@@ -13,6 +13,17 @@ import { fmt, tr, tx } from './i18n.js';
 import { syncQuestionMaterials } from './result_files.js';
 import { createStatusMark, paintStatusMark } from './status_mark.js';
 
+// A question head's mark: its lifecycle's dot (question_presentation.questionMark), neutral while an answer is in
+// flight (Sending…, checking it, Not confirmed: the owner has moved). The one painter of it, whoever changed the card.
+const HEAD_ROWS = new WeakMap();
+function paintQuestionHead(card, row = HEAD_ROWS.get(card)) {
+    if (!card) return false;
+    if (row) HEAD_ROWS.set(card, row);
+    const inFlight = ['sending', 'unknown', 'checking'].includes(card.dataset.submission);
+    return paintStatusMark(card.querySelector('.chat-quiz-mark'),
+        inFlight ? { shape: 'dot', hue: 'neutral' } : questionMark(row || {}));
+}
+
 // What one observation of a question carries: its identity, lifecycle, recorded answer and wait facts.
 const LIFECYCLE_FIELDS = ['task_id', 'quiz_id', 'state', 'answered_index', 'comment', 'closed_reason', 'closed_at', 'closed_actor', 'closed_request_id', 'question_delivery', ...WAIT_FIELDS];
 const lifecycleOf = (row) => Object.fromEntries(LIFECYCLE_FIELDS.filter((field) => Object.hasOwn(row, field))
@@ -468,7 +479,7 @@ export function createChatDecision({
         });
     }
 
-    const submissions = createQuizSubmission({ apiFetch, onDomWrite, showToast,
+    const submissions = createQuizSubmission({ apiFetch, onDomWrite, showToast, paintHead: paintQuestionHead,
         canUse: card => !disposed && (!isMain || (connected && card.dataset.authorityStale !== '1')),
         readQuestion: quiz => readQuestion(quiz.taskId, quiz.quizId, quiz.projectId, { fresh: true }),
         accept(card, body) {
@@ -613,7 +624,7 @@ export function createChatDecision({
                 status.textContent = nextStatus;
                 changed = true;
             }
-            if (paintStatusMark(card.querySelector('.chat-quiz-mark'), questionMark(current))) changed = true;
+            if (paintQuestionHead(card, current)) changed = true;
             // An accepted late answer whose delivery became unknown: Main's copy lets the owner
             // stop counting it as pending. Nothing is resent; the answer and its record stay.
             const removable = card.classList.contains('project-question-card') && unknownDeliveryRemovable({ ...current, state });

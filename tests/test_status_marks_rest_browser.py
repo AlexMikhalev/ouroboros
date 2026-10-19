@@ -67,7 +67,9 @@ def test_question_head_mark_is_amber_only_while_the_task_waits(subscription_ui, 
         const { createChatMedia } = await import('/static/modules/chat_media.js');
         const media = createChatMedia({ chatSessionId: 'marks', formatMsgTime: () => null,
             stampNodeTimestamp: () => {}, senderLabel: () => 'Ouroboros' });
-        const decision = createChatDecision({ apiFetch: () => {}, showToast: () => {}, frameNode: media.bubbleFrameNode });
+        // An answer's request never settles here, so a pressed option stays in flight (Sending…).
+        const decision = createChatDecision({ apiFetch: () => new Promise(() => {}), showToast: () => {},
+            frameNode: media.bubbleFrameNode });
         const column = document.querySelector('#chat-messages');
         const read = (node) => {
             const mark = node.querySelector('.chat-quiz-status > .status-mark.chat-quiz-mark');
@@ -86,11 +88,14 @@ def test_question_head_mark_is_amber_only_while_the_task_waits(subscription_ui, 
         return out;
     }""", rows)
     setup_browser.capture(page, f"status-marks-question-head-{theme}")
-    marks["sending"] = page.evaluate("""() => {
+    # The real path: pressing an option sends the answer, and its head repaints through the shared painter.
+    marks["sending"] = page.evaluate("""async () => {
         const waiting = document.querySelector('.chat-quiz-card[data-quiz-id="waiting"]');
-        waiting.dataset.submission = 'sending';
-        return __readQuizMark(waiting);
+        waiting.querySelector('.chat-quiz-option').click();
+        for (let i = 0; i < 100 && waiting.dataset.submission !== 'sending'; i += 1) await new Promise((r) => setTimeout(r, 20));
+        return { ...__readQuizMark(waiting), submission: waiting.dataset.submission };
     }""")
+    assert (marks["sending"]["submission"], marks["sending"]["hue"]) == ("sending", "neutral"), marks["sending"]
     for quiz_id, _fields, hue, token in QUESTIONS:
         mark = marks[quiz_id]
         assert (mark["shape"], mark["hue"]) == ("dot", hue), (quiz_id, mark)

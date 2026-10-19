@@ -126,9 +126,16 @@ function violations({ scripts, sheets, pages }) {
         if (name === 'modules/status_mark.js') continue;
         for (const pattern of PAINTS) if (pattern.test(text)) found.push(`${name}: paints a mark ${pattern}`);
     }
+    // A class a script gives its marks (createStatusMark(doc, 'x'), statusMarkHtml('x')) names the same mark in a sheet.
+    const aliases = new Set(['status-mark']);
+    for (const [, text] of scripts) {
+        for (const m of text.matchAll(/(?:createStatusMark\([^,)]*,\s*|statusMarkHtml\(\s*)['"`]([\w-]+)['"`]/g)) aliases.add(m[1]);
+    }
+    const marked = new RegExp(`\\.(?:${[...aliases].join('|')})(?![\\w-])`);
     for (const [name, text] of sheets) {
         if (name === 'ui.css') continue;
-        for (const rule of text.matchAll(/([^{}]*\.status-mark[^{}]*)\{([^{}]*)\}/g)) {
+        for (const rule of text.matchAll(/([^{}]*)\{([^{}]*)\}/g)) {
+            if (!marked.test(rule[1])) continue;
             const property = rule[2].match(MARK_PAINT);
             if (property) found.push(`${name}: "${rule[1].trim()}" sets ${property[1]} on a mark`);
         }
@@ -147,10 +154,12 @@ test('the ownership check sees a second painter, a painted mark and a retired na
                 + "const html = '<span class=\"status-mark\"></span>';")],
             ['modules/reader.js', code("if (mark.dataset.shape === 'moving') row.querySelector('.status-mark');")],
             ['modules/status_mark.js', code("node.dataset.hue = hue;")],
+            ['modules/quiz.js', code("head.append(createStatusMark(document, 'quiz-mark'));")],
         ],
         sheets: [
             ['room.css', css('.rw-trigger .status-mark { margin-left: 4px; --mark-ink: red; }\n.x .status-mark i { background: red }')],
             ['old.css', css('/* .chat-live-typing was here */ .nav-unread-dot { color: red }')],
+            ['quiz.css', css('.card[data-busy] .quiz-mark { color: gray } .card .quiz-mark { --mark-ink: gray }')],
         ],
         pages: [],
     };
@@ -159,5 +168,6 @@ test('the ownership check sees a second painter, a painted mark and a retired na
         'modules/rogue.js: paints a mark /\\bdataset\\.(?:shape|hue)\\s*=(?!=)/',
         'modules/rogue.js: paints a mark /class=\\\\?["\']status-mark\\b/',
         'room.css: ".x .status-mark i" sets background on a mark',
+        'quiz.css: ".card[data-busy] .quiz-mark" sets color on a mark',
     ]);
 });

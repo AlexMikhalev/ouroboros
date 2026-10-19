@@ -8678,10 +8678,6 @@ body.keyboard-open .project-panel {
 .chat-quiz-card [aria-disabled="true"]:hover:not(.pending-choice) {
     background: var(--surface-tray);
 }
-/* While an answer is in flight (Sending…, checking it, Not confirmed) the owner has moved: the dot is neutral. */
-.chat-quiz-card:is([data-submission="sending"], [data-submission="unknown"], [data-submission="checking"]) .chat-quiz-mark {
-    color: var(--text-meta);
-}
 .chat-quiz-feedback {
     display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2);
     color: var(--text-meta); font-size: var(--type-meta); line-height: var(--line-meta);
