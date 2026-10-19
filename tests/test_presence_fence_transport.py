@@ -238,6 +238,7 @@ def _run_presence_turn(root: Path, monkeypatch, *, event_queue=None, supervisor=
     row = load_task_result(h.data, task_id) or {}
     result = outcome.get("result")
     diagnosis = {
+        "task_id": task_id,
         "model_calls": h.calls,
         "paid_reviews": len(h.reviews),
         "not_accepted_notes": sum(str(m.get("content") or "").count(MARKER) for m in (h.inputs[-1] if h.inputs else [])),
@@ -331,6 +332,21 @@ def test_a_raising_turn_releases_its_row(supervisor, monkeypatch):
                           event_queue=supervisor.bus.queue, agent_factory=lambda **_kw: RaisingAgent(),
                           gate=h.gate)
     assert task_id not in supervisor.queue.ACCEPTANCE_FENCES, supervisor.queue.ACCEPTANCE_FENCES
+
+
+def test_a_failed_release_still_ends_the_live_turn(supervisor, monkeypatch):
+    """Recovery reads a turn as live while its key is listed, so a release that fails must not keep it there."""
+    from ouroboros import presence_runner
+    from supervisor import queue_transitions
+
+    def failing_release(*_args, **_kwargs):
+        raise RuntimeError("release failed")
+
+    monkeypatch.setattr(queue_transitions, "release_turn_acceptance_fence", failing_release)
+    diagnosis = _run_presence_turn(supervisor.root, monkeypatch, event_queue=supervisor.bus.queue,
+                                   supervisor=supervisor, number=80)
+    assert "release failed" in str(diagnosis["error"]), diagnosis
+    assert all(key[1] != diagnosis["task_id"] for key in presence_runner._LIVE_PRESENCE_TASKS)
 
 
 def test_the_turn_end_release_leaves_other_roots_and_other_processes_alone(supervisor, monkeypatch):
