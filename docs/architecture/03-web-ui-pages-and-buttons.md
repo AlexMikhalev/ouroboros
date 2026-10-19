@@ -16,9 +16,9 @@ Appearance is client-local, shared by same-origin windows; the page's stored cho
 
 Independent iframes inherit no host tokens/stored choice; modules declare `render.appearance` (`host`, `independent`, `fixed`; CREATING_SKILLS). First-party `webview.start(private_mode=False)` requests persistent storage; pywebview's default private mode erases it on window opening. Launchers without that flag keep erasing until a new build installs or updated launcher source re-executes at restart (§2; native Windows unqualified). `desktop_shell.js` discloses this in Settings → Appearance.
 
-`pages.js` lists Main, Files, Skills, Widgets, Dashboard, Settings (with About); Projects collapse. `syncNavigationState()` owns page, Project, expansion and drawer at once; sidebar/panel widths are owner-local. A `#<page>` fragment is honoured once, never written back: desktop/Linux fallback lack an address bar and Telegram loads `/`. Projects are panels, not routes; the sidebar is the sole `<nav>`. Rows open/rename/delete by pointer and keyboard; `PROJECT_NAME_MAX` and lifecycle govern names. Unread sorts first; deleting rooms cannot open until registry publication. Below `layout.js`'s 720 px switch the column is a drawer and the Project panel fills the content; `layers.js` owns dismissal (one same-address history entry), `host_telegram.js` binds Telegram's Back, `drawer_drag.js` accelerates visible controls (DESIGN §10).
+`pages.js` lists Main, Files, Skills, Widgets, Dashboard, Settings (with About); Projects collapse. `syncNavigationState()` owns page/Project/expansion/drawer; sidebar/panel widths are owner-local. `#<page>` is read once, never written (desktop/Linux fallback lack address bars; Telegram loads `/`). Projects are panels, not routes; the sidebar alone is `<nav>`. Pointer/keyboard rows open/rename/delete; `PROJECT_NAME_MAX` and lifecycle govern names. Unread first; deleting rooms cannot open until registry publication. `style.css` gives Main track 2 of 2, hiding retained `#divider`; panels overlay. Below `layout.js`'s 720 px switch, Main takes track 1, sidebar becomes a drawer, Project fills content. `layers.js` owns dismissal with one same-address history entry; `host_telegram.js` binds Telegram Back; `drawer_drag.js` speeds visible controls (DESIGN §10).
 
-Shared primitives prevent competing contracts: no page reimplements supervisor, review, marketplace, extension or provider semantics.
+Pages share supervisor, review, marketplace, extension and provider primitives.
 
 - `web/ui.css` ← shared values and field/button/status/popup classes of both first-party documents; `style.css` keeps shell composition (DESIGN §8).
 - `theme_palette.js` ← `--chart-*` tokens into mounted Chart options, as canvas cannot inherit CSS; updates keep data and caller-authored option groups.
@@ -32,11 +32,11 @@ Shared primitives prevent competing contracts: no page reimplements supervisor, 
 - `skill_card_renderer.js`, `skill_presentation.js` ← skill cards and the words every Skills surface shares.
 - `client_surface.js` ← the send-time surface snapshot (raw observables, no device taxonomy) spread into each chat frame.
 - `chat_markdown.js` ← marked+DOMPurify, chat URLs, KaTeX, lazy Mermaid, bounded charts, unloaded images (DESIGN §5; vendors: `web/vendor/VENDOR-MANIFEST.md`).
-- `document_reader.js` ← read-only reader of a delivered Markdown or text file, bounded by `DOCUMENT_READER_MAX_BYTES` and `DOCUMENT_READER_TIMEOUT_MS` (DESIGN "Document reading").
+- `document_reader.js` ← chat text (`DOCUMENT_READER_MAX_BYTES`) and chat images; reads/loads use `DOCUMENT_READER_TIMEOUT_MS` (DESIGN "Document reading").
 - `log_events.js` ← event classification and the one factual task-presentation projection for Chat and Logs: task truth maps only to `Working` / `Done` / `Done with warnings` / `Failed` / `Stopped`; it owns no actions, incidents or notifications, and compact headlines never expose raw reason codes. Task-to-task delivery appears in the receiving timeline (`task_message_injected`), delivery or refusal in the sending one (`task_message_routed`).
 - `effort_evidence.js` ← Logs: requested effort, host carrier, engine preparation, sourced provider observation; missing echoes stay unknown.
 - `toast.js`, `masonry.js`, `widget_frame.js`, `widget_job.js` ← toasts, layout, framed-widget bootstrap/lifecycle, bounded widget request/job policy.
-- `result_files.js` ← Files and validated question materials via canonical artifacts, document/photo readers and explicit downloads.
+- `result_files.js` ← Files and validated question materials via canonical artifacts, the reader and explicit downloads.
 - `history_retention.js` ← history-transfer details and storage problems for Chat and Logs; routine transfer alters no task outcome.
 - `settled_card.js` ← `syncSettledItems`: the settled card's Files row and Continue action follow one detail.
 - `task_continue.js` ← Continue projects the host's `continuation_offer`; `hard_limit_reached` is one neutral reason that buys no model call; Stop, Panic and an author finish cannot Continue (§6); one stored nonce per task makes a retry return the same admission.

@@ -43,17 +43,24 @@ LEGACY_HUB_SOURCE_ID = "ouroboroshub-legacy"
 
 
 def install_basis_fields(trust: str, *, check: str = "review", check_notes: str = "", task_id: str = "",
-                         skip_review: bool = False) -> Dict[str, Any]:
-    """Bind the source trust, model's recorded check or owner's Skip to the new release."""
+                         skip_review: bool = False, cyber: Optional[bool] = None) -> Dict[str, Any]:
+    """Bind the source trust, the owner's Skip, the review, or (Cyber Pro only) Ouroboros's recorded check."""
     if skip_review:
         return {"basis": "owner_skip"}
     if trust == "trusted":
         return {"basis": "trusted"}  # a trusted source needs no additional check
     if check == "review":
         return {"basis": "review"}
+    if check != "self":
+        raise ValueError("check is review or self.")
+    from ouroboros.skill_review_status import cyber_authority
+
+    if not (cyber_authority() if cyber is None else cyber):
+        raise ValueError("check self is available only in Cyber Pro; outside it a source that reviews each "
+                         "skill needs its review (check review), and only the owner skips one.")
     notes = str(check_notes or "").strip()
-    if check != "self" or not 1 <= len(notes) <= 2000:
-        raise ValueError("check is review or self; self needs check_notes of 1..2000 characters.")
+    if not 1 <= len(notes) <= 2000:
+        raise ValueError("check self needs check_notes of 1..2000 characters.")
     return {"basis": "self_check", "check": {"by": "ouroboros", "notes": notes,
                                              "task_id": task_id, "at": utc_now_iso()}}
 

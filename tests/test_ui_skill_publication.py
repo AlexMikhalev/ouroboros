@@ -44,7 +44,8 @@ def _screenshot(page, name):
         page.screenshot(path=str(output / name))
 
 
-def test_skills_card_geometry_tracks_card_width_and_keeps_grant_on_card(direct_server_with_data):
+@pytest.mark.parametrize('engine', ['chromium', 'webkit'])
+def test_skills_card_geometry_tracks_card_width_and_keeps_grant_on_card(direct_server_with_data, engine):
     from playwright.sync_api import sync_playwright, expect
 
     data, url = direct_server_with_data['data_dir'], direct_server_with_data['url']
@@ -55,9 +56,10 @@ def test_skills_card_geometry_tracks_card_width_and_keeps_grant_on_card(direct_s
     _skill(data, names[1], grant=True)
     _skill(data, names[2])
     with sync_playwright() as playwright:
-        browser = playwright.chromium.launch(headless=True)
+        browser = getattr(playwright, engine).launch(headless=True)
         try:
-            page = browser.new_page(viewport={'width': 719, 'height': 900})
+            # Docked, like the first measured width: below 720 the sidebar is an off-screen drawer.
+            page = browser.new_page(viewport={'width': 720, 'height': 900})
             page.goto(url, wait_until='domcontentloaded')
             page.click('[data-nav-page="skills"]')
             page.wait_for_selector(f'.skills-card[data-skill="{names[1]}"]')
@@ -71,27 +73,30 @@ def test_skills_card_geometry_tracks_card_width_and_keeps_grant_on_card(direct_s
                     facts = card.evaluate('''card => {
                         const rect = card.getBoundingClientRect();
                         const title = card.querySelector('.skills-card-title').getBoundingClientRect();
-                        const actions = [...card.querySelectorAll('.skills-card-toggle > button, .skills-card-menu-trigger')]
-                            .map(button => ({x:button.getBoundingClientRect().x, right:button.getBoundingClientRect().right}));
+                        const actions = [...card.querySelectorAll('.skills-switch, .skills-card-menu-trigger, .skills-tray-actions button')]
+                            .map(control => ({text:control.textContent.trim(), x:control.getBoundingClientRect().x,
+                                right:control.getBoundingClientRect().right}));
                         return {card:rect.width, title:title.width, x:rect.x, right:rect.right, actions,
                             direction:getComputedStyle(card.querySelector('.skills-card-head')).flexDirection,
                             sidebar:document.getElementById('primary-sidebar').getBoundingClientRect().width};
                     }''')
                     assert abs(facts['sidebar'] - sidebar) <= 2, facts
                     assert facts['title'] >= 180, facts
-                    assert all(action['x'] >= facts['x'] and action['right'] <= facts['right'] for action in facts['actions']), facts
+                    assert facts['actions'] and all(action['x'] >= facts['x'] and action['right'] <= facts['right']
+                                                    for action in facts['actions']), facts
+                    assert name != names[1] or 'Grant access' in [action['text'] for action in facts['actions']], facts
                     assert facts['direction'] == ('column' if viewport != 1440 else 'row'), facts
                     measurements.append({'viewport': viewport, 'name': name, **facts})
                 grant = page.locator(f'.skills-card[data-skill="{names[1]}"]')
                 grant.scroll_into_view_if_needed()
                 expect(grant.get_by_role('button', name='Grant access', exact=True)).to_be_visible()
-                _screenshot(page, f'skills-width-{viewport}-sidebar-{sidebar}.png')
+                _screenshot(page, f'{engine}-skills-width-{viewport}-sidebar-{sidebar}.png')
             grant.get_by_role('button', name='Grant access', exact=True).click()
             expect(page.locator('.confirm-dialog')).to_contain_text(f'Grant access to {names[1]}')
-            _screenshot(page, 'grant-access-dialog.png')
+            _screenshot(page, f'{engine}-grant-access-dialog.png')
             page.locator('.confirm-dialog [data-confirm-cancel]').last.click()
             if directory := os.environ.get('OUROBOROS_PUBLICATION_SCREENSHOTS'):
-                (Path(directory) / 'geometry.json').write_text(json.dumps(measurements, indent=2))
+                (Path(directory) / f'{engine}-geometry.json').write_text(json.dumps(measurements, indent=2))
         finally:
             browser.close()
 
