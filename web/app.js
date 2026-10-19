@@ -6,7 +6,8 @@ import { loadVersion } from './modules/utils.js';
 import { bindScrollFade } from './modules/scroll_fade.js';
 import { initChat, createChatInstance } from './modules/chat.js';
 import { createStateSnapshotSequencer } from './modules/chat_activity.js';
-import { IDLE_SUMMARY, buildProjectActivityIndex, reconcileProjectRooms } from './modules/project_activity.js';
+import { IDLE_SUMMARY, buildProjectActivityIndex, markWords, reconcileProjectRooms } from './modules/project_activity.js';
+import { createStatusMark, markView, paintStatusMark } from './modules/status_mark.js';
 import { initFiles } from './modules/files.js';
 import { createNotificationActivation, getNotifier } from './modules/notifications.js';
 import { showToast } from './modules/toast.js';
@@ -100,8 +101,8 @@ const projectPanelTitle = document.getElementById('project-panel-title');
 const navProjects = document.getElementById('nav-projects');
 const navProjectsToggle = document.getElementById('nav-projects-toggle');
 const navProjectsCount = document.getElementById('nav-projects-count');
-const navProjectsActivity = document.getElementById('nav-projects-activity');
 const navProjectsList = document.getElementById('nav-projects-list');
+const navMainRow = primarySidebar?.querySelector('.nav-row-main');
 const projectInstances = new Map();
 const projectPaintRequests = new Map();
 // The question reveal the current showing is still making (revealProjectQuestion):
@@ -113,6 +114,7 @@ const pendingProjectPins = new Set();
 let projectRooms = new Map();
 let projectActivityIndex = buildProjectActivityIndex();
 let activitySocketDisconnected = false;
+const navToggleNames = new WeakMap();  // each ☰'s last written name (paintNavToggles)
 let projectPanelHideTimer = null;
 let releaseMobileKeyboardForDrawer = () => {};
 
@@ -187,6 +189,7 @@ function updateUnreadBadge() {
     } else if (badge) {
         badge.remove();
     }
+    paintNavToggles();
 }
 
 function syncNavigationState() {
@@ -251,6 +254,7 @@ function syncNavigationState() {
     } else layers.remove('project');
     // Last: the open Project's row is marked, and a closed Project's focus is back on its row, which then stays.
     syncProjectsCollapse();
+    paintNavToggles();  // a room's composer mounted since the last paint carries its ☰ too
 }
 
 // Keys scroll what is being read: an opened Project gives the focus to its room's feed (focusable, out of the tab
@@ -716,31 +720,22 @@ function markProjectActivityUnknown() {
     patchProjectActivityMarkers(projectActivityIndex);
 }
 
-function setActivityMarker(marker, summary) {
-    if (!marker) return;
-    const label = summary.label;
-    const active = Boolean(label);
-    marker.hidden = !active;
-    marker.dataset.state = active ? String(summary.state || 'unknown') : 'idle';
-    marker.dataset.motion = summary.motion ? '1' : '0';
-    // Amber: something in the room waits for the owner (the server's room.amber); a pause is not amber.
-    marker.dataset.amber = summary.amber ? '1' : '0';
-    marker.title = active ? label : '';
-    marker.setAttribute('aria-hidden', 'true');
-}
-
-function setActivityOwnerName(owner, baseName, summary) {
+// A mark's words go into its place's name (its tooltip and accessible name): the hue is never the only way it is told.
+function setActivityOwnerName(owner, baseName, words) {
     if (!owner) return;
-    const label = summary.label;
-    const name = label ? `${baseName} · ${label}` : baseName;
+    const name = words ? `${baseName} · ${words}` : baseName;
     owner.setAttribute('aria-label', name);
     owner.title = name;
 }
 
+// Every sidebar mark from the server's rooms (docs/DESIGN.md "Status marks"): a Project row's from its room and its
+// unread fact, the Projects header's from all Project rooms (the owner's move, else the strongest work; unread is its
+// count), Main's row and the ☰ (paintMainRow, paintNavToggles). Nodes are painted in place, so focus and menus stay.
 function patchProjectActivityMarkers(activityIndex = projectActivityIndex) {
-    setActivityMarker(navProjectsActivity, activityIndex.aggregate);
+    const aggregate = activityIndex.aggregate;
+    paintStatusMark(navProjectsToggle?.querySelector('.nav-mark'), markView({ mark: aggregate.mark, owner: aggregate.owner }));
     const unread = navProjectsCount?.title;
-    setActivityOwnerName(navProjectsToggle, unread ? `Projects · ${unread}` : 'Projects', activityIndex.aggregate);
+    setActivityOwnerName(navProjectsToggle, unread ? `Projects · ${unread}` : 'Projects', aggregate.label);
     const buttons = new Map(
         [...(navProjectsList?.querySelectorAll('[data-project-id]') || [])]
             .map((button) => [String(button.dataset.projectId || ''), button]),
@@ -748,15 +743,49 @@ function patchProjectActivityMarkers(activityIndex = projectActivityIndex) {
     for (const row of lastProjectRows) {
         const button = buttons.get(String(row.id));
         const summary = activityIndex.byChat.get(String(row.chat_id)) || IDLE_SUMMARY;
-        setActivityMarker(button?.querySelector('.nav-activity-marker'), summary);
+        const deleting = String(row.lifecycle || 'active') === 'deleting';
+        const unreadRow = Boolean(row._unread) && !deleting;
+        button?.toggleAttribute('data-unread', unreadRow);
+        // A deleting row draws only `Deleting…`; its census fact stays in its name.
+        paintStatusMark(button?.querySelector('.nav-mark'),
+            deleting ? markView() : markView({ mark: summary.mark, owner: summary.owner, unread: unreadRow }));
         // The pin is said in the row's full name (its tooltip and accessible name), never drawn in the row.
         const name = `${row.name || row.id}${row.pinned === true ? ' · Pinned' : ''}`;
-        const baseName = String(row.lifecycle || 'active') === 'deleting'
-            ? `${name} — Deleting…${row.delete_error ? ` ${row.delete_error}` : ''}`
-            : row._unread ? `${name} · Unread` : name;
-        setActivityOwnerName(button, baseName, summary);
+        setActivityOwnerName(button, deleting ? `${name} — Deleting…${row.delete_error ? ` ${row.delete_error}` : ''}` : name,
+            markWords(summary, unreadRow));
     }
+    paintMainRow();
+    paintNavToggles();
     syncProjectsCollapse();
+}
+
+// Main's row carries its room's mark in the ink of the row; its own new messages stay its number badge
+// (updateUnreadBadge). Its words are a text for readers inside the row, so the row keeps the name the interface's
+// language gives its label (a Project row is named by its owner, so its name is an attribute).
+function paintMainRow() {
+    const summary = projectRooms.get('1') || IDLE_SUMMARY;
+    paintStatusMark(navMainRow?.querySelector('.nav-mark'), markView({ mark: summary.mark, owner: summary.owner }));
+    const words = navMainRow?.querySelector('.nav-row-words');
+    const text = summary.label ? ` · ${summary.label}` : '';
+    if (words && words.textContent !== text) words.textContent = text;
+}
+
+// The ☰ tells what waits behind it (owner 19.10, 3A): an amber dot while Main or a Project waits for the owner, else a
+// crimson dot while one has new messages, else nothing; its name says the same. Both placements (a page header's, a
+// room's composer row) are painted; a composer that mounted later is painted by the navigation sync that shows it.
+function paintNavToggles() {
+    const owner = (projectRooms.get('1') || IDLE_SUMMARY).owner || projectActivityIndex.aggregate.owner;
+    const unread = (state.unreadCount > 0 && state.activePage !== 'chat') || lastProjectRows.some((row) => row._unread);
+    const view = markView({ owner, unread });
+    const name = owner ? 'Open navigation · something waits for you' : unread ? 'Open navigation · new messages' : 'Open navigation';
+    for (const toggle of document.querySelectorAll('[data-mobile-nav-toggle]')) {
+        paintStatusMark(toggle.querySelector('.status-mark'), view);
+        // Written only when it changes, so the interface language's overlay is not asked to translate it again.
+        if (navToggleNames.get(toggle) !== name) {
+            navToggleNames.set(toggle, name);
+            toggle.setAttribute('aria-label', name);
+        }
+    }
 }
 
 // ACK exactly the revision painted. The server max-merges and clamps the cursor,
@@ -839,10 +868,7 @@ function paintProjectsNav() {
             btn.dataset.projectId = project.id;
             const label = document.createElement('span');
             label.className = 'nav-row-label';
-            const marker = document.createElement('span');
-            marker.className = 'nav-activity-marker chat-live-typing';
-            for (let i = 0; i < 3; i += 1) marker.appendChild(document.createElement('span'));
-            btn.append(label, marker);
+            btn.append(label, createStatusMark(document, 'nav-mark'));
             item.appendChild(btn);
             if (deleting) {
                 const status = document.createElement('span');
@@ -884,14 +910,6 @@ function paintProjectsNav() {
         btn.disabled = deleting;
         btn.querySelector('.nav-row-label').textContent = project.name || project.id;
         btn.classList.toggle('active', project.id === navState.activeProjectId);
-        btn.classList.toggle('has-unread', project._unread && !deleting);
-        const unread = btn.querySelector('.nav-unread-dot');
-        if (project._unread && !deleting && !unread) {
-            const dot = document.createElement('span');
-            dot.className = 'nav-unread-dot';
-            dot.title = 'Unread messages';
-            btn.appendChild(dot);
-        } else if (!project._unread || deleting) unread?.remove();
         const kebab = item.querySelector('.nav-project-kebab');
         if (kebab) kebab.setAttribute('aria-label', fmt('Actions for {name}', { name: project.name || project.id }));
         else item.querySelector('.nav-project-deleting-status').title = project.delete_error || 'Cancellation and cleanup are in progress';

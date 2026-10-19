@@ -25,8 +25,8 @@ test('a known non-Project wait keeps its scope label, on its row: the header say
 test('a held task is stationary in Chat and the sidebar, its label beside the word', () => {
     assert.deepEqual(roomStatusView(inRoom('waiting')),
         { kind: 'online', text: 'Waiting', tone: 'held', showDots: false, dots: 'one', amber: '', mark: 'dot' });
-    const sidebar = summarizeRoom({ ...room('waiting'), works: ['same-id'] }, [heldWork(held)]);
-    assert.deepEqual(sidebar, { state: 'dot', motion: false, amber: false, word: 'Waiting', label: `Waiting · ${hold.label}` });
+    const sidebar = summarizeRoom({ ...room('waiting'), mark: 'still', works: ['same-id'] }, [heldWork(held)]);
+    assert.deepEqual(sidebar, { mark: 'still', owner: false, word: 'Waiting', note: '', label: `Waiting · ${hold.label}` });
 });
 
 for (const [activity, extra, text, kind, showDots, tone] of [
@@ -50,7 +50,7 @@ test('same-ID recovery clears the hold on its row; independent work and a pause 
     assert.equal(roomStatusView(inRoom('working')).text, 'Working');
     const sibling = { ...held, activity_id: 'sibling', phase: 'working', project_admission_hold: undefined };
     const mixed = summarizeRoom({ ...room('working'), works: ['sibling', 'same-id'] }, [work(sibling), heldWork(held)]);
-    assert.deepEqual([mixed.state, mixed.motion], ['working', true]);
+    assert.equal(mixed.mark, 'moving');
     // One room word: a budget pause, the owner's Pause and a Restart hold all read Paused; the row says which.
     assert.equal(roomStatusView(inRoom('paused')).text, 'Paused');
 });

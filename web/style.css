@@ -89,6 +89,7 @@ html[data-layout="stack"] .shell-icon-control {
     --nav-row-h: 44px;       /* a place: Main Chat, Files … */
     --nav-item-h: 32px;      /* a Project row */
     --nav-control-h: 28px;   /* a row's ⋯ and the header's + */
+    --nav-kebab-w: var(--nav-control-h);  /* the column a Project row's ⋯ takes */
     --nav-label-x: calc(var(--space-3) + 18px + var(--space-3));  /* the one text column every label starts on */
     width: var(--drag-width, var(--sidebar-width));
     height: var(--vvh);
@@ -260,18 +261,9 @@ html[data-layout="stack"] .resize-handle { display: none; }
     white-space: nowrap;
 }
 
-/* Sidebar activity reuses the live-card's three 4px dots (`.chat-live-typing`
-   supplies the size, 3px gap and 1.4s bounce) as the room's one mark in the
-   server's work projection: three moving dots for work, three still dots for
-   queued work, one dot for a wait or a pause, a hollow ring when unconfirmed.
-   The dots take the row's own foreground, like the shared status-sentence dot,
-   so they never out-shout the title and follow its hover/active ink; amber is
-   the one hue, while something in the room waits for the owner; queued and
-   unknown work stay static at a quieter step of that ink. */
-.nav-activity-marker {
-    pointer-events: none;
-}
-
+/* The sidebar's marks are the shared status marks (ui.css "Status marks", status_mark.js): one per place, in the
+   place's own ink (hover and the chosen row's ink included), the owner's amber and the unread crimson its only hues.
+   The Projects header carries the Projects' one mark beside its label. */
 .nav-activity-label {
     display: inline-flex;
     align-items: center;
@@ -281,29 +273,6 @@ html[data-layout="stack"] .resize-handle { display: none; }
 }
 
 .nav-activity-label .nav-row-label { flex: 0 1 auto; }
-
-.nav-activity-marker[hidden] { display: none; }
-
-/* Same specificity as the later shared `.chat-live-typing span` accent rule
-   would lose on order; name the composed marker so the row ink wins: the dots never out-shout the name, and
-   what waits for the owner is the one amber. */
-.nav-activity-marker.chat-live-typing span { background: currentColor; }
-.nav-activity-marker[data-amber="1"] span { background: var(--amber); }
-.nav-activity-marker[data-state="queued"],
-.nav-activity-marker[data-state="unknown"] { opacity: 0.55; }
-/* One fact is one dot; an unconfirmed room is one hollow ring. */
-.nav-activity-marker:is([data-state="dot"], [data-state="unknown"]) span:not(:first-child) { display: none; }
-.nav-activity-marker[data-state="unknown"] span { box-sizing: border-box; background: transparent; border: 1px solid currentColor; }
-
-/* Only confirmed computation inherits the bounce. */
-.nav-activity-marker[data-state="dot"] span,
-.nav-activity-marker[data-state="queued"] span,
-.nav-activity-marker[data-state="unknown"] span,
-.nav-activity-marker[data-state="idle"] span { animation: none; }
-
-@media (prefers-reduced-motion: reduce) {
-    .nav-activity-marker[data-state="working"] span { animation: none; }
-}
 
 .nav-row-meta {
     flex: 0 0 auto;
@@ -326,7 +295,7 @@ html[data-layout="stack"] .resize-handle { display: none; }
 }
 
 /* Unread counts and badges are the crimson accent (a live fact for you), never red and never a glow (owner Q6=A);
-   a Project row's own unread dot is the quieter red dot in a soft ring (.nav-unread-dot). */
+   a Project row's own new messages are the crimson hue of its status mark. */
 .unread-badge {
     position: absolute;
     top: 4px;
@@ -346,15 +315,22 @@ html[data-layout="stack"] .resize-handle { display: none; }
 }
 
 .nav-project-row { position: relative; }
-/* A small red dot in a soft ring: noticed, never louder than the name. */
-.nav-unread-dot {
-    flex: 0 0 auto;
-    margin-left: auto;
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
-    background: var(--red);
-    box-shadow: 0 0 0 2px var(--accent-18);
+
+/* Main's row ends where a Project row's mark column ends (the ⋯ column and the row's inset), so its room's mark sits
+   at the Project rows' x by construction, in the same 18px box; its words are for readers only. */
+.nav-row-main {
+    padding-right: calc(var(--nav-kebab-w) + var(--space-1));
+}
+.nav-row-main > .nav-mark {
+    flex: 0 0 18px;
+}
+.nav-row-words {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
 }
 
 @media (hover: hover) {
@@ -1342,23 +1318,11 @@ html[data-layout="docked"] .app-page-header[data-empty] {
     color: var(--status-error-fg);
 }
 
-/* When a mode inside More is active, mark the collapsed More pill with a dot. */
+/* A mode inside More is on: the collapsed More capsule takes its tone, with no dot of its own. */
 .chat-header-more > summary.has-active {
-    position: relative;
     border-color: var(--accent-35);
     background: var(--accent-dim);
     color: var(--accent-light);
-}
-
-.chat-header-more > summary.has-active::after {
-    content: '';
-    position: absolute;
-    top: 5px;
-    right: 7px;
-    width: 6px;
-    height: 6px;
-    border-radius: 50%;
-    background: var(--accent);
 }
 
 .chat-budget-pill {
@@ -3566,9 +3530,20 @@ html[data-layout="stack"] #app {
     grid-template-columns: minmax(0, 1fr);
 }
 html[data-layout="stack"] .mobile-nav-toggle {
-    position: static;
+    position: relative;  /* its status dot sits on its corner */
     flex: 0 0 44px;
     display: inline-flex;
+}
+/* The ☰'s dot says what waits behind it (app.js paintNavToggles): the shared 7px fact dot on the control's top-right,
+   clear of the glyph's top stroke, with no ring around it; inset closer on the composer's 32px capsule. */
+.mobile-nav-toggle > .status-mark {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+}
+.mobile-nav-toggle.composer-menu > .status-mark {
+    top: 3px;
+    right: 3px;
 }
 /* A room's ☰ is the first control of its composer's row, under the thumb (owner 19.10, 1A): as tall as the
    capsules beside it, with the touch minimum as its finger target (.ui-hit-area). */
@@ -3693,10 +3668,6 @@ html[data-layout="stack"] .chat-header-more > summary {
 }
 html[data-layout="stack"] .chat-header-more-word { display: none; }
 html[data-layout="stack"] .chat-header-more-glyph { display: inline-flex; }
-html[data-layout="stack"] .chat-header-more > summary.has-active::after {
-    top: 9px;
-    right: 9px;
-}
 html[data-layout="stack"] .chat-page-note {
     padding: 0 var(--space-3) var(--space-2);
 }
@@ -6913,7 +6884,7 @@ body.keyboard-open .chat-instance-panel .chat-input-area {
    no left active bar) — a dropdown list, not standalone tabs. */
 .nav-project-item {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) var(--nav-control-h);
+    grid-template-columns: minmax(0, 1fr) var(--nav-kebab-w);
     align-items: center;
     width: 100%;
     border-radius: var(--radius-sm);
@@ -6925,7 +6896,7 @@ body.keyboard-open .chat-instance-panel .chat-input-area {
     margin-top: var(--space-2);
 }
 
-/* A Project row reads in the secondary ink at the body size; unread takes the primary ink as well as its dot. */
+/* A Project row reads in the secondary ink at the body size, read or not: its new messages are its mark's hue. */
 .nav-project-row {
     min-height: var(--nav-item-h);
     font-size: var(--type-body);
@@ -6933,30 +6904,22 @@ body.keyboard-open .chat-instance-panel .chat-input-area {
     padding-left: var(--nav-label-x);
     padding-right: var(--space-1);
     border-radius: var(--radius-sm);
-    /* One trailing rail per row: label, activity column, unread column. Each
-       trailing child is placed explicitly in its own always-reserved column
-       (the global [hidden] rule removes an idle marker from layout, so the
-       tracks, not the children, hold the slots): the dots and the unread dot
-       keep one x across rows whether or not the other is present, whatever
-       the name length, and while the sibling kebab (the item's own 28px
-       column) is hovered or focused. 18px is the marker's own width, three
-       4px dots and two 3px gaps; 8px is the unread dot's. */
+    /* One trailing column per row for its one status mark, always reserved (the global [hidden] rule removes a row's
+       mark at rest from layout, so the track, not the child, holds the slot): every mark keeps one x across rows,
+       whatever the name length and while the sibling ⋯ (the item's own column) is hovered or focused. 18px is the
+       widest mark's, three 4px dots and two 3px gaps. */
     display: grid;
-    grid-template-columns: minmax(0, 1fr) 18px 8px;
+    grid-template-columns: minmax(0, 1fr) 18px;
     column-gap: var(--space-2);
 }
 
 .nav-project-row > .nav-row-label { grid-column: 1; }
-.nav-project-row > .nav-activity-marker { grid-column: 2; }
-.nav-project-row > .nav-unread-dot { grid-column: 3; }
+.nav-project-row > .nav-mark { grid-column: 2; }
 
-/* A deleting row states one trailing fact, `Deleting…`, in its wider sibling
-   column. Its census marker stays in the accessible name but is not drawn:
-   motion on a row the owner cannot open would read as work to look at. */
+/* A deleting row states one trailing fact, `Deleting…`, in its wider sibling column. Its census mark stays in the
+   accessible name but is not drawn (app.js): motion on a row the owner cannot open would read as work to look at. */
 .nav-project-item.is-deleting .nav-project-row { grid-template-columns: minmax(0, 1fr); }
-.nav-project-item.is-deleting .nav-activity-marker { display: none; }
 
-.nav-project-row.has-unread { color: var(--text-primary); }
 @media (hover: hover) {
     .nav-project-row:hover {
         color: var(--text-primary);
