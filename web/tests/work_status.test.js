@@ -408,7 +408,13 @@ test('a work card keeps its work\'s look beside its own words: the owner\'s dot 
     const waits = { ...record, workView: cardWorkView(limit), workLook: { mark: limit.mark, owner: limit.turn.length > 0 } };
     assert.deepEqual([desiredLiveCardPhase(waits).text, desiredLiveCardPhase(waits).tone, desiredLiveCardPhase(waits).owner],
         ['Paused · spending limit', 'owner', true]);
-    // Unconfirmed work proves nothing: no look, so the card's own words and shape stand.
+    // A turn the body lists is a fact even when another member could not be confirmed: the dot stays.
+    const partial = { ...parent, confirmed: false };
+    const read = reconcileWorkState(emptyWorkState(), { ...body, works_complete: false, works: [partial] }, 42);
+    applyCardWorkViews(new Map([['w', record]]), read);
+    assert.deepEqual([record.workView, record.workLook], [null, { mark: 'moving', owner: true }]);
+    assert.deepEqual([desiredLiveCardPhase(record).text, desiredLiveCardPhase(record).owner], ['Working', true]);
+    // A work an incomplete body omitted proves nothing: no look, so the card's own words and shape stand.
     const kept = reconcileWorkState(state, { supervisor_ready: true, works_complete: false, works: [], rooms: {} }, 42);
     applyCardWorkViews(new Map([['w', record]]), kept);
     assert.deepEqual([record.workView, record.workLook], [null, null]);

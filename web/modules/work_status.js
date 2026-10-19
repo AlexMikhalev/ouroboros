@@ -232,8 +232,9 @@ export function cardWorkView(work) {
 
 /**
  * Every card's work view from one state; true when a card's view changed (its chip repaints with its next write).
- * Apart from the optional word, a confirmed work's live current episode keeps the work's look: its mark and
- * whether something in it waits for the owner (the server takes the turn from every member, a helper's included).
+ * Apart from the optional word, a work's live current episode keeps the work's look: its mark and whether something
+ * in it waits for the owner (the server takes the turn from every member, a helper's included). A turn the body lists
+ * is a fact even when another member could not be confirmed; a work an incomplete body omitted keeps no look.
  */
 export function applyCardWorkViews(records, state) {
     let changed = false;
@@ -241,8 +242,7 @@ export function applyCardWorkViews(records, state) {
         if (record?.isSubagent) continue;
         const work = state?.episodes?.get(String(record.groupId || ''));
         const view = cardWorkView(work);
-        const look = work?.confirmed && work.episode?.live ? { mark: String(work.mark || 'none'), owner: list(work.turn).length > 0 }
-            : null;
+        const look = work?.episode?.live ? { mark: String(work.mark || 'none'), owner: list(work.turn).length > 0 } : null;
         if (JSON.stringify([view, look]) !== JSON.stringify([record.workView || null, record.workLook || null])) changed = true;
         record.workView = view;
         record.workLook = look;
