@@ -1,6 +1,7 @@
 """Late acceptance through the registered owner tool and existing paid engine."""
 import copy
 import json
+import os
 import queue
 import threading
 from types import SimpleNamespace
@@ -69,6 +70,7 @@ def delivered(tmp_path, monkeypatch, *, retry=False, receipt='exact', cap='finit
     f = _fixture(tmp_path, split=True, retry=retry, cap=cap)
     from supervisor import queue as task_queue
     monkeypatch.setattr(task_queue, 'INITIALIZED', True)
+    monkeypatch.setattr(task_queue, 'OWNER_PID', os.getpid())
     monkeypatch.setattr(task_queue, 'DRIVE_ROOT', f.root)
     if deadline:
         f.task['task_contract']['deadline_at'] = deadline
