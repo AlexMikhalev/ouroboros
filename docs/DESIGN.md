@@ -2134,7 +2134,9 @@ them. A Project's ⋯ offers Pin or Unpin first; pinning neither opens nor reads
 it. Pinned Projects lead the one list, and one `--space-2` of air before the next
 shown row is their only boundary: no caption, glyph, tint, rule or column, so
 nothing reads as one more Project; the row's tooltip and accessible name say
-Pinned. Within each group the order follows §5. Collapsed, the Projects keep the
+Pinned. Within each group unread leads, then recency; the column's places follow §5.
+After Unpin, a room outside the recent sidebar slice disappears from that slice,
+not from the registry. Collapsed, the Projects keep the
 pinned ones, those whose dots show (work running, queued or waiting), the open
 one and the one under the keyboard; the rest wait behind "Show all N". No label
 is set in capitals. A short window first compacts rows (fine pointer only), then lets the

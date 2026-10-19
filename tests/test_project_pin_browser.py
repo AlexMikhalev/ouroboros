@@ -506,3 +506,46 @@ def test_pin_real_server_updates_other_window_and_survives_reload(direct_server_
             assert next(p for p in registry.projects_summary(root) if p["id"] == "pin-new")["visible_revision"] == revision
         finally:
             browser.close()
+
+
+@pytest.mark.parametrize("height", [900, 500])
+@pytest.mark.parametrize("keyboard", [True, False], ids=["keyboard", "pointer"])
+def test_local_pin_reveal_respects_input_and_visible_scroll_region(pins_ui, height, keyboard):
+    ui, page, root = pins_ui, pins_ui["page"], pins_ui["root"]
+    page.set_viewport_size({"width": ui["width"], "height": height})
+    for i in range(35):
+        registry.create_project(root, f"scroll-{i}", name=f"Research {i}", origin="owner_ui")
+    refresh(page)
+    expect()(page.locator('.nav-project-item')).to_have_count(37)
+    kebab = row(page, "older").locator('.nav-project-kebab')
+    kebab.scroll_into_view_if_needed()
+    scroll = "() => ['primary-sidebar', 'nav-projects-list'].map(id => document.getElementById(id).scrollTop)"
+    if keyboard:
+        kebab.focus()
+        page.keyboard.press("Enter")
+    elif ui["width"] < 720:
+        kebab.tap()
+    else:
+        kebab.click()
+    expect()(menu(page).locator('[data-prm="pin"]')).to_have_text("Pin")
+    before = page.evaluate(scroll)
+    if keyboard:
+        page.keyboard.press("Enter")
+    elif ui["width"] < 720:
+        menu(page).locator('[data-prm="pin"]').tap()
+    else:
+        menu(page).locator('[data-prm="pin"]').click()
+    expect()(row(page, "older")).to_have_attribute("data-pinned", "")
+    if keyboard:
+        assert kebab.evaluate("el => el === document.activeElement")
+        assert kebab.evaluate("""el => {
+            const r = el.getBoundingClientRect();
+            return r.top >= 0 && r.bottom <= innerHeight
+                && el.contains(document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2));
+        }"""), "keyboard focus must remain visible and unobscured by the sticky head"
+    else:
+        # Native anchoring can shift by the moved row plus the new spacing boundary,
+        # but must not follow that row hundreds of pixels to its new position.
+        allowance = kebab.evaluate("el => el.getBoundingClientRect().height + parseFloat(getComputedStyle(el).getPropertyValue('--space-2')) + 3")
+        assert max(abs(a - b) for a, b in zip(before, page.evaluate(scroll))) <= allowance, "pointer pin must not jump the list"
+    expect()(page.locator('#toast-stack').filter(has_text="Could not save project pin")).to_have_count(0)

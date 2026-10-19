@@ -101,7 +101,7 @@ const navProjectsToggle = document.getElementById('nav-projects-toggle');
 const navProjectsCount = document.getElementById('nav-projects-count');
 const navProjectsActivity = document.getElementById('nav-projects-activity');
 const navProjectsList = document.getElementById('nav-projects-list');
-// Collapsed, the list keeps the live Projects and the open one; the rest wait behind this one quiet row.
+// Collapse keeps pinned, live, open and keyboard-owned Projects; other fetched rows wait here.
 const navProjectsShowAll = document.createElement('button');
 navProjectsShowAll.type = 'button';
 navProjectsShowAll.id = 'nav-projects-show-all';
@@ -922,6 +922,7 @@ function paintProjectsNav() {
 async function setProjectPin(project, pinned) {
     if (pendingProjectPins.has(project.id)) return;
     pendingProjectPins.add(project.id);
+    const focused = document.activeElement;
     try {
         const { project: saved } = await apiClient.projectUpdate(project.id, { pinned });
         if (saved?.id !== project.id || saved.pinned !== pinned) throw new Error('Pin state was not confirmed');
@@ -932,6 +933,17 @@ async function setProjectPin(project, pinned) {
         if (row) row.pinned = saved.pinned;
         knownProjectsJson = '';
         renderProjectsNav(lastProjectRows, Array.from(state.projectChatIds));
+        let keyboard = false;
+        try { keyboard = focused?.matches(':focus-visible') === true; } catch { /* older selector support */ }
+        if (keyboard && focused === document.activeElement && focused?.isConnected
+                && focused.closest('.nav-project-item')?.dataset.navProjectId === project.id) {
+            focused.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+            const head = primarySidebar.querySelector('.sidebar-head');
+            if (head && getComputedStyle(head).position === 'sticky') {
+                const overlap = head.getBoundingClientRect().bottom - focused.getBoundingClientRect().top;
+                if (overlap > 0) primarySidebar.scrollTop -= overlap;
+            }
+        }
     } catch (err) {
         showToast(fmt('Could not save project pin: {error}', { error: err?.body?.error || err.message }), 'error');
     } finally {
