@@ -84,6 +84,8 @@ test('opening alone: the glass grows from the closed capsule, the head rides, th
     assert.equal(f.on(f.head)[0].options.duration, MORPH.open, 'the head keeps pace with the glass');
     assert.equal(f.on(f.body).length, 1, 'the strip comes in');
     assert.deepEqual(f.segs.map((seg) => f.on(seg)[0].options.delay), [70, 82, 94], 'the levels one after another');
+    // They only fade: each level stands under the selection's pill from the first frame (nothing slides into place).
+    for (const seg of f.segs) assert.deepEqual(f.on(seg)[0].keyframes, [{ opacity: 0 }, { opacity: 1 }]);
     // The controls that stepped aside stand where they were, out of the line's flow, and fade.
     assert.equal(f.row.dataset.ownerLeaving, '');
     for (const [kid, left, width] of [[f.menu, 12, 32], [f.pills, 50, 70], [f.context, 126, 80]]) {
@@ -95,6 +97,13 @@ test('opening alone: the glass grows from the closed capsule, the head rides, th
         assert.deepEqual(fade.keyframes, [{ opacity: 1 }, { opacity: 0 }]);
         assert.equal(fade.options.duration, MORPH.leave);
     }
+    // A control whose fade has ended leaves the page at once, while the glass still grows; the others still stand.
+    f.on(f.pills)[0].finish();
+    await settle();
+    assert.equal(f.pills.dataset.capsuleLeaving, undefined);
+    assert.equal(f.pills.css.has('--leave-x'), false);
+    assert.equal(f.menu.dataset.capsuleLeaving, '');
+    assert.equal(glass.playState, 'running');
     glass.finish();
     await settle();
     assert.equal(f.surface(), null, 'the capsule paints its own surface again');

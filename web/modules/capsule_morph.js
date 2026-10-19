@@ -103,17 +103,20 @@ function play({ el, row, open, from, shown, wasAlone, win }) {
             { duration: open ? MORPH.open : MORPH.close, easing: MORPH.ease }));
     }
     if (open) {
-        // The strip comes in once the glass has started to move, its levels one after another.
+        // The strip comes in once the glass has started to move, its levels one after another. They only fade: each
+        // level is in its place from the first frame, under the selection's pill (nothing slides into place).
         const body = el.querySelector(':scope > .chat-capsule-body');
         if (body) animations.push(fade(body, 0, 1, { duration: 160, delay: 60, fill: 'backwards' }));
-        const lead = win.getComputedStyle(el).direction === 'rtl' ? 4 : -4;
-        Array.from(el.querySelectorAll('.chat-effort-seg, .chat-seg')).forEach((seg, i) => animations.push(seg.animate(
-            [{ opacity: 0, transform: `translateX(${lead}px)` }, { opacity: 1, transform: 'none' }],
-            { duration: 140, delay: 70 + 12 * i, fill: 'backwards', easing: 'ease-out' })));
+        Array.from(el.querySelectorAll('.chat-effort-seg, .chat-seg')).forEach((seg, i) => animations.push(
+            fade(seg, 0, 1, { duration: 140, delay: 70 + 12 * i, fill: 'backwards' })));
         // The controls that stepped aside stand where they were, out of the line's flow, and fade.
         const leaving = [...shown].filter(([kid]) => kid.isConnected && !kid.getClientRects().length);
         if (leaving.length) {
             row.dataset.ownerLeaving = '';
+            const release = (kid) => {
+                delete kid.dataset.capsuleLeaving;
+                LEAVE_PROPS.forEach((prop) => kid.style.removeProperty(prop));
+            };
             for (const [kid, b] of leaving) {
                 kid.dataset.capsuleLeaving = '';
                 kid.style.setProperty('--leave-x', `${b.left}px`);
@@ -121,15 +124,14 @@ function play({ el, row, open, from, shown, wasAlone, win }) {
                 kid.style.setProperty('--leave-w', `${b.width}px`);
                 kid.style.setProperty('--leave-h', `${b.height}px`);
                 kid.style.setProperty('--leave-display', b.display);
-                // Mostly gone before the head rides under them.
-                animations.push(fade(kid, 1, 0, { duration: MORPH.leave, fill: 'forwards' }));
+                // Mostly gone before the head rides under them, and out of the page as soon as it has faded.
+                const out = fade(kid, 1, 0, { duration: MORPH.leave, fill: 'forwards' });
+                animations.push(out);
+                out.finished.then(() => release(kid), () => {});
             }
             cleanups.push(() => {
                 delete row.dataset.ownerLeaving;
-                for (const [kid] of leaving) {
-                    delete kid.dataset.capsuleLeaving;
-                    LEAVE_PROPS.forEach((prop) => kid.style.removeProperty(prop));
-                }
+                for (const [kid] of leaving) release(kid);
             });
         }
     } else {
