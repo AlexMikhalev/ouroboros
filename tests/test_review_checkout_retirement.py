@@ -13,7 +13,6 @@ from __future__ import annotations
 import json
 import os
 import pathlib
-import shutil
 import subprocess
 import sys
 import time
@@ -22,6 +21,7 @@ from types import SimpleNamespace
 import pytest
 
 from ouroboros import obligations, review_checking_prune as rp, review_operation
+from ouroboros.force_remove import force_rmtree
 from ouroboros.startup_migrations import prepare_startup_state
 from ouroboros.task_results import load_task_result, write_task_result
 from ouroboros.tools.review_subject import CHECKOUT_MARKER, ReviewSubjectSpec, checkout_token, isolated_checkout
@@ -213,7 +213,8 @@ def test_checkout_retirement_keeps_a_git_locked_checkout_until_its_registration_
 @pytest.mark.parametrize("replacement", [False, True], ids=["deleted", "recloned"])
 def test_checkout_of_a_deleted_subject_retires_only_after_review_custody_ends(subject, replacement):
     entry = _retain(subject)
-    shutil.rmtree(subject.repo)
+    force_rmtree(subject.repo)  # its Git objects are read-only (Windows refuses a plain rmtree)
+    assert not subject.repo.exists()
     if replacement:
         _repo(subject.repo)  # the new repository has no registration for this old checkout
     _attempt(subject, "reviewing")
