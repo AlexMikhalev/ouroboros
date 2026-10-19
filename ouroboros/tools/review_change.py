@@ -742,10 +742,12 @@ def _write(drive: Any, record: Any, *, rejoin: bool = False) -> Tuple[Dict[str, 
         retry = (prior.get("fingerprints") or {}).get("retry_key")
         if not retry or retry != (fresh.get("fingerprints") or {}).get("retry_key"):
             return fresh
-        # The same round keeps what its seats read, also when a late collector settled it a moment earlier.
+        # The same round keeps what its seats read, also when a late collector settled it a moment earlier;
+        # what the dispatching record lacks (a lost dispute-input binding) is the settling wave's.
         identity = {key: value for key, value in dict(prior.get("subject") or {}).items() if key in _SUBJECT_IDENTITY}
-        return {**fresh, **{key: prior[key] for key in ("brief", "fingerprints") if key in prior},
-                "subject": {**dict(fresh.get("subject") or {}), **identity}}
+        kept = {key: {**dict(fresh.get(key) or {}), **dict(prior[key] or {})}
+                for key in ("brief", "fingerprints") if key in prior}
+        return {**fresh, **kept, "subject": {**dict(fresh.get("subject") or {}), **identity}}
 
     try:
         revised = revise_record(drive, record.record_id, settle) if rejoin else None
