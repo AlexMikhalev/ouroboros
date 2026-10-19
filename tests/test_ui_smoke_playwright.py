@@ -814,6 +814,16 @@ def test_ui_smoke_phase3_declarative_widgets_and_settings(direct_server_with_dat
                     "element => getComputedStyle(element).maxHeight"
                 ) == "360px"
 
+                # The board's layout is planned for the cards it holds: this one alone, once a card whose frame is
+                # still stopping has left it (widgets.js retireCard) and the masonry frame after that has run.
+                board = """() => [...document.querySelectorAll('#widgets-list .widgets-card')].map((item) =>
+                    [item.dataset.widgetKey, item.hasAttribute('data-widget-removed')])"""
+                try:
+                    page.wait_for_function(f"() => {{ const cards = ({board})(); return cards.length === 1 && !cards[0][1]; }}",
+                                           timeout=15_000)
+                except PlaywrightError as exc:
+                    raise AssertionError(f"the board holds this card alone: {page.evaluate(board)}") from exc
+                page.evaluate("() => new Promise(done => requestAnimationFrame(() => requestAnimationFrame(done)))")
                 list_box = page.locator('#widgets-list').bounding_box()
                 card_box = card.bounding_box()
                 operations_group = card.locator('.widget-group').filter(has_text="Operations overview")

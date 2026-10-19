@@ -448,6 +448,10 @@ def test_main_rows_say_each_census_state_with_its_own_tone_and_controls(room_ui)
 
     # A card-less row asks the room's history on an explicit press, never a hover, and says what it found:
     # here the saved history holds no message of it, so it opens its details (finished work included later).
+    # The focus leaves the long row first: its whole name folds back on blur, and a press that blurred it would
+    # find its row moved up under the pointer by mouse-up (36 px with wider fonts), so the click lands on the list.
+    row_main(page, "rw-unknown").focus()
+    wait_facts(page, "main", lambda f: row(f, "rw-live")["reading"] == "0", "the long row at rest")
     row_main(page, "rw-unknown").click()
     detail = wait_facts(page, "main", lambda f: "No message" in row(f, "rw-unknown")["detail"], "an unloaded row's lookup")
     assert transport.around_reads == ["task:rw-unknown"]

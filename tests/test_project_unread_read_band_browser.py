@@ -981,7 +981,9 @@ def test_a_long_room_with_no_standalone_message_is_read_at_the_bottom_once_the_o
             assert newest["bottom"] > newest["feedTop"], ("the room's own newest note is on screen", newest)
             if early:
                 start = max(index for index, item in enumerate(reads) if item["absent"])
-                assert len(older) > 3 and [item["kind"] for item in reads[start + 1:start + 2]] == [None], \
+                # A state refresh may read what arrived meanwhile (an `after` read, #1954): not the opening's own.
+                opening = [item["kind"] for item in reads[start + 1:] if item["kind"] != "after"]
+                assert len(older) > 3 and opening[:1] == [None], \
                     ("past the pages kept, the opening went on to read the newest page again", reads)
                 assert messages.locator(".chat-bubble").filter(has_text="Early note 0").count() == 0, \
                     "the pages walked past went with their chain"

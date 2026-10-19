@@ -114,8 +114,13 @@ class _Race:
             assert _wait_for(room.page, lambda: named() is not None, attempts=150), self.history
             self.fresh = named()
         else:
+            sockets = room.page.evaluate("() => window.__testSockets.length")
             room.page.evaluate(_RECONNECT)
-            assert _wait_for(room.page, lambda: len(self.recent) > before, attempts=150), self.history
+            # The socket reopens on its own, and only then the room reads its newest page whole: on a loaded host
+            # both take their time, the server's search of the long room above all, so each is waited for itself.
+            room.page.wait_for_function("n => window.__testSockets.length > n && window.__testSockets.at(-1).readyState === 1",
+                                        arg=sockets, timeout=60_000)
+            assert _wait_for(room.page, lambda: len(self.recent) > before, attempts=600), self.history
             self.fresh = self.recent[-1]
         latest = self.fresh["window"]["latest_message"]
         if kind == "searched":

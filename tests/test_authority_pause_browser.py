@@ -13,6 +13,7 @@ import pytest
 
 from tests import test_batch4_owner_controls_browser as flow
 from tests import test_ui_smoke_playwright as smoke
+from tests.ui_console_errors import PageErrors
 
 
 direct_server_with_data = smoke.direct_server_with_data
@@ -59,8 +60,8 @@ def test_authority_pause_rejects_unrepaired_resume_then_returns_same_work(
             browser = getattr(pw, engine).launch(headless=True)
             page = browser.new_page(viewport={"width": 1100, "height": 722})
             page.add_init_script(f"({flow._CAPTURE_TEST_SOCKET})()")
-            errors = []
-            page.on("pageerror", lambda error: errors.append(str(error)))
+            # WebKit reports its own-origin reads the server restart cut off as page errors (#1468).
+            errors = PageErrors(page, engine)
             try:
                 flow._open_chat(page, url)
                 expect(flow._chip(page, flow.ALPHA)).to_have_text("Paused · technical issue", timeout=30_000)
@@ -106,7 +107,7 @@ def test_authority_pause_rejects_unrepaired_resume_then_returns_same_work(
                     "same_task_id": flow.ALPHA, "main_calls": model.main_calls("ALPHA"),
                     "successor_calls": model.main_calls("SUCCESSOR"), "page_errors": errors,
                 }, indent=2), encoding="utf-8")
-                assert errors == []  # preserve the full result even when a browser error remains
+                assert errors.unexpected() == [], errors  # preserve the full result even when a browser error remains
             finally:
                 (evidence / "page-errors.json").write_text(json.dumps(errors, indent=2), encoding="utf-8")
                 browser.close()

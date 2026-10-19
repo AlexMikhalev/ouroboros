@@ -7,6 +7,7 @@ card cannot pass by disappearing before the final assertion.
 """
 
 import json
+import re
 import uuid
 
 import pytest
@@ -178,23 +179,42 @@ def test_ordinary_addressing_card_tracks_real_work_through_metrics_and_reload(
                     assert metrics and metrics[-1]["tool_calls"] == len(steps)
                     page.get_by_text("The addressing attempt is complete.", exact=True).wait_for(timeout=30000)
                     card = page.locator(f'.chat-live-card[data-task-id="{task_id}"]')
-                    if case == "start_only":
+
+                    def addressing_only():
+                        """A busy host can make the turn wait for its own storage (accounting, control) as the
+                        follow-up starts. That wait is the turn's owner-visible activity (#1355): the turn then
+                        wears a card for it, live and on reload. A start-only turn that waited for nothing only
+                        addressed work, and wears none."""
+                        return case == "start_only" and not [
+                            row for row in oracle.events("task_checkpoint") if row.get("task_id") == task_id
+                            and row.get("checkpoint_kind") in ("usage_lock_wait", "control_store_wait")]
+
+                    if addressing_only():
                         assert card.count() == 0
                         assert task_id not in page.evaluate("() => window.__mountedCards")
+                    elif case == "start_only":
+                        card.wait_for(timeout=30000)
+                        waits = card.locator(".chat-live-line-title").filter(
+                            has_text=re.compile(r"^Waiting for (accounting access|control storage)$"))
+                        assert waits.count() >= 1, card.inner_html()
                     else:
                         card.wait_for(timeout=30000)
                         assert card.count() == 1
                         # A tool row or a tool error is content: the direct turn
                         # wears the task card (chrome follows content, owner
                         # decision 16.09) — a visible chip, a title, and the
-                        # Main conversion control on an unbound turn.
+                        # Main conversion control on an unbound turn. The turn's
+                        # end lands after its reply and metrics, and an unnarrated
+                        # card is named once it has ended (#1369): wait for it.
+                        page.wait_for_function("id => document.querySelector(`.chat-live-card[data-task-id=\"${id}\"]`)"
+                                               "?.dataset.finished === '1'", arg=task_id, timeout=30000)
                         assert card.locator("[data-live-phase]").is_visible()
                         assert card.locator("[data-live-title]").inner_text().strip() != ""
                         assert card.locator("[data-turn-into-project]").count() == 1
                     page.screenshot(path=str(evidence / "live.png"), full_page=True, animations="disabled")
                     page.reload(wait_until="domcontentloaded")
                     page.get_by_text("The addressing attempt is complete.", exact=True).wait_for(timeout=30000)
-                    assert page.locator(f'.chat-live-card[data-task-id="{task_id}"]').count() == (0 if case == "start_only" else 1)
+                    assert page.locator(f'.chat-live-card[data-task-id="{task_id}"]').count() == (0 if addressing_only() else 1)
                     if case != "failed_tell":
                         assert page.locator('.msg-routing-annotation[data-annotation-status="scheduled"]').count() == 1
                     page.screenshot(path=str(evidence / "reloaded.png"), full_page=True, animations="disabled")
