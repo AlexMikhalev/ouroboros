@@ -10,7 +10,7 @@
      Variants of one scene swap in place, instantly, at the viewer's real width, so only the change moves.
      Data: title (the question the viewer answers), lang, viewport {width, height}, start, variants
      [{id, label, note, recommended}], scenes [{id, label, note}], frames, optional subject (CSS selector of
-     the smallest element that holds the change) and scrollers (selectors whose scroll is kept), questions [{text, context,
+     the smallest element that holds the change) and scrollers (selectors whose scroll is kept), questions [{text, context, number,
      options [{key, text, recommended}]}] (the page adds "none of these" itself), source (one line on how
      the frames were made), strings (the page's own words in the viewer's language).
      Inside the JSON block write every "</" as "<\/" (json.dumps(...).replace("</", "<\\/")): a frame that contains
@@ -45,12 +45,14 @@ h1 { flex:1 1 240px; min-width:0; margin:0; font-size:15px; font-weight:650; }
 .meta { display:flex; flex-wrap:wrap; gap:2px 16px; color:var(--meta); font-size:12px; }
 .meta span:empty { display:none; }
 .stage-wrap { display:flex; justify-content:center; padding:12px 0; }
-.stage { position:relative; overflow:hidden; background:var(--surface); border:1px solid var(--line); border-radius:10px; }
+.stage { position:relative; overflow:hidden; box-sizing:content-box; background:var(--surface); border:1px solid var(--line); border-radius:10px; }
 body.tight .stage-wrap { padding:0; }
 body.tight .stage { border:0; border-radius:0; }
 .stage.side { overflow:visible; background:none; border:0; }
 .stage iframe { position:absolute; left:0; top:0; border:0; transform-origin:0 0; background:#fff; }
 .stage iframe[data-off] { visibility:hidden; }
+@media (max-width: 640px) { .bar { position:static; } }
+@media (pointer: coarse) { #keys { display:none; } }
 .cap { position:absolute; margin:0; font-size:13px; color:var(--meta); }
 .more { display:grid; gap:28px; max-width:760px; margin:12px auto 64px; padding:0 16px; }
 .q h2 { margin:0 0 8px; font-size:16px; }
@@ -229,10 +231,11 @@ body.tight .stage { border:0; border-radius:0; }
 
   // Questions. The page sends nothing; the answer goes back through the chat.
   const picks = {}, answer = document.createElement('span');
-  const text = () => (D.questions || []).map((q, i) => picks[i] ? `${i + 1}${picks[i] === T.noneKey ? ' ' : ''}${picks[i]}` : '').filter(Boolean).join(' ');
+  const num = (q, i) => q.number || i + 1;   // numbers may continue across rounds
+  const text = () => (D.questions || []).map((q, i) => picks[i] ? `${num(q, i)}${picks[i] === T.noneKey ? ' ' : ''}${picks[i]}` : '').filter(Boolean).join(' ');
   (D.questions || []).forEach((q, qi) => {
     const sec = document.createElement('section'), h = document.createElement('h2'), list = document.createElement('div');
-    sec.className = 'q'; list.className = 'opts'; h.textContent = `${qi + 1}. ${q.text}`; sec.append(h);
+    sec.className = 'q'; list.className = 'opts'; h.textContent = `${num(q, qi)}. ${q.text}`; sec.append(h);
     if (q.context) { const p = document.createElement('p'); p.textContent = q.context; sec.append(p); }
     const own = q.options || [], none = own.some((o) => o.key === T.noneKey || o.key === '—') ? [] : [{ key: T.noneKey, text: T.none }];
     for (const o of [...own, ...none]) {

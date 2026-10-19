@@ -10,6 +10,7 @@
 // container-overflow, text-clipped, text-truncated, text-clipped-by-ancestor, text-covered,
 // pinned-over-content, controls-touching, controls-overlap, target-small, text-tiny, edges-near-miss,
 // contrast-low, contrast-unknown, font-fallback, image-broken.
+// Not modelled: clip-path (a clipped element still counts as covering what lies under its box).
 ((opts) => {
   opts = opts || {};
   const minFont = opts.minFont || 11, target = opts.target || 24, touch = opts.touch ?? 3;

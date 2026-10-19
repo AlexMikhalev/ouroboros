@@ -49,7 +49,7 @@ shutil.rmtree(tmp, ignore_errors=True)
 
 ```js
 const { webkit } = require("playwright");                                  // or chromium; say which
-const fs = require("fs"), os = require("os"), path = require("path");
+const fs = require("fs"), os = require("os"), path = require("path"), { pathToFileURL } = require("url");
 const [W, H] = [1280, 800];                                                 // the viewer's window
 const refs = "<absolute path to skills/ui_design/references>";
 const call = (name, opts) => `(${fs.readFileSync(path.join(refs, name), "utf8")})(${JSON.stringify(opts)})`;
@@ -61,7 +61,7 @@ fs.copyFileSync(src, path.join(tmp, path.basename(src)));                   // o
                                              deviceScaleFactor: 2, colorScheme: "light" });
   const page = await context.newPage();
   const failed = []; page.on("requestfailed", r => failed.push(r.url()));
-  await page.goto("file://" + path.join(tmp, path.basename(src)), { waitUntil: "load" });
+  await page.goto(pathToFileURL(path.join(tmp, path.basename(src))).href, { waitUntil: "load" });
   await page.waitForTimeout(500);
   await page.screenshot({ path: "first-screen.png" });                       // look at this file yourself
   const report = await page.evaluate(call("measure.js", { subject: ".card" }));
