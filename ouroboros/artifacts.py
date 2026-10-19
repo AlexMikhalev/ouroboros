@@ -1108,8 +1108,11 @@ def copy_artifact_file(source: Any, destination: pathlib.Path, *, expected: Any 
     fence_publication()
     destination.parent.mkdir(parents=True, exist_ok=True)
     temporary = temporary_sibling(destination)  # the atomic signature the temp sweep reaps after a hard kill
+    from ouroboros.store import is_sqlite_file, is_wal_index  # a store file streams: a clone opens and closes it
+
     try:
-        if source_path is not None and clone_file(source_path, temporary):
+        if (source_path is not None and not is_sqlite_file(source_path) and not is_wal_index(source_path)
+                and clone_file(source_path, temporary)):
             try:
                 measured = stream_artifact_file(temporary, expected=expected)
             except ArtifactIdentityError:
@@ -1327,6 +1330,11 @@ def copy_directory_to_task_artifacts(
         members = sorted(p for p in iter_artifact_tree(source) if p.is_file() and not p.is_symlink())
     else:
         members = sorted(pathlib.Path(p) for p in member_paths)
+    from ouroboros.store import is_wal_index  # shared memory no raw reader opens; a copy rebuilds its own
+
+    indexes = [p for p in members if is_wal_index(p)]
+    excluded = [{"path": os.path.relpath(p, source).replace(os.sep, "/"), "reason": "SQLite WAL index"} for p in indexes]
+    members = [p for p in members if p not in indexes]
     file_records: List[Dict[str, Any]] = []
     tree_hasher = sha256(str(source).encode("utf-8", errors="replace") + b"\0")
     tmp_zip_path = temporary_sibling(artifact_dir / "directory.zip")
@@ -1357,6 +1365,7 @@ def copy_directory_to_task_artifacts(
                 "source_path": str(source),
                 "file_count": len(file_records),
                 "files": file_records,
+                **({"excluded": excluded} if excluded else {}),
                 "zip_name": zip_path.name,
             },
             trailing_newline=True,
