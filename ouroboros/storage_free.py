@@ -99,7 +99,7 @@ class StorageFreeRun(TypedDict):
     removed_bytes: int
     deleting: int  # moved aside, the maintenance child has not deleted them yet
     deleting_bytes: int
-    stuck: int  # moved aside and survived the child's removal; retried when the entry changes
+    stuck: int  # moved aside and survived the child's removal; retried at the child's next run
     kept: List[StorageFreeKept]
     free_before: Optional[int]
     free_after: Optional[int]

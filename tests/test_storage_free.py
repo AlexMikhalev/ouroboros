@@ -546,6 +546,11 @@ def test_a_trash_entry_the_child_could_not_delete_is_stuck_until_it_changes(tmp_
     assert (view["run"]["removed"], view["run"]["deleting"], view["run"]["stuck"]) == (0, 1, 0)
     row = json.loads((root / "logs" / "supervisor.jsonl").read_text().splitlines()[-1])
     assert (row["type"], row["deleting"], row["stuck"]) == ("storage_free", 1, 0)
+    # Still held, the retry fails again; it records the entry's new identity, so the job rests instead of
+    # spawning the child on every maintenance tick (a state-only write condition would keep the old one).
+    from ouroboros import maintenance as maintenance_module
+    assert maintenance_module.run_job(root, "custody_trash") == {"state": "failed", "items": 0}
+    assert "custody_trash" not in maintenance_module.due(root), "a retried stuck entry is no reason to spawn again"
 
 
 # ------------------------------------------------------------------- B11
