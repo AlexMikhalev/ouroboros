@@ -403,10 +403,10 @@ def unlisted_live_work(drive_root: pathlib.Path, listed: set) -> List[Dict[str, 
     except Exception:
         log.debug("Unlisted live work: queue snapshot unreadable", exc_info=True)
     try:
-        from ouroboros.delegate_custody_reconcile import open_runs
+        from ouroboros.delegate_custody_reconcile import open_runs, run_tree_id
 
         for entry in open_runs(root):  # started, not settled: a run still working
-            root_id = str(entry.root_task_id or entry.task_id or "")
+            root_id = run_tree_id(entry)
             if root_id and root_id not in listed:
                 groups.setdefault(root_id, {"helpers_running": 0, "helpers_waiting": 0, "external_runs": 0})[
                     "external_runs"] += 1
