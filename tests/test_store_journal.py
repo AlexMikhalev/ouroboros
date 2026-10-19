@@ -62,6 +62,8 @@ def test_linux_uses_longest_mount_including_bind_and_escaped_names(tmp_path, kin
     assert store._linux_filesystem(mount, "") is None
 
 
+@pytest.mark.skipif(os.name == "nt", reason="overlay options separate directories with ':', which a Windows "
+                    "drive path carries; this parser runs only on Linux")
 @pytest.mark.parametrize("backing", ["ext4", "nfs", "fuse.drive", "missing"])
 def test_overlay_requires_every_backing_directory_to_be_known_local(tmp_path, backing):
     overlay, lower, upper = [tmp_path / part for part in ("overlay", "lower", "upper")]
