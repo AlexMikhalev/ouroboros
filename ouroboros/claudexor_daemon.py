@@ -32,10 +32,10 @@ Lifecycle belongs to the installation, not the process that first needed it:
   invalid discovery and incompatible/malformed replies never permit that
   fallback. Never stop a live responder known only by name or by
   the descriptor port (a foreign daemon on a recycled port stays disclosed, not
-  killed). A newer runtime pin is never hot-swapped: the live engine keeps
-  serving until a planned restart whose landed checkout pins another engine
-  ends it (``server_restart._stop_owned_daemon_for_new_pin``), the owner's
-  Restart or Panic stops it, or it exits; the next start selects the pin.
+  killed). Runtime pins never hot-swap a live engine. Planned restart replaces
+  an off-pin engine except on a lower release pin, which keeps the newer daemon
+  (``server_restart._stop_owned_daemon_for_new_pin``). Manual Restart, Panic or
+  engine exit still stops it; cold start selects the pin, requiring compatible data.
 
 Zero auth logic lives here or anywhere in Ouroboros: login jobs, device-code
 custody, verification and rotation are the daemon's own product surface,
