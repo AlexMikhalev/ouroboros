@@ -180,13 +180,15 @@ def test_skill_tools_carry_the_admitted_panel_before_mutation(tmp_path, monkeypa
         return {"name": "notes", "needs_review": True, "source": {"name": "community"}}
     monkeypatch.setattr(installer, "install_item" if tool == "skill_install" else "update_installed", install)
     monkeypatch.setattr(installer, "start_review", lambda *_a, **kw: panels.append(kw["panel"]))
-    args = {"id": "community/notes"} if tool == "skill_install" else {"name": "notes", "mode": "replace"}
+    args = ({"id": "community/notes", "reason": "notes for the trip"} if tool == "skill_install"
+            else {"name": "notes", "mode": "replace"})
+    why = "review_reason" if tool == "skill_install" else "reason"  # the install reason never explains reviewers
     context = ToolContext(repo_dir=tmp_path, drive_root=tmp_path)
-    if tool == "skill_update" and enforcement == "advisory":
+    if enforcement == "advisory":
         refused = _typed_call(tool, context, **args, reviewers=["a"])
         assert refused.code == "TOOL_ARG_ERROR" and "REVIEW_PANEL_REASON_REQUIRED" in refused.text
         assert called == panels == []
-    result = _typed_call(tool, context, **args, reviewers=["a"], reason="one area changed")
+    result = _typed_call(tool, context, **args, reviewers=["a"], **{why: "one area changed"})
     assert result.code == "OK" and len(called) == len(panels) == 1
     assert panels[0].facts["assigned"] == expected and panels[0].facts["reason"] == "one area changed"
     assert panels[0].facts["chosen_by"] == "ouroboros"

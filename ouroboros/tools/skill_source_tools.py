@@ -150,7 +150,8 @@ def _handle_skill_search(ctx: ToolContext, query: str = "", source: str = "", ca
 
 
 def _handle_skill_install(ctx: ToolContext, id: str = "", reason: str = "", replace: bool = False,
-                          owner_source: Any = None, check: str = "review", check_notes: str = "", reviewers: List[str] | None = None, **_kw: Any) -> str:
+                          owner_source: Any = None, check: str = "review", check_notes: str = "", reviewers: List[str] | None = None,
+                          review_reason: str = "", **_kw: Any) -> str:
     from ouroboros.skill_source_install import SkillInstallError, install_item, run_in_lane, start_review
 
     item_id = str(id or "").strip()
@@ -168,7 +169,7 @@ def _handle_skill_install(ctx: ToolContext, id: str = "", reason: str = "", repl
     drive = _drive(ctx)
     task_id = str(getattr(ctx, "task_id", "") or "")
     try:
-        panel = _skill_panel(reviewers, reason) if check == "review" else None
+        panel = _skill_panel(reviewers, review_reason) if check == "review" else None
         result = run_in_lane(drive, "install", item_id, lambda: install_item(
             drive, item_id, replace=bool(replace), actor="ouroboros", reason=str(reason), task_id=task_id,
             turn_on_when_ready=True, check=check, check_notes=check_notes),
@@ -279,7 +280,8 @@ _SCHEMAS = {
         ),
         "properties": {
             "id": {"type": "string", "description": "Catalog id <source>/<name>."},
-            "reason": {"type": "string", "description": "Why this work needs the skill and why these reviewers; required for a narrowed Advisory panel."},
+            "reason": {"type": "string", "description": "Why this work needs the skill."},
+            "review_reason": {"type": "string", "description": "Why these reviewers when you name fewer than the whole pool; Advisory requires it then."},
             "replace": {"type": "boolean", "description": "Replace another skill of the same name (owner's instruction)."},
             "owner_source": _OWNER_SOURCE,
             **_CHECK_PROPERTIES,
