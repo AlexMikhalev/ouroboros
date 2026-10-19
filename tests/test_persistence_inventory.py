@@ -29,8 +29,8 @@ Contract (count-anchored both ways):
   shorter than the row does not certify it, because the population also holds
   bare top-level tokens (``state``, ``logs``, ``archive`` …) that would keep
   any invented exact row alive — that is what made the check vacuous. The
-  complete set of rows admitted with no in-tree writer is
-  ``STALE_ROW_EXEMPTIONS``, asserted by equality;
+  complete set of rows admitted without a scanned writer is
+  ``STALE_ROW_EXEMPTIONS``, each with its audited reason, asserted by equality;
 - the total number of distinct scanned paths is pinned — adding a NEW
   data-relative path fails here until PERSISTENCE.md gets its row and the pin
   moves.
@@ -796,7 +796,21 @@ def scan_data_paths(root: pathlib.Path = REPO) -> frozenset[str]:
 # 413 -> 414: the saved storage count ``state/storage_measurement.json`` (``ouroboros/storage.py``;
 # the last two finished counts the Dashboard gauge and the mind's storage fact read) has its own row
 # in section 2.
-EXPECTED_SCAN_PATHS = 414
+# 414 -> 402 (the review fold): the task-acceptance machine left, and with it twelve spellings only
+# its writers named — the source ids ``acceptance``, ``acceptance-artifact-inventory``,
+# ``acceptance-operation``, ``acceptance-packet``, ``acceptance_historical``,
+# ``historical-acceptance-intent``, ``historical_owner_request`` and ``review-artifact`` under
+# ``context_checkpoints`` and ``acceptance_tool_trajectory`` under ``tool_results``
+# (``acceptance_history.py``, ``acceptance_retrieving.py``, and the acceptance-only writers of
+# ``review_projection.py``, ``review_operation.py``, ``review_evidence_sections.py``,
+# ``review_source_closure.py`` and ``artifacts.py``), the request-source snapshot root
+# ``source_handles/review_inputs`` (``review_source_closure.retain_review_request_sources``), and
+# ``observability/blobs`` with its ``.stream.*`` temp name (``write_blob_stream``, the acceptance diff's
+# private retention, deleted with its module ``repo_diff_capture``).
+# Every row stays: stored acceptance sources are still served (section 7), old review-input snapshots
+# are still read, and the tool-results plane keeps live writers; the last two rows are exempted from
+# the no-stale-rows direction below, each with its reason.
+EXPECTED_SCAN_PATHS = 402
 
 # Scanned paths that must always be present — guards the scanner itself
 # against a silent regression that would shrink coverage while keeping counts
@@ -1024,9 +1038,11 @@ def test_every_scanned_path_has_an_inventory_row():
     )
 
 
-# Rows the backward check must NOT demand a writer for, each because the row
-# itself states there is none in this tree. Asserted by equality below, so an
-# entry that acquires a writer (or a row that quietly loses one) surfaces.
+# Rows the backward check must NOT demand a scanned writer for, each with its
+# audited reason: the row itself states there is no writer in this tree, or (one
+# entry) its live writers name every file through a dynamic source id, which the
+# scan refuses to name. Asserted by equality below, so an entry that acquires a
+# scanned writer (or a row that quietly loses one) surfaces.
 STALE_ROW_EXEMPTIONS = frozenset({
     # PERSISTENCE.md documents this plane as an orphan of a removed feature:
     # "none in this tree ... nothing reads or recreates it". Confirmed by grep —
@@ -1035,6 +1051,21 @@ STALE_ROW_EXEMPTIONS = frozenset({
     # The retired compactor's archive: "none since the usage store" — kept as
     # evidence, read only by the explicit history audit (model_send_seal).
     "archive/usage_ledger/segment_*.jsonl",
+    # The retired task acceptance's request-source snapshots: the row states no
+    # live writer (``review_source_closure.retain_review_request_sources`` left
+    # with the acceptance machine); old snapshots are still read
+    # (``review_source_closure._owned_attachment_path`` during child-ref promotion,
+    # ``delegate_registration_policy.minted_review_root``).
+    "task_results/artifacts/*/source_handles/review_inputs",
+    # A LIVE plane the scan cannot see: ``delegate_output.retain_terminal_bytes``
+    # and ``delegate_collection._retain`` spell each source id as an f-string over a
+    # run id, and ``artifacts.persist_exact_text_source`` (the result review's
+    # ``review_result.subject_source`` and every other exact-text writer) takes it as
+    # a parameter — never an exact string, and a dynamic id names no file here
+    # (``test_dynamic_source_handle_arguments_do_not_certify_named_rows``). The
+    # population saw this plane only through the retired acceptance tool-trajectory
+    # literal.
+    "task_results/artifacts/*/source_handles/tool_results",
 })
 
 
@@ -1061,9 +1092,11 @@ def test_every_inventory_row_is_still_real():
     Making it bite cost two resolution facts and one exemption. The stdlib
     rotating handlers (`logs/server.log`, `logs/launcher.log`) and the
     oversized-task-text sink (`logs/tasks/*`) were resolved instead of
-    exempted — a real writer must be SEEN, not excused. The remaining row is
-    an orphan plane the document itself says nothing in this tree writes, and
-    it is exempted by name in ``STALE_ROW_EXEMPTIONS``.
+    exempted — a real writer must be SEEN, not excused. The exempted rows are
+    named in ``STALE_ROW_EXEMPTIONS`` with their reasons: planes the document
+    itself says nothing in this tree writes, and the one live plane whose
+    writers name every file through a dynamic source id the scan refuses to
+    name.
     """
     text = DOC.read_text(encoding="utf-8")
     stale = stale_rows(text)

@@ -8,7 +8,6 @@ from pathlib import Path
 
 import pytest
 
-from ouroboros import dialogue_store
 from tests.test_ui_smoke_playwright import direct_server_with_data  # noqa: F401
 
 
@@ -28,6 +27,7 @@ def test_bound_direct_task_header_and_review_cost_survive_reopen(
     from playwright.sync_api import expect, sync_playwright
 
     import supervisor.queue as queue_mod
+    from ouroboros import dialogue_store
     from ouroboros.gateway.state import _chat_activities_snapshot_safe
     from ouroboros.projects_registry import bind_task_to_project, create_project
     from ouroboros.task_results import STATUS_COMPLETED, STATUS_RUNNING, write_task_result
@@ -57,7 +57,7 @@ def test_bound_direct_task_header_and_review_cost_survive_reopen(
         "cost_accounting_status": "available", "cost_final": False,
         "accounted_upper_bound_usd_with_children": 2.75,
     }
-    # The running server reads its own dialogue store (#1982), never a log file written after it started.
+    # The running server reads its dialogue store; a log file written after boot is never imported.
     for row in [*rows, reference]:
         dialogue_store.append(data_dir, "progress", row)
 

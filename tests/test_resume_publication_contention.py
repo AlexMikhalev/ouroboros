@@ -1,11 +1,11 @@
-"""A Resume retries only its fence publication after a preparer was handed off."""
+"""A Resume retries only its fence publication under contention."""
 from __future__ import annotations
 
 from types import SimpleNamespace
 
 import pytest
 
-from ouroboros import acceptance_late, cancel_intents, owner_pause
+from ouroboros import cancel_intents, owner_pause
 from ouroboros.task_results import load_task_result, write_task_result
 from tests.test_admission_contention import database_reader
 
@@ -13,13 +13,8 @@ pytestmark = pytest.mark.serial
 
 
 def _contend_publication(monkeypatch, *, outside=None, acquire_wait_sec=0.0):
-    actual, prepare = owner_pause.release_fence, acceptance_late.resume_paused_acceptance_preparations
-    calls, publications, waits = [], [], []
-
-    def prepared(*args):
-        result = prepare(*args)
-        calls.append(result)
-        return result
+    actual = owner_pause.release_fence
+    publications, waits = [], []
 
     def release(root, task_id, **kwargs):
         if not publications:
@@ -36,12 +31,11 @@ def _contend_publication(monkeypatch, *, outside=None, acquire_wait_sec=0.0):
         if outside is not None and len(waits) == 1:
             outside(root, task_id)
 
-    monkeypatch.setattr(acceptance_late, "resume_paused_acceptance_preparations", prepared)
     monkeypatch.setattr(owner_pause, "release_fence", release)
     clock = owner_pause.time
     monkeypatch.setattr(owner_pause, "time", SimpleNamespace(
         monotonic=clock.monotonic, time=clock.time, sleep=wait))
-    return calls, publications, waits
+    return publications, waits
 
 
 @pytest.mark.parametrize("interruption", ["open", "pause", "stop", "different_grant", "read_probe"])
@@ -61,7 +55,7 @@ def test_resume_publication_rechecks_exact_current_controls(tmp_path, monkeypatc
             write_task_result(root, task_id, "running", budget_pause={**pause,
                 "grant": {**pause["grant"], "grant_id": "another-grant"}})
 
-    calls, publications, waits = _contend_publication(monkeypatch, outside=change)
+    publications, waits = _contend_publication(monkeypatch, outside=change)
     if interruption == "read_probe":
         from ouroboros.store import StoreBusy
         original_read, failed = owner_pause.read_fence, []
@@ -79,32 +73,28 @@ def test_resume_publication_rechecks_exact_current_controls(tmp_path, monkeypatc
             resume()
     else:
         resume()
-    assert calls == [0] and len(publications) == 1 and waits
+    assert len(publications) == 1 and waits
     current = load_task_result(tmp_path, "root")["owner_pause"]
     assert owner_pause.fence_closed(current) is (interruption not in {"open", "read_probe"})
     assert (current["fence_id"] != fence["fence_id"]) is (interruption == "pause")
 
 
-def test_unknown_resume_publication_never_restarts_preparation_or_retries_write(tmp_path, monkeypatch):
+def test_unknown_resume_publication_never_retries_the_write(tmp_path, monkeypatch):
     from ouroboros.store import StoreBusy
 
     write_task_result(tmp_path, "root", "running", root_task_id="root")
     fence, _ = owner_pause.install_fence(tmp_path, "root", request_id="pause")
-    calls = []
-    prepare = acceptance_late.resume_paused_acceptance_preparations
-    def prepared(*args):
-        calls.append(True)
-        return prepare(*args)
     error = StoreBusy("publication rollback is unconfirmed", reason="contention")
     error.rollback_confirmed = False
+    writes = []
     def unknown(*_args, **_kwargs):
+        writes.append(True)
         raise error
-    monkeypatch.setattr(acceptance_late, "resume_paused_acceptance_preparations", prepared)
     monkeypatch.setattr(owner_pause, "release_fence", unknown)
     clock = owner_pause.time
     monkeypatch.setattr(owner_pause, "time", SimpleNamespace(
         monotonic=clock.monotonic, sleep=lambda _seconds: pytest.fail("unknown write was retried")))
     with pytest.raises(StoreBusy) as caught:
         owner_pause.reopen_for_resume(tmp_path, "root", "root", fence_id=fence["fence_id"], grant_id="grant")
-    assert caught.value is error and calls == [True]
+    assert caught.value is error and writes == [True]
     assert owner_pause.read_fence(tmp_path, "root") == fence

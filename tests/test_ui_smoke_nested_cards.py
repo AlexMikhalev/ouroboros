@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import pytest
 
-from ouroboros import dialogue_store
 from tests.test_ui_smoke_playwright import direct_server_with_data  # noqa: F401 - pytest fixture import
 from tests.ui_chat_viewport_smoke import _CAPTURE_TEST_SOCKET, _emit_ws_frame, set_viewport
 
@@ -66,6 +65,8 @@ FACTS = """sel => {
 
 
 def _seed(data_dir):
+    from ouroboros import dialogue_store
+
     rows = [{
         "ts": "2026-09-02T10:00:00+00:00", "chat_id": 1, "task_id": "nest-root",
         "content": "Root task started", "suggested_name": "Nested cards keep their place",
@@ -86,7 +87,7 @@ def _seed(data_dir):
                 "delegated_runs_started": 1, "delegated_runs_settled": 1, "delegated_runs_failed": 0,
                 "delegated_runs_succeeded": 1, "subscription_cost_usd": 0.4}} if role == "scout" else {}),
         })
-    # The running server reads its own dialogue store (#1982), never a log file written after it started.
+    # The running server reads its dialogue store; a log file written after boot is never imported.
     for row in rows:
         dialogue_store.append(data_dir, "progress", row)
 

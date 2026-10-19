@@ -356,11 +356,6 @@ def reopen_for_resume(root_drive: Any, root_task_id: str, task_id: str, *,
             if not fence_closed(current) or current.get("supersedes_fence_id") != fence_id:
                 raise ValueError("owner_pause_fence_changed")
         elif root_actor(root_drive, root_task_id, task_id):
-            if fence_closed(current):
-                # One root Resume restores every saved unsent owner before opening
-                # their shared fence, including acceptance beside post-task work.
-                from ouroboros.acceptance_late import resume_paused_acceptance_preparations
-                resume_paused_acceptance_preparations(root_drive, root_task_id, current)
             try:
                 release_fence(root_drive, root_task_id, reason="owner_resume_consumed")
             except StoreBusy as exc:
@@ -373,9 +368,9 @@ def reopen_for_resume(root_drive: Any, root_task_id: str, task_id: str, *,
 
 def _finish_resume_publication(root_drive: Any, root_task_id: str, task_id: str, fence_id: str, grant_id: str,
                                error: StoreBusy | LaunchBusy) -> None:
-    """Retry only the root fence write after preparation handoff, outside its lock.
+    """Retry only the root fence write, outside its lock.
 
-    The preparation is already owned and must never restart here. Each try
+    Nothing the Resume already started restarts here. Each try
     rechecks the physical actor's grant under its logical root lock; unknown
     rollback or the existing STORE_WAIT_SEC physical acquisition bound leaves
     the caller's hold intact; no task/review lifetime is extended.
@@ -556,7 +551,7 @@ def admit_delegated_start(drive_root: Any, payload: Dict[str, Any]) -> bool:
     from ouroboros._usage_wait import retry_presend
     from ouroboros.delegate_custody import emit, START_REQUESTED
     from ouroboros.model_wait import current_model_wait
-    from ouroboros.usage_admission import effective_billing_fields, task_billing_fields
+    from ouroboros.usage_admission import task_billing_fields
     from ouroboros.utils import utc_now_iso
 
     source = SimpleNamespace(drive_root=drive_root, task_id=str(payload.get("task_id") or ""),
@@ -572,8 +567,7 @@ def admit_delegated_start(drive_root: Any, payload: Dict[str, Any]) -> bool:
     elif bound is not None and bound.non_task_operation is True and str(bound.root_task_id or "") == source.root_task_id:
         binding = {"billing_group_id": source.root_task_id, "billing_group_limit_usd": None}
     else:
-        binding = effective_billing_fields(drive_root, source.root_task_id,
-            task_billing_fields({"id": source.task_id}, source.root_task_id, None, drive_root))
+        binding = task_billing_fields({"id": source.task_id}, source.root_task_id, None, drive_root)
     payload = {"ts": utc_now_iso(), "event_id": uuid.uuid4().hex, **payload}
     payload["billing_group"] = {k: v for k, v in binding.items() if k.startswith("billing_group_")}
     retrying = False

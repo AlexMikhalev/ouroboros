@@ -63,7 +63,7 @@ const VALUE_FIELDS = [
     // Effort is not a Settings draft: the range is edited in the chat composer alone, and Settings has no effort section.
     ['s-consciousness-autonomy', 'OUROBOROS_CONSCIOUSNESS_AUTONOMY', 'act'],
     ['s-review-enforcement', 'OUROBOROS_REVIEW_ENFORCEMENT', 'advisory'], ['s-task-review-mode', 'OUROBOROS_TASK_REVIEW_MODE', 'auto'], ['s-runtime-mode', 'OUROBOROS_RUNTIME_MODE', 'advanced'],
-    // Shared paid-review-cycle cap (plan review / task acceptance / commit gate);
+    // Shared paid-review-cycle cap (result review / commit gate / skill review; plan asks stand outside it);
     // the ∞ segment saves the string "unlimited" (SSOT: ouroboros/review_cycles.py).
     ['s-review-max-cycles', 'OUROBOROS_REVIEW_MAX_CYCLES', '2'],
     ['s-update-channel', 'OUROBOROS_UPDATE_CHANNEL', 'stable'],

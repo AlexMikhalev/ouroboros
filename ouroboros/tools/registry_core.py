@@ -558,16 +558,18 @@ class ToolRegistry:
             if entry.name == "review_change":
                 schema = copy.deepcopy(schema)
                 props = schema["parameters"]["properties"]
-                props["subject"]["enum"] = ["index", "worktree", "base..head"]
-                props["subject"]["description"] = "The assigned repository's staged index, worktree or base..head change."
+                props["subject"]["enum"] = ["index", "worktree", "base..head", "result"]
+                props["subject"]["description"] = ("The assigned repository's staged index, worktree or base..head "
+                                                   "change, or result: your own task's result (reply and produced work).")
                 props["surface"]["enum"] = ["change", "preflight"]
                 props["surface"]["description"] = "change = the panel review; preflight = one named reviewer's early look."
                 props["workspace_root"]["description"] = "An optional repository inside your assigned write root."
                 schema["description"] = (
-                    "Ask independent reviewers about a change in your assigned write root. "
+                    "Ask independent reviewers about a change in your assigned write root, or about your own result. "
                     "This never approves, commits or integrates your work; the parent retains integration and recheck. "
-                    "Use subject=index, worktree or base..head; surface=change uses the review pool, "
-                    "preflight uses one named reviewer. The same unchanged call collects an existing paid operation."
+                    "Use subject=index, worktree or base..head for a change and subject=result for your result; "
+                    "surface=change uses the review pool, preflight uses one named reviewer. The same unchanged call "
+                    "collects an existing paid operation."
                 )
         return {"type": "function", "function": schema}
 
