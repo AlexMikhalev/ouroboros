@@ -79,9 +79,12 @@ def test_settling_waits_out_a_late_worker_but_names_a_settled_attempt_left_behin
     before = set(smoke.active_review_attempts())
     release = threading.Event()
     _late_review(tmp_path, release, "smoke-settle-late")
-    assert [row["late"] for key, row in smoke.active_review_attempts().items() if key not in before] == [True]
-    threading.Timer(0.5, release.set).start()
-    assert smoke.settle_review_workers(before) == ""  # the by-design late worker is waited out
+    try:
+        assert [row["late"] for key, row in smoke.active_review_attempts().items() if key not in before] == [True]
+        threading.Timer(0.5, release.set).start()
+        assert smoke.settle_review_workers(before) == ""  # the by-design late worker is waited out
+    finally:
+        release.set()  # a failed assertion above must not leave the worker held for its bound
 
     # An attempt whose caller took a settled answer must not outlive the review: no long wait for it.
     lingering = review_custody.ActiveReviewAttempt(key="smoke-lingering", operation_id="op-lingering")
