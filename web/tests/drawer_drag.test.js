@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { BLOCKING_SELECTOR, DRAG, DRAWER_DRAG, INTERACTIVE_SELECTOR, SIDEWAYS_SELECTOR, bindDrawerDrag } from '../modules/drawer_drag.js';
+import { BLOCKING_SELECTOR, DRAG, DRAWER_DRAG, FIELD_SELECTOR, SIDEWAYS_SELECTOR, bindDrawerDrag } from '../modules/drawer_drag.js';
 
 // The drawer's finger (owner Q1=A): eligibility, the axis lock, tracking by one number, the commit rules,
 // the restores that leave no trace, the swallowed ending click, and the one-line switch.
@@ -35,12 +35,12 @@ function world({ open = false, stack = true, coarse = true, enabled = DRAWER_DRA
     const scrim = withStyle(fakeEl('scrim'));
     const room = fakeEl('room'); room.parentElement = doc.body;
     const state = { open, set: [] };
-    const flags = { interactive: new Set(), sideways: new Set(), blocked: false, selection: false };
+    const flags = { field: new Set(), sideways: new Set(), blocked: false, selection: false };
     const dispose = bindDrawerDrag({
         sidebar, scrim, isOpen: () => state.open,
         setOpen: (v) => { state.set.push(v); state.open = v; scrim.hidden = !v; },
         isStack: () => stack, isCoarse: () => coarse, win, doc, enabled,
-        isInteractive: (el) => flags.interactive.has(el), isSideways: (el) => flags.sideways.has(el),
+        isField: (el) => flags.field.has(el), isSideways: (el) => flags.sideways.has(el),
         ...(blockers ? {} : { isBlocked: () => flags.blocked }), hasSelection: () => flags.selection,
     });
     const fire = (type, event) => (docListeners.get(type) || []).forEach((fn) => fn(event));
@@ -73,15 +73,16 @@ test('the switch: DRAWER_DRAG off binds nothing', () => {
     w.dispose();
 });
 
-test('a start is eligible only on a quiet surface, past the edge, with nothing over the room, from a touch', () => {
+test('a start is eligible anywhere on the room, the edge included, but a field, with nothing over it, from a touch', () => {
     const w = world();
     const tryOpen = (opts = {}) => { open(w, opts); const set = w.state.set.slice(); w.state.set.length = 0; return set; };
     assert.deepEqual(tryOpen(), [true], 'the plain case opens');
     w.state.open = false; w.scrim.hidden = true;
-    assert.deepEqual(tryOpen({ from: 20, to: 300 }), [], 'under 24px from the edge belongs to the OS');
-    w.flags.interactive.add(w.room);
-    assert.deepEqual(tryOpen(), [], 'a control keeps its touch');
-    w.flags.interactive.clear(); w.flags.sideways.add(w.room);
+    assert.deepEqual(tryOpen({ from: 2, to: 300 }), [true], 'from the screen\'s very edge too (owner 19.10)');
+    w.state.open = false; w.scrim.hidden = true;
+    w.flags.field.add(w.room);
+    assert.deepEqual(tryOpen(), [], 'a field keeps its touch');
+    w.flags.field.clear(); w.flags.sideways.add(w.room);
     assert.deepEqual(tryOpen(), [], 'a sideways scroller keeps its touch');
     w.flags.sideways.clear(); w.flags.selection = true;
     assert.deepEqual(tryOpen(), [], 'selected text keeps its touch');
@@ -107,7 +108,11 @@ test('a start is eligible only on a quiet surface, past the edge, with nothing o
     open(mounted); assert.deepEqual(mounted.state.set, [true], 'a mounted, hidden menu does not block'); mounted.dispose();
     const shown = world({ blockers: [{ getClientRects: () => [] }, { getClientRects: () => [{}] }] });
     open(shown); assert.deepEqual(shown.state.set, [], 'an open menu owns the finger'); shown.dispose();
-    assert.match(INTERACTIVE_SELECTOR, /input, textarea/); assert.match(SIDEWAYS_SELECTOR, /\[data-scroll-x\]/); assert.match(BLOCKING_SELECTOR, /dialog\[open\]/);
+    assert.match(FIELD_SELECTOR, /input, textarea/); assert.match(SIDEWAYS_SELECTOR, /\[data-scroll-x\]/); assert.match(BLOCKING_SELECTOR, /dialog\[open\]/);
+    // A button, a link or a summary under the finger does not stop a drag: the click that ends it is swallowed.
+    for (const control of ['button', 'a[href]', 'summary', 'label', 'details', '[role="button"]']) {
+        assert.equal(FIELD_SELECTOR.split(', ').includes(control), false, control);
+    }
 });
 
 test('the axis locks after the slop: vertical movement is the page, sideways is the drawer, tracked by one number', () => {
@@ -120,13 +125,13 @@ test('the axis locks after the slop: vertical movement is the page, sideways is 
     assert.equal(w.dragging(), false, 'a vertical start is a scroll, never a drag');
     w.pointer('pointerup', { x: 300, y: 330 });
     assert.deepEqual(w.state.set, []);
-    // Sideways past the slop, with |dx| > 1.3·|dy|: the drawer is revealed at 0 and follows.
+    // Sideways past the slop, with |dx| > |dy|: the drawer is revealed at 0 and follows.
     w.pointer('pointerdown', { x: 100, y: 300 });
     w.pointer('pointermove', { x: 112, y: 304 });
     assert.equal(w.dragging(), true);
     assert.equal(w.scrim.hidden, false, 'the scrim is painted during the drag');
     assert.equal(w.progress(), 0);
-    assert.equal(w.room.captured, 1, 'the pointer is captured on its target');
+    assert.equal(w.sidebar.captured, 1, 'the drawer holds the finger, whatever is re-rendered under it');
     w.pointer('pointermove', { x: 112 + 160, y: 304 });
     assert.equal(w.progress(), 0.5, 'progress is travel over the drawer width from the lock point');
     assert.equal(w.scrim.styleProps.get('--drawer-p'), '0.5');
@@ -136,6 +141,14 @@ test('the axis locks after the slop: vertical movement is the page, sideways is 
     assert.deepEqual(w.state.set, [true]);
     assert.equal(w.dragging(), false);
     assert.equal(w.sidebar.styleProps.has('--drawer-p'), false, 'the number is the finger\'s; the state owns the rest');
+    w.state.open = false; w.scrim.hidden = true; w.state.set.length = 0;
+    // A thumb's arc: 12px sideways and 10 up at the slop is a drag, not a scroll.
+    w.pointer('pointerdown', { x: 100, y: 300 });
+    w.pointer('pointermove', { x: 112, y: 290 });
+    assert.equal(w.dragging(), true, 'a diagonal thumb is the drawer\'s');
+    w.pointer('pointermove', { x: 300, y: 230 });
+    w.pointer('pointerup', { x: 300, y: 230 });
+    assert.deepEqual(w.state.set, [true]);
     w.dispose();
 });
 
@@ -184,17 +197,23 @@ test('a slow release commits past half (open) or 30% (close); a fast one commits
     w.dispose();
 });
 
-test('a second finger, pointercancel, lost capture or a resize restore the start with no commit', () => {
+test('a second finger, pointercancel, the drawer losing the finger or a new width restore the start with no commit', () => {
     const w = world();
     const start = () => { w.pointer('pointerdown', { x: 100, y: 300 }); w.pointer('pointermove', { x: 112, y: 300 }); w.pointer('pointermove', { x: 260, y: 300 }); assert.equal(w.dragging(), true); };
     start(); w.pointer('pointerdown', { x: 200, y: 400, id: 2, isPrimary: false });  // a real second touch is not primary
     assert.equal(w.dragging(), false); assert.equal(w.scrim.hidden, true);
     start(); w.fire('pointercancel', { pointerId: 1 });
     assert.equal(w.dragging(), false); assert.equal(w.scrim.hidden, true);
-    start(); w.fire('lostpointercapture', { pointerId: 1 });
-    assert.equal(w.dragging(), false);
-    start(); (w.win.listeners.get('resize') || []).forEach((fn) => fn());
-    assert.equal(w.dragging(), false);
+    start(); w.fire('lostpointercapture', { pointerId: 1, target: w.room });
+    assert.equal(w.dragging(), true, 'the row first under the finger giving up its capture (a re-render) keeps the drag');
+    w.fire('lostpointercapture', { pointerId: 1, target: w.sidebar });
+    assert.equal(w.dragging(), false, 'the drawer losing the finger ends it');
+    const resize = () => (w.win.listeners.get('resize') || []).forEach((fn) => fn());
+    w.win.innerWidth = 390;
+    start(); resize();
+    assert.equal(w.dragging(), true, 'a height-only change (a browser bar, the keyboard) keeps the drag');
+    w.win.innerWidth = 844; resize();
+    assert.equal(w.dragging(), false, 'a new width (the phone turned) ends it');
     assert.deepEqual(w.state.set, [], 'no state change, so no history entry');
     w.pointer('pointerup', { x: 260, y: 300 });
     assert.deepEqual(w.state.set, []);

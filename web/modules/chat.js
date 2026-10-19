@@ -1,6 +1,6 @@
 import { escapeHtmlAttr, escapeHtmlText as escapeHtml } from './utils.js';
 import { bindMarkdownTables, destroyChatMarkdown, enhanceChatMarkdown, mountChatMarkdown, renderChatMarkdown } from './chat_markdown.js';
-import { bindHeaderControlPlacement, renderPageHeader } from './page_header.js';
+import { bindHeaderControlPlacement, renderMobileNavToggle, renderPageHeader } from './page_header.js';
 import { strokeIcon } from './page_icons.js';
 import { mainHeaderActionsHtml } from './chat_header.js';
 import { pageLabel } from './pages.js';
@@ -231,6 +231,7 @@ export function createChatInstance({
             className: 'chat-page-header',
             toolbarClass: 'ui-chrome-group',
             actionsHtml: mainHeaderActionsHtml(),
+            showMobileNav: false,  // a room's ☰ is its composer row's first control
         });
     // Main: the history note (gaps, a failed read, an approximate position) floats UNDER the bar as its own
     // strip, never as a second row of it; the Project panel keeps its in-flow status bar.
@@ -245,6 +246,7 @@ export function createChatInstance({
                 </button>
                 <div id="chat-attachment-preview" class="chat-attachment-preview"></div>
                 <div class="chat-toolbar-row">
+                    ${renderMobileNavToggle({ inComposer: true })}
                     <div class="chat-composer-pills" id="chat-composer-pills">
                         <button class="chat-swarm ui-hit-area" id="chat-swarm" type="button" data-armed="false" title="Swarm: route your next message into a new managed task, run a deep plan review with plan_task, then delegate when parallel work helps. Auto-disarms after sending.">Swarm</button>
                     </div>

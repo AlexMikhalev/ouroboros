@@ -63,7 +63,7 @@ CONTROLS = """() => [...document.querySelectorAll('a[href], button, input, selec
 LAYOUT = """() => {
     const sidebar = document.getElementById('primary-sidebar');
     const first = document.querySelector('[data-nav-page="chat"]').getBoundingClientRect();
-    const toggle = document.querySelector('.chat-page-header .mobile-nav-toggle');
+    const toggle = document.querySelector('#page-chat [data-mobile-nav-toggle]');  // a room's ☰: its composer's first control
     const handle = document.querySelector('.resize-handle');
     // The sidebar's top inset lives on its pinned head (#1998: three zones), the band adds to it.
     return { sidebar_position: getComputedStyle(sidebar).position,
@@ -206,8 +206,12 @@ def test_narrow_layouts_start_past_the_traffic_lights(subscription_ui):
     ui = subscription_ui
     page = shell_page(ui, 600)  # the drawer layout
     apply(page)
-    toggle = box(page, ".chat-page-header .mobile-nav-toggle")
-    assert toggle and clear_of_lights(toggle) and toggle["x"] >= START
+    # A room's ☰ is its composer's first control, far below the band; the header's first item, the title, starts
+    # past the lights.
+    toggle = box(page, "#page-chat .chat-toolbar-row .mobile-nav-toggle")
+    assert toggle and toggle["y"] >= TOP
+    title = box(page, ".chat-page-header .app-page-title")
+    assert title and clear_of_lights(title) and title["x"] >= START
     capture(page, "window-chrome-integrated-drawer")
     bar = page.evaluate("getComputedStyle(document.querySelector('.project-panel-bar')).paddingLeft")
     assert float(bar.removesuffix("px")) >= START, "a full-width project panel starts past the lights too"
