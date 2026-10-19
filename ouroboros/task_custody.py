@@ -1286,7 +1286,7 @@ def sweep_custody_leftovers(canonical_root: Any, *, min_age_sec: float = 3600.0)
 
 
 def custody_trash_entries(canonical_root: Any) -> List[Tuple[str, List[int]]]:
-    """``(name, identity)`` of each drive a settlement moved aside (one directory read)."""
+    """``(name, identity)`` of each drive a settlement moved aside (one directory read, an ``lstat`` each)."""
     root = pathlib.Path(canonical_root) / _TRASH_DIR
     entries: List[Tuple[str, List[int]]] = []
     try:
@@ -1295,7 +1295,7 @@ def custody_trash_entries(canonical_root: Any) -> List[Tuple[str, List[int]]]:
         with os.scandir(root) as listing:
             for entry in listing:
                 with contextlib.suppress(OSError):
-                    stat = entry.stat(follow_symlinks=False)
+                    stat = os.lstat(entry.path)  # remove_custody_trash's identity, not a Windows listing's copy
                     entries.append((entry.name, [stat.st_ino, stat.st_mtime_ns]))
     except (FileNotFoundError, NotADirectoryError):
         pass
@@ -1304,9 +1304,9 @@ def custody_trash_entries(canonical_root: Any) -> List[Tuple[str, List[int]]]:
 
 def remove_custody_trash(canonical_root: Any, *, stop: Optional[Callable[[], bool]] = None) -> Dict[str, Any]:
     """Delete the drives settlements moved aside: each was fully custodied before its move, and
-    nothing serves or references it, so no age or liveness applies. The maintenance child runs
-    this, off the serving process. Returns the count removed and each entry that survived its
-    removal (``name -> identity``: it waits for that identity to change)."""
+    nothing serves or references it, so no age or liveness applies. The maintenance child runs this,
+    off the serving process. Returns the count removed and each entry that survived its removal
+    (``name -> identity``; the child retries it at its next run, a changed identity makes the job due)."""
     report: Dict[str, Any] = {"removed": 0, "stuck": {}}
     root = pathlib.Path(canonical_root) / _TRASH_DIR
     try:

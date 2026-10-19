@@ -23,7 +23,7 @@ thread and stops between items on the owner's Stop, the server's stop or a close
 generation (``_closed``), with no reconcile latch; concurrency is the retirers' own locks. A
 moved folder counts as removed only once its trash entry is gone, "still being deleted"
 meanwhile, and "stuck" once the maintenance child's ``custody_trash`` job recorded that the
-entry survived its removal (it waits for the entry's identity to change); free space is read
+entry survived its removal (the child retries it at its next run); free space is read
 fresh on every projection. Words (labels, loss sentences) live in the client with the other
 storage copy; this module reports ids, counts, sizes and typed reasons.
 """
@@ -99,7 +99,7 @@ class StorageFreeRun(TypedDict):
     removed_bytes: int
     deleting: int  # moved aside, the maintenance child has not deleted them yet
     deleting_bytes: int
-    stuck: int  # moved aside and survived the child's removal; retried when the entry changes
+    stuck: int  # moved aside and survived the child's removal; retried at the child's next run
     kept: List[StorageFreeKept]
     free_before: Optional[int]
     free_after: Optional[int]

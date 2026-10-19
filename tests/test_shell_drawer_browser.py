@@ -9,7 +9,10 @@ height. In a room (Main, an open Project) ☰ is the composer row's first contro
 """
 from __future__ import annotations
 
+import io
+
 import pytest
+from PIL import Image
 
 from tests import test_subscription_setup_browser as setup_browser
 from tests.test_design_system_gate_browser import open_nav, seed_page
@@ -212,3 +215,172 @@ def test_a_rooms_menu_stays_above_the_keyboard(shell_ui, tmp_path, room):
         page.close()
     assert facts['open'] is True and facts['vvh'] == '500px', facts
     assert facts['menuBottom'] <= 500 and facts['fieldBottom'] <= 500, ('above the keyboard', facts)
+
+
+# Every frame for `ms`, the scrim's opacity and hidden state and the drawer's x, from just before an action.
+FRAMES = """ms => new Promise((resolve) => {
+    const scrim = document.getElementById('nav-drawer-backdrop');
+    const side = document.getElementById('primary-sidebar');
+    const out = [];
+    const start = performance.now();
+    const step = () => {
+        out.push({t: performance.now() - start, opacity: Number(getComputedStyle(scrim).opacity), hidden: scrim.hidden,
+                  x: side.getBoundingClientRect().x, settle: side.style.getPropertyValue('--drawer-settle')});
+        if (performance.now() - start < ms) requestAnimationFrame(step); else resolve(out);
+    };
+    requestAnimationFrame(step);
+})"""
+FEED_TOP = "sel => document.querySelector(sel).scrollTop"
+SCRIM_HELD = """() => { const s = document.getElementById('nav-drawer-backdrop');
+    return {hidden: s.hidden, dragging: s.classList.contains('dragging'), opacity: Number(getComputedStyle(s).opacity)}; }"""
+
+
+def record(page, ms):
+    """Start sampling frames now; `collected` waits for them."""
+    page.evaluate(f"ms => {{ window.__frames = ({FRAMES})(ms); }}", ms)
+
+
+def collected(page):
+    return page.evaluate("() => window.__frames")
+
+
+def test_the_drawer_and_its_scrim_settle_smoothly_and_a_drifting_thumb_keeps_it(chromium_ui, tmp_path):
+    """☰ slides the drawer in on its curve while the scrim fades in; × slides it out while the scrim fades out, and
+    the scrim leaves the page only after; a fling settles at the finger's speed; a thumb that drifts down halfway
+    through a drag keeps the drawer, and the feed under it does not scroll (owner 19.10: it came off halfway, and
+    nothing moved smoothly)."""
+    page = seed_page(chromium_ui, 390, 844)
+    facts = {}
+    try:
+        boot(page, chromium_ui)
+        page.evaluate("() => { const f = document.querySelector('#chat-messages'); for (let i = 0; i < 40; i += 1) {"
+                      " const r = document.createElement('div'); r.style.minHeight = '90px'; r.textContent = 'row ' + i;"
+                      " f.append(r); } f.scrollTop = 600; }")
+        record(page, 600)
+        page.locator('#page-chat .chat-toolbar-row [data-mobile-nav-toggle]').click()
+        opening = collected(page)
+        facts['open'] = opening
+        page.wait_for_timeout(200)
+        record(page, 900)
+        page.locator('#nav-drawer-close').click()
+        closing = collected(page)
+        facts['close'] = closing
+        page.wait_for_timeout(300)
+        # Closed with ×, then taken again by a finger at once and held past the close's own fade: the scrim stays.
+        page.locator('#page-chat .chat-toolbar-row [data-mobile-nav-toggle]').click()
+        page.wait_for_timeout(500)
+        page.locator('#nav-drawer-close').click()
+        page.wait_for_timeout(50)
+        feed = page.locator('#chat-messages').bounding_box()
+        y = feed['y'] + feed['height'] / 2
+        cdp = page.context.new_cdp_session(page)
+        try:
+            for i, x in enumerate((40, 60, 120, 200, 260)):
+                cdp.send('Input.dispatchTouchEvent', {'type': 'touchStart' if i == 0 else 'touchMove',
+                                                      'touchPoints': [{'x': x, 'y': y, 'id': 1}]})
+                page.wait_for_timeout(16)
+            held = []
+            for _ in range(12):  # 600 ms with the finger down, past the 420 ms the close's fade took
+                page.wait_for_timeout(50)
+                held.append(page.evaluate(SCRIM_HELD))
+            facts['regrab_held'] = held
+            cdp.send('Input.dispatchTouchEvent', {'type': 'touchEnd', 'touchPoints': []})
+        finally:
+            cdp.detach()
+        page.wait_for_timeout(500)
+        facts['regrab'] = page.evaluate(DRAWER)
+        page.evaluate('window.__ouroLayers.pop()')
+        page.wait_for_timeout(500)
+        # A fling: the settle is set from the finger's speed and the drawer is still on its way a frame later.
+        record(page, 500)
+        swipe_with(page, (40, y), (240, y), steps=5)
+        facts['fling'] = collected(page)
+        facts['fling_state'] = page.evaluate(DRAWER)
+        page.evaluate('window.__ouroLayers.pop()')
+        page.wait_for_timeout(500)
+        # A thumb that drifts down 120px over the second half of the drag.
+        top = page.evaluate(FEED_TOP, '#chat-messages')
+        cdp = page.context.new_cdp_session(page)
+        try:
+            path = [(40 + 12 * i, y + (0 if i < 8 else 15 * (i - 8))) for i in range(17)]
+            for i, (px, py) in enumerate(path):
+                cdp.send('Input.dispatchTouchEvent', {'type': 'touchStart' if i == 0 else 'touchMove',
+                                                      'touchPoints': [{'x': px, 'y': py, 'id': 1}]})
+                page.wait_for_timeout(16)
+            facts['drift_mid'] = page.evaluate(DRAWER)
+            cdp.send('Input.dispatchTouchEvent', {'type': 'touchEnd', 'touchPoints': []})
+        finally:
+            cdp.detach()
+        page.wait_for_timeout(500)
+        facts['drift'] = page.evaluate(DRAWER)
+        facts['feed_top'] = [top, page.evaluate(FEED_TOP, '#chat-messages')]
+    finally:
+        evidence(tmp_path, 'shell-drawer-motion', facts)
+        page.close()
+    between = [f for f in opening if 0.05 < f['opacity'] < 0.95]
+    assert between, ('the scrim fades in, not at once', opening)
+    assert any(-300 < f['x'] < -5 for f in opening), ('the drawer slides in', opening)
+    assert opening[-1]['opacity'] == 1 and opening[-1]['x'] == 0, opening[-1]
+    fading = [f for f in closing if not f['hidden'] and 0.05 < f['opacity'] < 0.95]
+    assert fading, ('the scrim fades out while it is still on the page', closing)
+    assert any(-330 < f['x'] < -5 for f in closing), ('the drawer slides out', closing)
+    assert closing[-1]['hidden'] is True, ('and it leaves once it has faded', closing[-1])
+    assert all(not f['hidden'] and f['dragging'] for f in facts['regrab_held']), (
+        'a finger that takes the drawer during the close keeps its scrim, past the close\'s fade', facts['regrab_held'])
+    assert facts['regrab']['open'] is True, facts
+    settles = {f['settle'] for f in facts['fling'] if f['settle']}
+    assert settles and all(s.endswith('ms') for s in settles), ('a fling settles at the finger\'s speed', facts['fling'])
+    assert facts['fling_state']['open'] is True, facts
+    assert facts['drift_mid']['open'] is False and facts['drift']['open'] is True, ('the drifting thumb keeps the drawer', facts)
+    assert facts['feed_top'][0] == facts['feed_top'][1], ('the feed under the dragged drawer did not scroll', facts)
+
+
+PULLED = """() => { const s = document.getElementById('primary-sidebar');
+    return {x: s.getBoundingClientRect().x, p: Number(s.style.getPropertyValue('--drawer-p')), dragging: s.classList.contains('dragging'),
+            surface: getComputedStyle(s).backgroundColor.match(/\\d+/g).slice(0, 3).map(Number)}; }"""
+
+
+@pytest.mark.parametrize(('width', 'height'), [(390, 844), (719, 844), (667, 375)])
+def test_a_pull_past_fully_open_shows_the_drawer_at_the_edge_not_the_room(chromium_ui, tmp_path, width, height):
+    """Pulled past fully open the drawer gives like a rubber band, and its surface fills the gap at the screen's edge:
+    the room never shows through, on a phone and on the widest stack layout (719 px, a landscape phone), where the
+    drawer is 360 px and a pull reaches farthest. (The drawer is its own scroller and would clip a child or a
+    pseudo-element there.)"""
+    page = seed_page(chromium_ui, width, height)
+    page.add_init_script("try { localStorage.setItem('ouroboros.theme', 'light'); } catch (e) {}")
+    facts = {}
+    try:
+        boot(page, chromium_ui)
+        page.locator('#page-chat .chat-toolbar-row [data-mobile-nav-toggle]').click()
+        page.wait_for_function("() => document.getElementById('primary-sidebar').classList.contains('open')")
+        page.wait_for_timeout(500)
+        y = height // 2
+        cdp = page.context.new_cdp_session(page)
+        try:
+            # Left first (the close direction locks the axis), then right to the screen's far edge, past fully open.
+            for i, x in enumerate((100, 80, 160, 260, 380, width - 10)):
+                cdp.send('Input.dispatchTouchEvent', {'type': 'touchStart' if i == 0 else 'touchMove',
+                                                      'touchPoints': [{'x': x, 'y': y, 'id': 1}]})
+                page.wait_for_timeout(16)
+            facts['pulled'] = page.evaluate(PULLED)
+            png = page.screenshot(clip={'x': 4, 'y': y + 20, 'width': 1, 'height': 1})
+            facts['gap'] = list(Image.open(io.BytesIO(png)).convert('RGB').getpixel((0, 0)))
+            # And back 100 px, still past fully open: the drawer follows the finger back (a rubber band, not a wall).
+            cdp.send('Input.dispatchTouchEvent', {'type': 'touchMove', 'touchPoints': [{'x': width - 110, 'y': y, 'id': 1}]})
+            page.wait_for_timeout(32)
+            facts['back'] = page.evaluate(PULLED)
+            cdp.send('Input.dispatchTouchEvent', {'type': 'touchEnd', 'touchPoints': []})
+        finally:
+            cdp.detach()
+        page.wait_for_timeout(600)
+        facts['after'] = page.evaluate(DRAWER)
+    finally:
+        evidence(tmp_path, f'shell-drawer-rubber-band-{width}x{height}', facts)
+        page.close()
+    assert facts['pulled']['dragging'] and facts['pulled']['p'] > 1 and facts['pulled']['x'] > 8, (
+        'the drawer gives past fully open', facts)
+    assert max(abs(a - b) for a, b in zip(facts['gap'], facts['pulled']['surface'])) <= 4, (
+        'the gap at the edge shows the drawer\'s surface, not the dimmed room', facts)
+    assert facts['back']['p'] > 1 and facts['back']['x'] < facts['pulled']['x'] - 0.5, (
+        'pulled back, the drawer gives back: every pixel of the finger still moves it', facts)
+    assert facts['after']['open'] is True, ('released, it settles back to fully open', facts)
