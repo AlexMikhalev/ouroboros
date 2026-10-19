@@ -25,7 +25,7 @@ from tests.test_review_operation_collection import fresh_sends  # noqa: F401 - f
 from tests.test_review_operation_lifetime import until
 
 
-def test_a_live_late_review_keeps_its_works_stop_and_the_door_takes_it(late, fake_route, tmp_path, monkeypatch):
+def test_a_live_late_review_keeps_its_works_stop_and_the_door_takes_it(late, fake_route, tmp_path, monkeypatch):  # noqa: F811
     f = delivered(tmp_path, monkeypatch)
     q, _state, _workers = _install_queue(f.root, monkeypatch)
     set_review_pool(monkeypatch, pool_roster(pool_seat('late-review', 'fake-review=fake-small', kind='agent_session',

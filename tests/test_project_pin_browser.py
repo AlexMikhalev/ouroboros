@@ -470,7 +470,7 @@ def test_menu_repositions_after_a_hidden_pin_is_revealed(pins_ui, tmp_path):
 
 
 @pytest.mark.parametrize("engine", ["chromium", "webkit"])
-def test_pin_real_server_updates_other_window_and_survives_reload(direct_server_with_data, engine, tmp_path):
+def test_pin_real_server_updates_other_window_and_survives_reload(direct_server_with_data, engine, tmp_path):  # noqa: F811
     """No API/WS interception: real isolated server, public routes, two independent clients."""
     from playwright.sync_api import sync_playwright
     from tests._dialogue import advance_room_revision
