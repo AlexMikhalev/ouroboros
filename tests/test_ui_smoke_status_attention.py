@@ -466,7 +466,8 @@ def test_task_status_stays_factual_in_main_and_project_chat(
 
                 assert page.locator("#toast-stack .toast").count() == 0
                 assert page.locator('[data-nav-page="chat"] .unread-badge').count() == 0
-                assert project_row.locator(".nav-unread-dot").count() == 0
+                # A card update creates no unread: neither the row's unread dot nor a crimson status mark.
+                assert project_row.locator('.nav-unread-dot, .status-mark[data-hue="unread"]').count() == 0
             finally:
                 browser.close()
     except PlaywrightError as exc:

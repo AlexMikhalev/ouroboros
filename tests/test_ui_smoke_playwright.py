@@ -3611,7 +3611,7 @@ def test_ui_smoke_cancel_run_button_eligibility_and_cancelled_state(direct_serve
     """v6.82 P5 / S3 Q2: the stop control renders ONLY on live marker-attested
     root cards (never marker-less direct-turn cards, subagent children, or the
     reusable background slot), opens the dropdown, and a cancelled root
-    replays as an honest warn-toned "Stopped" — never a generic "Done"."""
+    replays as an honest neutral "Stopped" — never a generic "Done"."""
     pytest.importorskip("playwright.sync_api", reason="Playwright is not installed")
     from playwright.sync_api import Error as PlaywrightError
     from playwright.sync_api import sync_playwright
