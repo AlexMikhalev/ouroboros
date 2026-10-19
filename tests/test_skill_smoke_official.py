@@ -46,6 +46,7 @@ from ouroboros.marketplace.isolated_deps import (
     read_deps_state,
 )
 from ouroboros.review_records import review_slot_awaiting, review_slot_unresolved
+from ouroboros.settings_defaults import SETTINGS_DEFAULTS
 from ouroboros.skill_dependencies import auto_install_specs_for_skill
 from ouroboros.skill_loader import (
     _sanitize_skill_name,
@@ -547,8 +548,17 @@ def test_backlog_manager_summary_offline(install_skill, tmp_path):
 # skill_readiness_for_execution), NOT live extension loading —
 # reconcile_extension is server runtime, consistent with the Tier 5 posture.
 #
-# Cost (measured 2026-07-17, flash x1 low effort): ~$0.29/skill ≈ $1.15 per
-# CI run for the 4-skill subset on one OS; a verdict retry doubles at most.
+# Deadlines are the PRODUCT's own: the review runs with no
+# OUROBOROS_REVIEW_MODEL_TIMEOUT_SEC, so its one native reviewer episode reads
+# the skill in several tool rounds inside the slot window the product resolves
+# (``_REVIEW_WINDOW_SEC``). A narrower test-side window only cut healthy
+# episodes into unsettled, unretryable reds. The test owns the by-design late
+# worker a timed-out slot leaves behind (``owned_review_workers``).
+#
+# Cost (measured 2026-10-17/18, gemini-3.5-flash, one native reviewer at low
+# effort): about $11 per review (the median; single reviews reported from
+# $0.77 to $12.24), so about $33 per CI run for the three skills; the one
+# settled retry adds at most one more review per skill.
 # ---------------------------------------------------------------------------
 
 # Owner-picked subset: a2a (mandated) + duckduckgo (core keyless search;
@@ -559,6 +569,19 @@ def test_backlog_manager_summary_offline(install_skill, tmp_path):
 # token, so that tier is unexercised here.
 REVIEW_SKILLS = ("a2a", "duckduckgo", "perplexity")
 _REVIEW_MODEL = "google/gemini-3.5-flash"
+# The slot window the product resolves for this review: with no explicit
+# OUROBOROS_REVIEW_MODEL_TIMEOUT_SEC and no task deadline, an API reviewer
+# slot's logical window is the shipped LLM transport bound
+# (deadline_utils.review_operation_timeout_sec -> llm_transport_timeout_sec),
+# and a native episode bounds every round's send by what is left of it.
+# review_env removes any override, so this shipped default is what governs.
+_REVIEW_WINDOW_SEC = float(SETTINGS_DEFAULTS["OUROBOROS_LLM_TRANSPORT_READ_TIMEOUT_SEC"])
+# The test's own outer bound covers the longest legitimate product timeline:
+# one wave settling at its window, the one settled retry's wave, and the drain
+# of a late worker whose send runs to that bound (owned_review_workers), plus
+# the catalog install, pack building and the cold a2a dependency install that
+# only follows a passing review. The CI job budget sits above it.
+_REVIEW_TEST_TIMEOUT_SEC = int(3 * _REVIEW_WINDOW_SEC + 600)
 # Expected auto-granted settings keys per skill (grants are request-keyed,
 # not value-keyed; empty values grant fine and only bite at runtime).
 _REVIEW_EXPECTED_KEYS = {
@@ -592,12 +615,61 @@ def review_env(monkeypatch, tmp_path):
     set_review_pool(monkeypatch, pool_roster(pool_seat(
         "skill-smoke-reviewer", _REVIEW_MODEL, delivery="native", effort="low")))
     monkeypatch.setenv("OUROBOROS_REVIEW_ENFORCEMENT", "blocking")
-    monkeypatch.setenv("OUROBOROS_REVIEW_MODEL_TIMEOUT_SEC", "300")
+    # The product's own deadlines: no test-side review window, and the shipped
+    # transport bound the window and this test's budget derive from.
+    monkeypatch.delenv("OUROBOROS_REVIEW_MODEL_TIMEOUT_SEC", raising=False)
+    monkeypatch.delenv("OUROBOROS_LLM_TRANSPORT_READ_TIMEOUT_SEC", raising=False)
     monkeypatch.setenv("OUROBOROS_AUTO_GRANT_REVIEWED_SKILLS", "true")
     # get_auto_grant_enabled reads the settings FILE first; point the module
     # at a missing path so the env value above is authoritative (the pattern
     # tests/test_skill_review.py uses).
     monkeypatch.setattr(config, "SETTINGS_PATH", tmp_path / "missing-settings.json")
+
+
+def active_review_attempts() -> Dict[str, str]:
+    """``{attempt key: operation id}`` of every reviewer worker review custody holds now."""
+    from ouroboros import review_custody
+
+    with review_custody._ACTIVE_LOCK:
+        return {key: entry.operation_id for key, entry in review_custody._ACTIVE.items()}
+
+
+def wait_for_review_workers(started_before, bound_sec: float, poll_sec: float = 0.5) -> Dict[str, str]:
+    """Wait until every reviewer worker started after ``started_before`` has retired.
+
+    Review custody retires an attempt from ``_ACTIVE`` in the same worker that
+    publishes its settlement, right before the thread ends (its model-send
+    executor is already shut down), so an empty difference means the workers
+    are finishing. Returns what is still active at ``bound_sec`` (``{}`` once drained).
+    """
+    deadline = time.monotonic() + bound_sec
+    while True:
+        active = {key: op for key, op in active_review_attempts().items() if key not in started_before}
+        if not active or time.monotonic() >= deadline:
+            return active
+        time.sleep(poll_sec)
+
+
+@pytest.fixture()
+def owned_review_workers(review_env):
+    """The test owns every reviewer worker it starts, the by-design late one included.
+
+    A slot whose logical window ends hands its caller a typed in-flight actor
+    while the physical worker keeps running until its send settles
+    (review_custody's late-result worker). That worker belongs to this test:
+    wait for it here, before monkeypatch restores the environment it runs under
+    (this fixture is torn down before ``review_env``) and before the session's
+    thread-leak check, never by widening that check's thread names and never by
+    cutting the provider socket. The wait is bounded by the product's own
+    transport bound, which also bounds the late send; a worker still active
+    after it is a red of its own.
+    """
+    before = set(active_review_attempts())
+    yield
+    still_active = wait_for_review_workers(before, _REVIEW_WINDOW_SEC + 60)
+    assert not still_active, (
+        f"reviewer workers still active {_REVIEW_WINDOW_SEC + 60:.0f}s after the test ended "
+        f"(operation ids): {sorted(still_active.values())}")
 
 
 def _skill_state_dir(name: str) -> pathlib.Path:
@@ -683,15 +755,16 @@ def _review_with_one_settled_retry(slug: str, name: str):
     return (*_run_review_flow(slug, name), note)
 
 
-# 2100s: review (300s model timeout + pack build), at most one settled retry,
-# and cold a2a venv+pip. The unchanged production path owns free verdict replay
-# and the paid-cycle cap. Pending work stays red; its state is never erased.
-@pytest.mark.timeout(2100)
+# _REVIEW_TEST_TIMEOUT_SEC: the review under the product's own window, at most
+# one settled retry, the late worker's drain and cold a2a venv+pip. The
+# unchanged production path owns free verdict replay and the paid-cycle cap.
+# Pending work stays red; its state is never erased.
+@pytest.mark.timeout(_REVIEW_TEST_TIMEOUT_SEC)
 # review_secret (session) is listed before install_skill (session): among
 # same-scope fixtures signature order wins, so a fork without the secret reds
 # on one crisp message before the live catalog fetch.
 @pytest.mark.parametrize("slug", REVIEW_SKILLS)
-def test_review_grants_and_enable(slug, review_secret, install_skill, review_env):
+def test_review_grants_and_enable(slug, review_secret, install_skill, owned_review_workers):
     install_skill(slug)
     name = _sanitize_skill_name(slug)
     started = time.time()
