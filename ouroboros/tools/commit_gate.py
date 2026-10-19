@@ -265,6 +265,9 @@ def commit_review_contract_fingerprint() -> str:
         if any(writable):
             for row, access in zip(rows, writable):
                 row.append(access)
+        if any(row_plan.get("additional") or []):
+            for row, extra in zip(rows, row_plan["additional"]):
+                row.append({"additional": bool(extra)})
         # What each seat is ASKED is contract identity: a seat that gains or
         # loses the coupling question is a different review.
         parts = {str(slot_id or ""): list(seat_parts) for slot_id, seat_parts in zip(row_plan["slot_ids"], row_plan["parts"])}
@@ -868,10 +871,14 @@ def _check_overlapping_review_attempt(ctx: ToolContext) -> Optional[str]:
     ctx._review_open_peers = []
 
     def _mutate(state):
+        from ouroboros.review_ledger import counted_pending
+        from ouroboros.review_state_custody import _attempt_review_roster_rows
+
         expired = state.expire_stale_attempts(now_ts=_utc_now())
         rows = [
             item for item in state.get_active_attempts(repo_key=repo_key)
             if item.tool_name in REVIEWED_MUTATIVE_TOOLS
+            and counted_pending(_attempt_review_roster_rows(item), pending=True)
         ]
         return ReviewStateMutation(rows, changed=bool(expired))
 
@@ -1020,23 +1027,15 @@ def commit_preflight_choice_error(selector: str, *, skipped: bool, continuation:
 
 
 def compose_commit_panel(ctx: ToolContext, reviewers: Sequence[str], reason: str) -> Any:
-    """This commit's panel through the ONE composer ``review_change`` uses
-    (``review_change.compose_panel``, decision 1A). In Cyber Pro the marked pool rows are
-    the owner's menu: ``reviewers`` names the counted seats (an enabled catalog row outside
-    the pool is an added critic, never the quorum) and ``reason`` says why; below Cyber Pro
-    the whole pool judges and ``reviewers`` only add critics outside it. No ``reviewers`` is
-    ``None``: the configured pool exactly as the gate reads it today (an empty pool is the
-    Main seat alone). The runtime mode is the gate's own reading (the
-    ``mode`` fact of its record). Raises ``ReviewChangeArgumentError`` — before anything is
-    staged, reviewed or recorded."""
-    from ouroboros.runtime_mode_policy import runtime_mode_at_least
-    from ouroboros.tools import git as git_mod
+    """Freeze the shared own-body panel before staging or paying for review."""
     from ouroboros.tools import review_change as rc
+    from ouroboros.reviewer_slot_config import review_strictness
+    from ouroboros.config import get_review_enforcement
+    from ouroboros.tools import git as git_mod
 
     request = rc.parse_request({"root": "system_repo", "subject": "index", "reviewers": list(reviewers), "reason": reason})
-    if not request.reviewers:
-        return None
-    return rc.compose_panel(request, adds_only=not runtime_mode_at_least(git_mod._current_runtime_mode(), "cyber_pro"))
+    return rc.compose_panel(request, body=True,
+                            strictness=review_strictness(get_review_enforcement(), git_mod._current_runtime_mode()))
 
 
 def release_diagnostics(ctx: ToolContext, paths: Optional[List[str]], source: str) -> Dict[str, Any]:
@@ -1339,7 +1338,7 @@ def _review_ledger_facts(ctx: ToolContext, commit_message: str, *, goal: str, sc
     panel = commit_panel_facts(ctx)
     return {
         **_review_body_facts(ctx),
-        "composition": str(panel.get("composition") or "full_pool"),
+        "panel": panel, "composition": str(panel.get("composition") or "full_pool"),
         "composition_reason": str(panel.get("reason") or ""), "chosen_by": str(panel.get("chosen_by") or "owner"),
         "task_id": task_id, "root_task_id": resolve_root_task_id(ctx),
         "review_wave_id": resolve_review_wave(ReviewRequest(
@@ -1455,7 +1454,7 @@ def settle_commit_review_ledger(ctx: ToolContext, commit_message: str, *, goal: 
             # The composition facts the panel was built with (requested rows, added critics,
             # the reason) ride the record's panel block as on ``review_change`` (its
             # ``reason_missing`` is the composer's: a panel that names the whole pool owes none).
-            record.panel = {**dict(record.panel or {}), **commit_panel_facts(ctx)}
+            record.panel = {**commit_panel_facts(ctx), **dict(record.panel or {})}
             if rejoined and existing is None:
                 # Late answers to a wave whose dispatching attempt left no record: the
                 # rules and brief the seats saw are not this attempt's — say so.

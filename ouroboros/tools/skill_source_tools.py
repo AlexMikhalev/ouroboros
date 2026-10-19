@@ -150,7 +150,7 @@ def _handle_skill_search(ctx: ToolContext, query: str = "", source: str = "", ca
 
 
 def _handle_skill_install(ctx: ToolContext, id: str = "", reason: str = "", replace: bool = False,
-                          owner_source: Any = None, check: str = "review", check_notes: str = "", **_kw: Any) -> str:
+                          owner_source: Any = None, check: str = "review", check_notes: str = "", reviewers: List[str] | None = None, **_kw: Any) -> str:
     from ouroboros.skill_source_install import SkillInstallError, install_item, run_in_lane, start_review
 
     item_id = str(id or "").strip()
@@ -168,11 +168,14 @@ def _handle_skill_install(ctx: ToolContext, id: str = "", reason: str = "", repl
     drive = _drive(ctx)
     task_id = str(getattr(ctx, "task_id", "") or "")
     try:
+        panel = _skill_panel(reviewers, reason) if check == "review" else None
         result = run_in_lane(drive, "install", item_id, lambda: install_item(
             drive, item_id, replace=bool(replace), actor="ouroboros", reason=str(reason), task_id=task_id,
             turn_on_when_ready=True, check=check, check_notes=check_notes),
             message=f"Ouroboros installs {item_id}: {str(reason)[:160]}",
             chat_id=int(getattr(ctx, "current_chat_id", 0) or 0))
+    except ValueError as exc:
+        return _publish_tool_result(ctx, ToolResult(status="error", code="TOOL_ARG_ERROR", text=str(exc)))
     except SkillInstallError as exc:
         if exc.code in {"bad_mode", "bad_check"}:
             return _publish_tool_result(ctx, ToolResult(status="error", code="TOOL_ARG_ERROR",
@@ -180,7 +183,7 @@ def _handle_skill_install(ctx: ToolContext, id: str = "", reason: str = "", repl
         return _publish_tool_result(ctx, ToolResult(status="error", code="TOOL_ERROR",
             text="⚠️ SKILL_INSTALL_REFUSED: " + _dump(exc.payload())))
     if result.get("needs_review"):
-        start_review(drive, result["name"])
+        start_review(drive, result["name"], panel=panel, chosen_by="ouroboros")
         result["next"] = ("The review runs now in the skill lifecycle lane; the skill turns on when it leaves no "
                           "blockers. list_skills(name=...) shows its state.")
     acceptance = result.get("acceptance") or {}
@@ -192,7 +195,7 @@ def _handle_skill_install(ctx: ToolContext, id: str = "", reason: str = "", repl
 
 
 def _handle_skill_update(ctx: ToolContext, name: str = "", mode: str = "", digest: str = "", local_digest: str = "",
-                         check: str = "review", check_notes: str = "", **_kw: Any) -> str:
+                         check: str = "review", check_notes: str = "", reviewers: List[str] | None = None, reason: str = "", **_kw: Any) -> str:
     from ouroboros.skill_source_install import SkillInstallError, run_in_lane, start_review, update_installed
 
     skill = str(name or "").strip()
@@ -201,11 +204,14 @@ def _handle_skill_update(ctx: ToolContext, name: str = "", mode: str = "", diges
             text="⚠️ SKILL_UPDATE_ERROR: name and mode (replace, keep or merge) are required."))
     drive = _drive(ctx)
     try:
+        panel = _skill_panel(reviewers, reason) if check == "review" and mode != "keep" else None
         result = run_in_lane(drive, "update", skill, lambda: update_installed(
             drive, skill, mode=mode, digest=str(digest or ""), local_digest=str(local_digest or ""), actor="ouroboros",
-            check=check, check_notes=check_notes,
+            check=check, check_notes=check_notes, reason=reason,
             task_id=str(getattr(ctx, "task_id", "") or "")), message=f"Ouroboros updates {skill} ({mode})",
             chat_id=int(getattr(ctx, "current_chat_id", 0) or 0))
+    except ValueError as exc:
+        return _publish_tool_result(ctx, ToolResult(status="error", code="TOOL_ARG_ERROR", text=str(exc)))
     except SkillInstallError as exc:
         if exc.code in {"bad_mode", "bad_check"}:
             return _publish_tool_result(ctx, ToolResult(status="error", code="TOOL_ARG_ERROR",
@@ -213,11 +219,19 @@ def _handle_skill_update(ctx: ToolContext, name: str = "", mode: str = "", diges
         return _publish_tool_result(ctx, ToolResult(status="error", code="TOOL_ERROR",
             text="⚠️ SKILL_UPDATE_REFUSED: " + _dump(exc.payload())))
     if result.get("needs_review"):
-        start_review(drive, skill)
+        start_review(drive, skill, panel=panel, chosen_by="ouroboros")
     return _publish_tool_result(ctx, ToolResult(status="ok", code="OK", text=_dump(result)))
 
 
+def _skill_panel(reviewers: Any, reason: str) -> Any:
+    from ouroboros.reviewer_slot_config import compose_review_panel
+    if reviewers is not None and (not isinstance(reviewers, list) or any(not isinstance(row, str) for row in reviewers)):
+        raise ValueError("REVIEW_PANEL_ARGUMENT: reviewers must be a list of enabled row ids or handles.")
+    return compose_review_panel(reviewers or (), reason, surface="skill")
+
+
 _CHECK_PROPERTIES = {
+    "reviewers": {"type": "array", "items": {"type": "string"}, "description": "Enabled row ids/handles; omitted means the whole pool. Blocking widens to all ticked reviewers; Advisory requires at least one ticked reviewer and a reason when narrowed. Unticked advisers are heard, not counted. Cyber Pro composes freely."},
     "check": {"type": "string", "enum": ["review", "self"], "description":
               "review (default): the configured reviewers check the exact release, and it runs when they leave no "
               "blockers; outside Cyber Pro this is the only check, and only the owner skips a review. self: Cyber Pro "
@@ -265,7 +279,7 @@ _SCHEMAS = {
         ),
         "properties": {
             "id": {"type": "string", "description": "Catalog id <source>/<name>."},
-            "reason": {"type": "string", "description": "Why this work needs the skill."},
+            "reason": {"type": "string", "description": "Why this work needs the skill and why these reviewers; required for a narrowed Advisory panel."},
             "replace": {"type": "boolean", "description": "Replace another skill of the same name (owner's instruction)."},
             "owner_source": _OWNER_SOURCE,
             **_CHECK_PROPERTIES,
@@ -281,6 +295,7 @@ _SCHEMAS = {
         "properties": {
             "name": {"type": "string"},
             "mode": {"type": "string", "enum": ["replace", "keep", "merge"]},
+            "reason": {"type": "string", "description": "Why these reviewers; required for a narrowed Advisory panel."},
             "digest": {"type": "string", "description": "The candidate release digest from skill_search."},
             "local_digest": {"type": "string", "description": "The installed copy's local_digest from skill_search."},
             **_CHECK_PROPERTIES,

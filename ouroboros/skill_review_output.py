@@ -210,6 +210,21 @@ def render_skill_review_block(
 # Parsing / aggregation
 
 
+def skill_result_panel(result: Dict[str, Any], delivery: Dict[str, Any]) -> Dict[str, Any]:
+    """Attach the admitted seats' standing and measured cost before any parser reads them."""
+    from ouroboros.reviewer_slot_config import review_cost_facts
+    ids = delivery.get("slot_ids") or []
+    advisers = {sid for sid, extra in zip(ids, delivery.get("additional") or []) if extra}
+    routes = dict(zip(ids, delivery.get("routes") or []))
+    for index, row in enumerate(result.get("results") or []):
+        sid = row.get("slot_id") or (ids[index] if index < len(ids) else "")
+        row["additional"] = sid in advisers
+        route = routes.get(sid, "")
+        row.update(review_cost_facts(row.get("cost_estimate"), route=str(getattr(route, "value", route)),
+                                    model=str(row.get("model") or "")))
+    return result
+
+
 def _extract_actor_findings(
     result_json: Dict[str, Any],
 ) -> tuple[List[Dict[str, Any]], List[str]]:
