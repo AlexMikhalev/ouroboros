@@ -174,7 +174,7 @@ export function createRoomWork({
     let outsideClick = null;
     let scheduled = 0;
     let lastInside = false;
-    let pressing = false;       // a pointer press is being handled: the focus moves it causes change no row
+    let pressing = false;       // a pointer press until its click: focus moves meanwhile change no row
     let latestLabel = null;
     let detailSequence = 0;
     let menuIntent = 0;
@@ -912,9 +912,9 @@ export function createRoomWork({
     });
     listen(back, 'click', goBack);
     listen(doc, 'pointerdown', (event) => {
-        // The blur this press causes happens while its own event is handled; the flag ends with that task.
+        // A press lasts until the click its release makes (a touch's mouse events follow its pointerup), so a
+        // focus move inside it, its own or a closing menu handing focus back, folds nothing under the pointer.
         pressing = true;
-        setTimeout(() => { pressing = false; }, 0);
         const target = event.target;
         // The shared task-controls menu is a portal outside the list but part of its interaction.
         if (target?.closest?.('.task-control-menu')) return;
@@ -934,6 +934,12 @@ export function createRoomWork({
             }, 600);
         }
     }, true);
+    // A press that makes no click (a cancelled touch, a release outside the window) ends at the next key or
+    // press, so keyboard reading never waits on it.
+    const endPress = () => { pressing = false; };
+    listen(doc, 'click', endPress, true);
+    listen(doc, 'pointercancel', endPress, true);
+    listen(doc, 'keydown', endPress, true);
     listen(doc, 'focusin', (event) => {
         if (!event.target?.closest?.('.task-control-menu')) lastInside = surface.contains(event.target) || trigger.contains(event.target);
     }, true);
