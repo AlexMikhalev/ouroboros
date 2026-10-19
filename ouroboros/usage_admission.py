@@ -353,8 +353,8 @@ def review_wave_admission(
                 remaining = round(max(0.0, limit - known), 6)
                 result.update(limit_usd=limit, known_usd=known, accounted_usd=ua._number(projection.get("accounted_usd")),
                               reserved_usd=holds(projection), binding_axis="root")
-            # Resolve the same task-bound durable group and owner amendments
-            # as a seat reservation, without reserving money or pinning a binding.
+            # Resolve the same task-bound durable group as a seat reservation,
+            # without reserving money or pinning a binding.
             # A raised in-memory root fence alone cannot raise the original group.
             _, bound_scope = ua._merge_scope(ua.AttemptRequest(
                 model="", provider="", drive_root=drive_root,
@@ -459,11 +459,7 @@ def current_usage_projection(
     """The global projection, or one root's or one whole-work group's, from the
     store's summary rows. ``include_roots`` adds the per-root map (every root
     summary: an explicit request, never the default). ``allow_stale``: DISPLAY
-    readers only (the short wait, then unavailable), never money — and a display
-    read returns the stored projection as is, without the owner-amendment overlay
-    that reads the current task-result store (``amended_projection``): the root
-    heartbeat runs this on the supervisor drain for every running root, and the
-    amended cap is admission's concern, never a live figure's."""
+    readers only (the short wait, then unavailable), never money."""
     from ouroboros import usage_accounting as ua
     from ouroboros import usage_store
     from ouroboros._usage_rows import projection_view
@@ -473,9 +469,7 @@ def current_usage_projection(
         with usage_store.read(root, allow_stale=allow_stale) as txn:
             projection = projection_view(txn, root_task_id=root_task_id, billing_group_id=billing_group_id,
                                          degraded=usage_store.integrity_degraded(root))
-        if allow_stale:
-            return projection
-        return amended_projection(root, billing_group_id or root_task_id, projection, group=bool(billing_group_id))
+        return projection
     if global_limit_usd is None:
         from ouroboros.settings_setup_contract import resolve_total_budget_usd
         global_limit_usd = resolve_total_budget_usd()  # None: no limit; an unreadable run cap is 0.0
@@ -483,22 +477,6 @@ def current_usage_projection(
     with usage_store.read(root, allow_stale=allow_stale) as txn:
         return projection_view(txn, limit=limit, include_roots=include_roots,
                                degraded=usage_store.integrity_degraded(root))
-
-
-def amended_projection(root, identity, projection, *, group=False):
-    """Read current owner authority over a copy, leaving historical cache intact."""
-    try:
-        fields = {"billing_group_id": identity,
-            "billing_group_limit_usd": projection.get("limit_usd"), "root_limit_usd": projection.get("limit_usd")}
-    except BillingAuthorityUnavailable as exc:
-        # Unconfirmed owner authority over these sums: degraded and named, never a zero limit.
-        return {**projection, "integrity_degraded": True, "billing_authority": exc.kind}
-    result = dict(projection)
-    limit = fields.get("billing_group_limit_usd" if group else "root_limit_usd")
-    result.update({key: value for key, value in fields.items() if key.endswith(("source", "revision"))})
-    if limit is not None:
-        result.update(limit_usd=limit, remaining_known_usd=round(max(0., limit - result["settled_usd"]), 6))
-    return result
 
 
 def task_money_snapshot(root, task, root_id, *, root_limit=None):
