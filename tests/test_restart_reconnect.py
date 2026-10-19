@@ -484,7 +484,7 @@ def test_auto_resume_skips_owner_restart_no_resume_flag(tmp_path, monkeypatch):
     monkeypatch.setattr(workers, "load_state", fail_load_state)
     workers.auto_resume_after_restart()
 
-    assert snapshot.is_file(), "the Restart holds were not published before the marker was consumed"
+    assert snapshot.is_file(), "the Restart holds were not published"
     assert not flag.exists()
     assert not compat_flag.exists()
 

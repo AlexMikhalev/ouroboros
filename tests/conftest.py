@@ -1090,7 +1090,8 @@ def _starter_skills_stay_off(request, monkeypatch):
     run, every onboarding completion. That run clones the configured skill sources (by default
     the Official hub on GitHub) and installs skills while the test goes on, so outside tests
     marked ``starter_skills`` the door starts nothing. A server a test runs in its own
-    interpreter does not load this file: its harness closes the same door (tests/_cost_driver.py).
+    interpreter does not load this file: its harness closes the door itself (tests/_cost_driver.py
+    stubs it; the real-server shutdown tests configure no starter skills).
     """
     if request.node.get_closest_marker("starter_skills"):
         yield
