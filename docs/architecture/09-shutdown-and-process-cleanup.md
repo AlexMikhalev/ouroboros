@@ -1,6 +1,6 @@
 # 9. Shutdown & Process Cleanup
 
-Close keeps the daemon; Restart stops generation work before transfer; Panic never waits. Signals, logical wait expiry and engine terminal facts prove no OS exit. Collection closes admission but retains jobs until return; cold receipts grant responsibility, not Resume (§6). Switching restores packed handles after stop evidence; startup retries unconfirmed custody.
+Close keeps the daemon; Restart stops generation work; Panic never waits. Signals, wait expiry and engine terminals prove no OS exit. Collection retains jobs until return; cold receipts grant custody, not Resume (§6). Switching restores handles after stop evidence; startup retries unconfirmed custody.
 
 ### Shutdown doors
 
