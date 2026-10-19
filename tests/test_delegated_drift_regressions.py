@@ -6,6 +6,8 @@ import json
 import sys
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).parent))
 
 from ouroboros import delegate_custody as custody
@@ -90,4 +92,65 @@ def test_drift_uses_snapshot_registry_when_custody_root_differs(tmp_path, monkey
     assert capture.get("target_mutated_during_run", []) == []
     (target / "untracked.txt").write_text("changed\n", encoding="utf-8")
     assert _target_drift_evidence(entry)["paths"] == ["untracked.txt"]
+    custody._CUSTODY.clear()
+
+
+_DEV_SERVER = ("import sqlite3, sys\n"
+               "conn = sqlite3.connect(sys.argv[1], isolation_level=None)\n"
+               "conn.execute('PRAGMA journal_mode=WAL')\n"
+               "conn.execute('PRAGMA wal_autocheckpoint=0')\n"
+               "conn.execute('CREATE TABLE IF NOT EXISTS t(v)')\n"
+               "conn.execute(\"INSERT INTO t VALUES ('dev server row')\")\n"
+               "print('ready', flush=True)\n"
+               "for line in sys.stdin:\n"
+               "    conn.execute(\"INSERT INTO t VALUES ('another row')\")\n"
+               "    print('committed', flush=True)\n")
+
+
+@pytest.mark.parametrize("ignored", [False, True], ids=["db-and-log-untracked", "db-and-log-ignored"])
+def test_another_process_s_live_wal_index_is_excluded_without_a_baseline(tmp_path, monkeypatch, ignored):
+    """A project may hold another process's live WAL database (a dev server): its untracked
+    ``app.db-shm`` is excluded from a mutating run's snapshot with no content baseline (its bytes are
+    shared memory no raw reader opens), so the snapshot provisions, and the post-run capture and
+    drift check pass it unread while it changes underneath (``.gitignore`` of ``*.db`` alone never
+    covers it; with the log ignored too, nothing else moves)."""
+    import hashlib
+    import subprocess
+
+    from ouroboros.delegate_target_drift import _target_drift_evidence
+    from ouroboros.tools.delegate import _capture_terminal_patch
+
+    target = _seed_target(tmp_path)
+    if ignored:
+        (target / ".gitignore").write_text("*.db\n*.db-wal\n", encoding="utf-8")
+    ctx = _nanny_ctx(tmp_path, target, monkeypatch)
+    index = target / "app.db-shm"
+    holder = subprocess.Popen([sys.executable, "-I", "-c", _DEV_SERVER, str(target / "app.db")],
+                              stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+    try:
+        assert holder.stdout.readline().strip() == "ready" and index.exists()
+        handle = provision_execution_snapshot(target_root=target, task_id="t-nanny", snapshot_id="snapLiveWal")
+        [row] = [row for row in handle.excluded_untracked if row.get("path") == "app.db-shm"]
+        assert row.get("wal_index") is True and "baseline" not in row and "WAL index" in row["reason"]
+        assert not (Path(handle.path) / "app.db-shm").exists()
+        entry = _isolated_entry(ctx, target, handle, run_id="run-live-wal")
+        before = hashlib.sha256(index.read_bytes()).hexdigest()  # this test process holds no connection to it
+        holder.stdin.write("commit\n")
+        holder.stdin.flush()
+        assert holder.stdout.readline().strip() == "committed"
+        assert hashlib.sha256(index.read_bytes()).hexdigest() != before, "the index changed underneath"
+        capture = _capture_terminal_patch(ctx, entry)
+        evidence = _target_drift_evidence(entry)
+    finally:
+        holder.stdin.close()
+        try:
+            holder.wait(timeout=60)
+        except subprocess.TimeoutExpired:
+            holder.kill()
+            holder.wait()
+    assert evidence["checked"] is True and evidence["error"] == "", evidence
+    assert capture["status"] == "ready_no_changes" and capture.get("target_drift_checked") is True, capture
+    assert "app.db-shm" not in evidence["paths"] and "app.db-shm" not in capture.get("target_mutated_during_run", [])
+    if ignored:  # only the index moved, and it is no drift
+        assert evidence["paths"] == [] and capture.get("target_mutated_during_run", []) == []
     custody._CUSTODY.clear()

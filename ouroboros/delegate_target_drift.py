@@ -73,8 +73,8 @@ def _target_drift_evidence(entry: Any) -> Dict[str, Any]:
         for row in excluded_rows:
             if not isinstance(row, dict) or not row.get("path"):
                 continue
-            if row.get("reason") == "nested_repository" and not isinstance(row.get("baseline"), dict):
-                continue
+            if (row.get("reason") == "nested_repository" or row.get("wal_index")) and not isinstance(row.get("baseline"), dict):
+                continue  # recorded without a content baseline: a nested repository, a WAL index (never read)
             relative, before = str(row["path"]), row.get("baseline")
             if not isinstance(before, dict):
                 evidence["error"] = f"baseline identity unavailable for excluded path {relative}"

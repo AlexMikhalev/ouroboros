@@ -734,6 +734,7 @@ def _provision_git_copy(
         # empty files need their attribute verdict — never one per file (#1241).
         binary_verdicts = untracked_binary_verdicts(
             target, binary_verdict_candidates(target, untracked), warnings=capture_warnings)
+        from ouroboros.store import is_wal_index
         from ouroboros.workspace_file_outputs import _side
         for rel in untracked:
             candidate = target / rel
@@ -745,8 +746,9 @@ def _provision_git_copy(
                 target, rel, file_outputs=reference, warnings=capture_warnings, binary_verdicts=binary_verdicts)
             if reference:
                 file_inputs.append(rel)
-            elif reason:
-                excluded.append({"path": rel, "reason": reason, "baseline": _side(target / rel)})
+            elif reason:  # a WAL index gets no content baseline: shared memory no raw reader opens
+                excluded.append({"path": rel, "reason": reason, "wal_index": True} if is_wal_index(target / rel)
+                                else {"path": rel, "reason": reason, "baseline": _side(target / rel)})
             else:
                 eligible.append(rel)
                 baseline = _side(target / rel)
