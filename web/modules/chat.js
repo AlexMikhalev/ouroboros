@@ -61,6 +61,7 @@ import { mountEmptyChatWelcome } from './welcome_preference.js';
 import { createChatReplies } from './chat_reply.js';
 import { createHistoryReveal } from './chat_history_reveal.js';
 import { createChatRowMenu } from './chat_row_menu.js';
+import { haptic } from './haptics.js';
 import { clearTransientRoutingAnnotations } from './routing_receipt.js';
 import {
     captureLiveCardPhaseState,
@@ -2886,7 +2887,7 @@ export function createChatInstance({
         }
     }
 
-    swarmBtn?.addEventListener('click', () => setSwarm(!swarmArmed()));
+    swarmBtn?.addEventListener('click', () => { setSwarm(!swarmArmed()); haptic('tick'); });
 
     // Each composer owns its room's Context and Effort settings.
     ownerControls = createComposerOwnerControls({ row: page.querySelector('.chat-toolbar-row'), box: page, byId, apiFetch, showToast,

@@ -21,7 +21,11 @@ test('each kind plays its one Telegram haptic inside Telegram', () => {
     assert.equal(haptic('tick', h.options), true);
     assert.equal(haptic('press', h.options), true);
     assert.equal(haptic('threshold', h.options), true);
-    assert.deepEqual(h.calls, [['impactOccurred', 'light'], ['selectionChanged'], ['impactOccurred', 'medium'], ['impactOccurred', 'medium']]);
+    assert.equal(haptic('stop', h.options), true);
+    assert.equal(haptic('error', h.options), true);
+    assert.equal(haptic('pickup', h.options), true);
+    assert.deepEqual(h.calls, [['impactOccurred', 'light'], ['selectionChanged'], ['impactOccurred', 'medium'], ['impactOccurred', 'medium'],
+        ['impactOccurred', 'rigid'], ['notificationOccurred', 'error'], ['impactOccurred', 'medium']]);
     // The sidecar's host stamp is Telegram too, before the launch data arrives.
     const stamped = host({ stamp: 'telegram', initData: '' });
     assert.equal(haptic('tick', stamped.options), true);

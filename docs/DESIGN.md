@@ -2231,11 +2231,13 @@ motion keeps the finger tracking and drops the rest.
 
 **Haptics.** Inside Telegram, and only there (its HapticFeedback; a browser and the
 desktop app have none), a few moments are felt, one meaning each: the drawer,
-released, latches open or closed (a light impact); a level steps (Effort, Context: a
-selection tick); a long press opens a row's menu (a medium impact); a swipe on a
-message reaches its reply point (a medium impact, again after pulling back under it).
-Sending, copying and ordinary toggles stay silent, as in Telegram, and nothing depends
-on a haptic (`web/modules/haptics.js`).
+released, latches open or closed (a light impact); a level steps or Swarm flips (a
+selection tick); a long press opens a row's menu, a swipe on a message reaches its
+reply point (again after pulling back under it) or a widget is picked up to be moved
+(a medium impact); Stop on a work is pressed (a rigid impact, once); the owner's own
+action does not go through (its error toast: the error notification; a notice he did
+not cause stays silent). Sending, copying and other toggles stay silent, as in
+Telegram, and nothing depends on a haptic (`web/modules/haptics.js`).
 
 **Layers and dismissal.** The drawer and the Project panel are layers in one
 stack (`web/modules/layers.js`); dialogs, menus and the Shade keep their own

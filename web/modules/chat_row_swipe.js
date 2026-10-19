@@ -8,10 +8,11 @@
  * an open menu keep their own finger. Every swipe has a visible double: Reply under the message, or in its menu.
  *
  * Touch Events, with every move cancelled once the axis is decided, so iOS cannot hand the finger to the feed's
- * scroll halfway (WebKit 203335). That listener sits on the feed from the start, because iOS decides when a touch
- * begins whether its moves wait for the page (WebKit 184251), and only in the stack layout under a coarse pointer, as
- * the drawer's: elsewhere a touch on the feed never waits. The gesture is tracked on the element it started on, which
- * keeps receiving its touch after a re-render removes it. */
+ * scroll halfway (WebKit 203335). That listener sits on the feed from the start, because a listener added only when
+ * the touch begins may be unable to cancel it on iOS (WebKit 184251), and only in the stack layout under a coarse
+ * pointer, as the drawer's: elsewhere a touch on the feed never waits. A layout that leaves the stack mid-swipe ends it
+ * without a reply. The gesture is tracked on the element it started on, which keeps receiving its touch after a
+ * re-render removes it. */
 import { BLOCKING_SELECTOR, FIELD_SELECTOR, SIDEWAYS_SELECTOR, chainKeepsGesture } from './drawer_drag.js';
 import { haptic } from './haptics.js';
 
@@ -132,7 +133,8 @@ export function createRowSwipe({
         if (!touch || !eligible(target, row)) return;
         const ref = replyRef(row);
         if (!ref) return;
-        g = { id: touch.identifier, target, row, ref, x0: touch.clientX, y0: touch.clientY, mode: 'wait', lockX: 0, armed: false };
+        g = { id: touch.identifier, target, row, ref, x0: touch.clientX, y0: touch.clientY, mode: 'wait', lockX: 0,
+            armed: false };
         listen(target);
     }
 
@@ -204,7 +206,7 @@ export function createRowSwipe({
         if (want === guarded) return;
         guarded = want;
         if (want) feed.addEventListener('touchmove', onFeedMove, { passive: false });
-        else feed.removeEventListener('touchmove', onFeedMove);
+        else { feed.removeEventListener('touchmove', onFeedMove); finish(false); }  // a docked room has no swipe
     }
     feed.addEventListener('touchstart', onStart, { passive: true });
     syncGuard();

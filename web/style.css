@@ -9366,6 +9366,8 @@ body.keyboard-open .project-panel {
     position: relative;
     transform: translateX(calc(-1 * var(--row-swipe, 0px)));
 }
+/* Under the finger the row tracks 1:1, even while a closed menu's lift is still on its way back. */
+:root[data-theme] :is(.chat-bubble, .chat-live-card)[data-row-swipe="drag"] { transition: none; }
 :is(.chat-bubble, .chat-live-card)[data-row-swipe="settle"] { transition: transform 0.22s cubic-bezier(0.32, 0.72, 0, 1); }
 /* The reply mark at the room's right side: it fills as the row nears the reply point and takes the accent there. */
 .chat-row-reply-mark {

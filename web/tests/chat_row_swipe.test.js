@@ -233,3 +233,19 @@ test('the element the touch started on keeps the finger after a re-render remove
         assert.deepEqual(f.replied, ['row:1@t#a'], 'the reply still names the row the finger took');
     } finally { f.close(); }
 });
+
+test('a layout that leaves the stack mid-swipe ends it without a reply', (t) => {
+    t.mock.timers.enable({ apis: ['setTimeout', 'Date'] });
+    const f = fixture();
+    try {
+        swipe(f, f.words, [12, 90]);
+        assert.equal(f.mark().dataset.armed, 'true');
+        f.state.stack = false;  // a phone turned into a docked window, the finger still down
+        f.layoutHandlers.forEach((sync) => sync());
+        assert.equal(f.bubble.dataset.rowSwipe, 'settle', 'the row goes back at once');
+        assert.equal(f.mark().dataset.leaving, 'true');
+        f.lift(f.words, 210, 220);
+        assert.deepEqual(f.replied, [], 'the docked room was not asked to reply');
+        assert.equal(f.words.listenerCount(), 0);
+    } finally { f.close(); }
+});

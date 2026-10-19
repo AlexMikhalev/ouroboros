@@ -3,10 +3,14 @@
  * browser, the desktop app and an older Telegram this does nothing, so no screen depends on it.
  *
  * - `snap`: the drawer, released, latched open or closed: a light impact.
- * - `tick`: a value stepped (an Effort or Context level): the picker's selection tick.
+ * - `tick`: a value stepped or flipped (an Effort or Context level, Swarm armed or disarmed): the selection tick.
  * - `press`: a long press opened a row's menu: a medium impact, as the press is recognised.
  * - `threshold`: a swipe on a message reached its Reply point (again after pulling back under it): a medium impact,
- *   once per crossing, as Telegram's own swipe to reply. */
+ *   once per crossing, as Telegram's own swipe to reply.
+ * - `stop`: the owner stopped a work (Stop now, or an earlier attempt): a rigid impact, once, on the press.
+ * - `error`: the owner's own action did not go through (its error toast; toast.js): the error notification.
+ * - `pickup`: a widget was picked up to be moved: a medium impact.
+ * Nothing on send, copy or an ordinary toggle, and no `warning` (Telegram iOS plays a sound for it). */
 import { hostCall, isTelegramHost } from './host_telegram.js';
 
 const KINDS = Object.freeze({
@@ -14,6 +18,9 @@ const KINDS = Object.freeze({
     tick: ['selectionChanged'],
     press: ['impactOccurred', 'medium'],
     threshold: ['impactOccurred', 'medium'],
+    stop: ['impactOccurred', 'rigid'],
+    error: ['notificationOccurred', 'error'],
+    pickup: ['impactOccurred', 'medium'],
 });
 
 /** True when Telegram took the haptic. */

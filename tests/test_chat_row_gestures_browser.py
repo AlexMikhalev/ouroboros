@@ -30,6 +30,9 @@ ROW = """sel => { const row = document.querySelector(sel); const r = row.getBoun
         mark: mark ? { armed: mark.dataset.armed || '', k: Number(mark.style.getPropertyValue('--reply-k')), shown: mark.isConnected } : null,
         staged: document.getElementById('chat-input-reply')?.textContent || '', scrollTop: document.getElementById('chat-messages').scrollTop,
         menu: [...document.querySelectorAll('.chat-row-menu [data-row-action]')].map((item) => item.dataset.rowAction) }; }"""
+RECORD_HAPTICS = """(() => { const played = window.__haptics = [];
+    window.Telegram.WebApp.HapticFeedback = { impactOccurred: (style) => played.push(style),
+        selectionChanged: () => played.push('tick'), notificationOccurred: (type) => played.push(type) }; })()"""
 ASSISTANT = '#chat-messages .chat-bubble.assistant.has-reply'
 USER = '#chat-messages .chat-bubble.user.has-reply'
 
@@ -59,9 +62,11 @@ def luminance(png, x, y):
     return 0.2126 * r + 0.7152 * g + 0.0722 * b
 
 
-def booted(chromium_ui, tmp_path, theme='light'):
-    page = seed_page(chromium_ui, 390, 844)
+def booted(chromium_ui, tmp_path, theme='light', telegram=False):
+    page = seed_page(chromium_ui, 390, 844, telegram=telegram)
     page.add_init_script(f"try {{ localStorage.setItem('ouroboros.theme', '{theme}'); }} catch (e) {{}}")
+    if telegram:  # after the Telegram stub: its HapticFeedback records what the page asks Telegram to play
+        page.add_init_script(RECORD_HAPTICS)
     client, respond = saved_history(tmp_path)
     page.route('**/api/chat/history**', respond)
     boot(page, chromium_ui)
@@ -184,3 +189,65 @@ def test_a_long_press_lifts_the_row_over_the_dimmed_feed_until_its_menu_closes(c
     assert facts['after_up']['press'] == 'lift' and facts['after_up']['menu'], ('lifted while the menu is open', facts)
     assert facts['closing']['menu'] == [] and facts['closing']['press'] == 'release', facts
     assert facts['rest']['press'] == '' and facts['rest']['transform'] == 'none', facts
+
+
+def test_inside_telegram_each_moment_plays_its_one_haptic(chromium_ui, tmp_path):
+    """Swarm flipped: a tick each way. A swipe past the reply point: one medium tap (none for pulling further). A long
+    press that opens the menu: one medium tap. The drawer latched open by a finger: one light tap; ☰ is silent."""
+    page, client = booted(chromium_ui, tmp_path, telegram=True)
+    finger = Finger(page)
+    played = lambda: page.evaluate('window.__haptics.slice()')  # noqa: E731
+    clear = lambda: page.evaluate('window.__haptics.length = 0')  # noqa: E731
+    facts = {}
+    try:
+        facts['host'] = page.evaluate('document.documentElement.dataset.ouroborosHost')
+        facts['idle'] = played()
+        page.locator('#chat-swarm').click()
+        page.locator('#chat-swarm').click()
+        facts['swarm'] = played()
+        clear()
+        row = page.evaluate(ROW, ASSISTANT)
+        start = (row['x'] + row['w'] - 24, row['y'] + row['h'] / 2)
+        finger.send('touchStart', *start)
+        finger.path(start, (start[0] - 100, start[1] + 4), steps=8)
+        finger.path((start[0] - 100, start[1] + 4), (start[0] - 140, start[1] + 6), steps=4)
+        finger.send('touchEnd')
+        page.wait_for_timeout(450)
+        facts['swipe'] = played()
+        page.keyboard.press('Escape')
+        page.evaluate('() => document.activeElement?.blur?.()')
+        clear()
+        row = page.evaluate(ROW, ASSISTANT)
+        finger.send('touchStart', row['x'] + row['w'] / 2, row['y'] + min(row['h'] / 2, 30))
+        page.wait_for_timeout(700)
+        finger.send('touchEnd')
+        facts['press'] = played()
+        finger.send('touchStart', 195, 12)
+        finger.send('touchEnd')
+        page.wait_for_timeout(450)
+        clear()
+        mid = row['y'] + row['h'] / 2
+        finger.send('touchStart', 40, mid)
+        finger.path((40, mid), (330, mid), steps=12)
+        finger.send('touchEnd')
+        page.wait_for_timeout(500)
+        facts['drawer'] = page.evaluate(DRAWER)
+        facts['latch'] = played()
+        page.evaluate('window.__ouroLayers.pop()')
+        page.wait_for_timeout(450)
+        clear()
+        page.locator('#page-chat .chat-toolbar-row > .composer-menu').click()
+        page.wait_for_timeout(450)
+        facts['menu_open'] = page.evaluate(DRAWER)
+        facts['menu'] = played()
+    finally:
+        finger.close()
+        evidence(tmp_path, 'row-gestures-haptics', facts)
+        page.close()
+        client.close()
+    assert facts['host'] == 'telegram' and facts['idle'] == [], facts
+    assert facts['swarm'] == ['tick', 'tick'], ('armed, then disarmed', facts)
+    assert facts['swipe'] == ['medium'], ('one tap as the reply point is crossed', facts)
+    assert facts['press'] == ['medium'], ('one tap as the long press opens the menu', facts)
+    assert facts['drawer']['open'] is True and facts['latch'] == ['light'], ('the finger latched the drawer open', facts)
+    assert facts['menu_open']['open'] is True and facts['menu'] == [], ('a press on ☰ is its own feedback', facts)

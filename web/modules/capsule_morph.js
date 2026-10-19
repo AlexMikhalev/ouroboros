@@ -19,10 +19,12 @@ export const MORPH = Object.freeze({
 const LEAVE_PROPS = ['--leave-x', '--leave-y', '--leave-w', '--leave-h', '--leave-display'];
 
 const running = new WeakMap();  // capsule → its morph's stop()
+const fade = (node, from, to, timing) =>
+    node.animate([{ opacity: from }, { opacity: to }], { easing: 'ease-out', ...timing });
 
 /**
- * Before a capsule's strip opens or closes: the line as it stands. `alone` says whether the closing strip had the line
- * alone (an opening one is judged by its fit once open). Null when nothing should move.
+ * Before a capsule's strip opens or closes: the line as it stands. A closing strip remembers whether it had the line
+ * alone; an opening one is judged by its fit once open. Null when nothing should move.
  */
 export function beginMorph({ el, row, win = globalThis.window }) {
     running.get(el)?.();  // a morph still running ends where it was going
@@ -103,7 +105,7 @@ function play({ el, row, open, from, shown, wasAlone, win }) {
     if (open) {
         // The strip comes in once the glass has started to move, its levels one after another.
         const body = el.querySelector(':scope > .chat-capsule-body');
-        if (body) animations.push(body.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 160, delay: 60, fill: 'backwards', easing: 'ease-out' }));
+        if (body) animations.push(fade(body, 0, 1, { duration: 160, delay: 60, fill: 'backwards' }));
         const lead = win.getComputedStyle(el).direction === 'rtl' ? 4 : -4;
         Array.from(el.querySelectorAll('.chat-effort-seg, .chat-seg')).forEach((seg, i) => animations.push(seg.animate(
             [{ opacity: 0, transform: `translateX(${lead}px)` }, { opacity: 1, transform: 'none' }],
@@ -120,7 +122,7 @@ function play({ el, row, open, from, shown, wasAlone, win }) {
                 kid.style.setProperty('--leave-h', `${b.height}px`);
                 kid.style.setProperty('--leave-display', b.display);
                 // Mostly gone before the head rides under them.
-                animations.push(kid.animate([{ opacity: 1 }, { opacity: 0 }], { duration: MORPH.leave, easing: 'ease-out', fill: 'forwards' }));
+                animations.push(fade(kid, 1, 0, { duration: MORPH.leave, fill: 'forwards' }));
             }
             cleanups.push(() => {
                 delete row.dataset.ownerLeaving;
@@ -134,7 +136,7 @@ function play({ el, row, open, from, shown, wasAlone, win }) {
         // The controls that come back fade in under the folding glass.
         for (const kid of Array.from(row.children || [])) {
             if (kid === el || shown.has(kid) || !kid.getClientRects?.().length) continue;
-            animations.push(kid.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 160, delay: 40, fill: 'backwards', easing: 'ease-out' }));
+            animations.push(fade(kid, 0, 1, { duration: 160, delay: 40, fill: 'backwards' }));
         }
     }
 

@@ -6,9 +6,10 @@
  *
  * Touch Events, so the finger stays on the drawer (owner 19.10: it came off halfway). Once the axis is decided,
  * every touchmove is cancelled, so the browser cannot start a scroll mid-drag: iOS WebKit would, and then cancel
- * the finger (WebKit 203335). That listener sits on the root element from the start, because iOS decides whether a
- * touch waits for the page when it begins (WebKit 184251). The gesture itself is tracked on the element it started
- * on, which keeps receiving its touch even after a re-render removes it from the page (a live card, a new message).
+ * the finger (WebKit 203335). That listener sits on the root element from the start, because a listener added only
+ * when the touch begins may be unable to cancel it on iOS (WebKit 184251). The gesture itself is tracked on the
+ * element it started on, which keeps receiving its touch even after a re-render removes it from the page (a live
+ * card, a new message).
  * If the system still takes the touch, the drawer settles from where the finger left it, never stranded halfway.
  *
  * Motion is transform-only and driven by one number (`--drawer-p`, 0 closed … 1 open) that the scrim's opacity
