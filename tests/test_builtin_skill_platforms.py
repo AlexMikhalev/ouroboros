@@ -38,6 +38,8 @@ REPO = pathlib.Path(__file__).resolve().parents[1]
 SEEDS = REPO / "skills"
 UNIX = "unix_computer_use"
 WINDOWS = "windows_computer_use"
+# Built-ins on by default on every host (skills/builtin.json): the "+" starters and Read aloud's voice.
+EVERYWHERE = ["templates", "device_voice"]
 UNIX_043 = "1e237c1bc89f0600a7362f69eddafdff4ddd1f2d"  # official history: os any, permissions with net
 log = logging.getLogger(__name__)
 
@@ -771,14 +773,14 @@ def test_a_new_install_starts_with_its_own_computer_use_skill_ticked_and_on(data
     on(monkeypatch, platform)
     rows = [{"id": "builtin", "name": "Built in", "kind": "builtin", "trust": "trusted", "confirmed": True}]
     monkeypatch.setenv("OUROBOROS_SKILL_SOURCES", json.dumps(rows))
-    assert skill_builtin.default_on_names(SEEDS) == [own]
+    assert sorted(skill_builtin.default_on_names(SEEDS)) == sorted([own, *EVERYWHERE])
     ticked = skill_starter.default_starter_ids(data, rows, repo_dir=REPO)
     assert f"builtin/{own}" in ticked and f"builtin/{other}" not in ticked
 
     marker = skill_starter.run_starter(data, None, origin="first_start", repo_dir=REPO)
 
     assert marker["results"][f"builtin/{own}"]["status"] == "installed"
-    assert marker["defaults_offered"] == [own]
+    assert sorted(marker["defaults_offered"]) == sorted([own, *EVERYWHERE])
     _dependency_pass(data, [own], log)  # dependencies an offline first start missed
     assert load_enabled(data, own) is True and not (data / "skills" / "native" / other).exists()
     assert lifecycle == ([["comtypes==1.4.17"]] if own == WINDOWS else [])
@@ -806,7 +808,7 @@ def test_an_existing_windows_install_gets_the_windows_skill_once_on_update(data,
     assert skill.review.gate_for(skill.content_hash)["blocking_reason"] == "trusted_source"
     from ouroboros.skill_starter import read_marker
 
-    assert read_marker(data)["defaults_offered"] == [WINDOWS]
+    assert sorted(read_marker(data)["defaults_offered"]) == sorted([WINDOWS, *EVERYWHERE])
     shutil.rmtree(data / "skills" / "native" / WINDOWS)  # the owner removes it
     _boot(data, monkeypatch)
     assert not (data / "skills" / "native" / WINDOWS).exists()
@@ -881,6 +883,7 @@ def test_unticking_everything_at_onboarding_stands_after_an_update(data, monkeyp
     on(monkeypatch, platform)
     skill_starter.classify_first_start(data, {})
     assert skill_starter.after_onboarding(data, [], repo_dir=REPO) == "done"
-    assert skill_starter.read_marker(data)["defaults_offered"] == [own]
+    assert sorted(skill_starter.read_marker(data)["defaults_offered"]) == sorted([own, *EVERYWHERE])
     _boot(data, monkeypatch)  # a later app update re-runs the startup pass
     assert not (data / "skills" / "native" / own).exists() and lifecycle == []
+    assert not any((data / "skills" / "native" / name).exists() for name in EVERYWHERE), "unticked stays off"
