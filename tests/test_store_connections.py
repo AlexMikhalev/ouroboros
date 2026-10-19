@@ -193,6 +193,56 @@ def test_handoff_refuses_active_transaction_and_succeeds_after_release(tmp_path)
         assert txn.meta("kept") is True
 
 
+@pytest.mark.parametrize("spelling", ["real", "linked"])
+def test_a_folder_about_to_move_releases_every_threads_handles_inside_it_and_keeps_the_rest(tmp_path, spelling):
+    """Windows moves no folder while a file below it is open: every thread's idle handles on
+    stores inside the folder close, an active lease inside it refuses, and a store outside it
+    keeps its handle. A linked spelling of the folder names the same files."""
+    drive, other = tmp_path / "drive", tmp_path / "drive2"  # a sibling sharing the name's prefix
+    publish(drive)
+    publish(other)
+    leased = drive
+    if spelling == "linked":
+        leased = tmp_path / "linked"
+        try:
+            leased.symlink_to(drive, target_is_directory=True)
+        except OSError as exc:  # Windows without the symlink privilege
+            pytest.skip(f"no symlinks here: {exc}")
+    ready, release = threading.Event(), threading.Event()
+    held, failures = {}, []
+
+    def reader():
+        try:
+            for name, root in (("drive", leased), ("other", other)):
+                with store.open_store(root, write=False) as txn:
+                    held[name] = txn.conn
+            ready.set()
+            assert release.wait(10)
+        except BaseException as exc:
+            failures.append(exc)
+
+    worker = threading.Thread(target=reader)
+    worker.start()
+    try:
+        assert ready.wait(5)
+        with store.open_store(drive, write=True) as txn:
+            with pytest.raises(store.StoreBusy):
+                store.close_connections_under(drive)
+            txn.set_meta("kept", True)
+        store.close_connections_under(drive)
+        with pytest.raises(sqlite3.ProgrammingError, match="closed"):
+            held["drive"].execute("SELECT 1")
+        assert held["other"].execute("SELECT 1").fetchone()[0] == 1
+        moved = tmp_path / "moved"
+        os.replace(drive, moved)
+        with store.open_store(moved, write=False) as txn:
+            assert txn.meta("kept") is True
+    finally:
+        release.set()
+        worker.join(10)
+    assert not worker.is_alive() and failures == []
+
+
 @pytest.mark.parametrize("money", [False, True])
 def test_export_closes_connections_and_leaves_delete_file(tmp_path, money):
     if money:

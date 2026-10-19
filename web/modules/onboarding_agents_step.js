@@ -56,10 +56,10 @@ export const VALUE_LADDER = [
 export const LADDER_FOOTNOTE =
     'Riding a plan is not free — it moves that work onto a subscription you already '
     + 'pay for instead of adding per-call API charges. What moves is exactly what you '
-    + 'route: commit, plan, skill and result reviews all run on the review pool '
-    + '(the rows marked Reviewer), so an all-subscription pool puts every review on the '
-    + 'subscription; Settings → Agents shows what one review by each API row actually cost, '
-    + 'and a session spends minutes of your window per review instead.';
+    + 'route: commit, plan, skill and result reviews all take their reviewers from the review pool '
+    + '(the rows marked Reviewer), so an all-subscription pool puts each review on the subscription; '
+    + 'Settings → Agents shows what one review by each API row actually cost (a wave costs the reviewers '
+    + 'it asks), and a session spends minutes of your window per review instead.';
 
 // ---------------------------------------------------------------------------
 // Pure helpers.

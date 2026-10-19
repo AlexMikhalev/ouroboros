@@ -1710,7 +1710,10 @@ record its own check (`check: "self"` after reading the exact release, with
 `basis: "self_check"`; an edit invalidates it, and outside Cyber Pro that basis
 admits nothing. A trusted source ignores this choice and says so in the result.
 Every acceptance path keeps preflight, the owner's auto-grant setting,
-dependencies and readiness. There is no one-reviewer depth in these tools.
+dependencies and readiness. Who reviews follows the review pool: under Blocking
+every marked reviewer; under Advisory Ouroboros may name `reviewers` (one or more
+pool rows) and must state why when it narrows the panel; a review the owner starts
+uses the whole pool. Unmarked rows it adds are advisers: heard, never counted.
 
 A git repository is a source in one of two shapes:
 

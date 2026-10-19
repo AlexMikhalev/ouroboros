@@ -598,7 +598,7 @@ def _finish_task_done_dispatch(
                 # A member that finished while its tree was pausing may be the
                 # last one the owner's Pause was waiting for — or the last writer
                 # an owner's Continue of that tree was held behind. The root's own
-                # terminal counts too: its late phase parked or ended (D10).
+                # terminal counts too: its late phase ended, or the Pause ended it.
                 refresh_owner_pause_tree(tree_root)
                 from supervisor.continuation_admission import release_settled_continuations
 

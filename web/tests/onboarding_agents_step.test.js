@@ -78,12 +78,15 @@ test('the footnote refuses both easy lies: "free", and "every reviewer moves"', 
     assert.match(LADDER_FOOTNOTE, /already\s+pay for/i);
     // Owner R2 (2026-09-01): a task's result review runs on the review pool too — the
     // footnote states the RULE (what is routed moves), never "everything moves".
-    assert.match(LADDER_FOOTNOTE, /result reviews all run on the review pool\s+\(the rows marked Reviewer\)/i);
+    assert.match(LADDER_FOOTNOTE, /result reviews all take their reviewers from the review pool\s+\(the rows marked Reviewer\)/i);
     assert.doesNotMatch(LADDER_FOOTNOTE, /triad/i);
-    assert.match(LADDER_FOOTNOTE, /puts every review on the subscription/i);
-    // R12: the disclosure points at measured prices, never adjectives or a stale constant.
+    assert.match(LADDER_FOOTNOTE, /puts each review on the subscription/i);
+    // R12: the disclosure points at measured prices, never adjectives or a stale constant; the cost
+    // follows the reviewers asked, never every pool row.
     assert.match(LADDER_FOOTNOTE, /Settings → Agents shows what one review by each API row actually cost/i);
+    assert.match(LADDER_FOOTNOTE, /a wave costs the reviewers it asks/i);
     assert.doesNotMatch(LADDER_FOOTNOTE, /\$\d/);
+    assert.doesNotMatch(LADDER_FOOTNOTE, /per model row|all run on the review pool/i);
     assert.match(LADDER_FOOTNOTE, /minutes of your window per review/i);
     assert.doesNotMatch(LADDER_FOOTNOTE, /stays on the API|API-only/i);
     assert.doesNotMatch(LADDER_FOOTNOTE, /all reviewers|every reviewer/i);

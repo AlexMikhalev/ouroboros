@@ -156,6 +156,9 @@ def skill_review_contract_fingerprint(
         for row, access in zip(rows, delivery.get("session_accesses") or []):
             if str(access or "readonly") != "readonly":
                 row["access"] = str(access)
+        for row, extra in zip(rows, delivery.get("additional") or []):
+            if extra:
+                row["additional"] = True
         identity = {"reviewer_rows": sorted(rows, key=lambda row: row["slot_id"])}
         # Every retrieving seat (a session or a native api row) receives the retrieving
         # assignment and frozen-payload delivery, so its serialization is the contract.
@@ -415,6 +418,7 @@ def free_replay_outcome(
         rebuttal_sha256=rebuttal_sha256,
         replayed_from_ts=str(row.get("ts") or ""),
         single_reviewer_no_diversity=bool(row.get("single_reviewer_no_diversity")),
+        panel=dict(row.get("panel") or getattr(review_state, "panel", {}) or {}),
         convergence_hint=(
             "FREE REPLAY (Max Review Cycles): this exact skill snapshot "
             f"(content_hash {content_hash[:12]}) already has a recorded "

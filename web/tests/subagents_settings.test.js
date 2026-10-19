@@ -13,6 +13,8 @@ import {
 } from '../modules/route_editor_primitives.js';
 import {
     MAX_AVAILABLE_SUBAGENTS,
+    REVIEWER_TICK_CAPTIONS,
+    applySubagentsSettings,
     availableSubagentsHasExplicitDraft,
     availableSubagentRowMarkup,
     availableSubagentsLoadValue,
@@ -23,8 +25,10 @@ import {
     generatedPreviewCanReplace,
     lastReviewRunText,
     parseAvailableSubagentsSetting,
+    destroySubagentsSection,
     renderSubagentsSection,
     reviewCostText,
+    reviewerTickCaption,
     subagentSettingsFingerprint,
     validateAvailableSubagentsSetting,
 } from '../modules/subagents_settings.js';
@@ -702,6 +706,44 @@ test('Settings section keeps global task-authority controls beside the actor lis
     assert.doesNotMatch(html, /chooses one by its stable ID/);
     assert.match(html, /Rows marked Reviewer form the review pool/);
     assert.doesNotMatch(html, /review lane|triad|scope review/i);
+});
+
+// IMPL_SPEC §5, verbatim: the Reviewer tick means whose agreement counts, said per saved strictness.
+const TICK = {
+    blocking: 'Counts toward review: every ticked reviewer checks each change Ouroboros makes to itself, each skill and each required result; a critical finding stops it.',
+    advisory: 'Counts when chosen: for each check Ouroboros asks one, several or all ticked reviewers and writes why; it never skips a check that is owed.',
+    cyber_pro: 'Trusted to judge: Ouroboros decides whom to ask, if anyone; reviews inform and never block.',
+};
+
+test('the Reviewer tick caption is one line per strictness; Cyber Pro Access outranks the enforcement it keeps', () => {
+    assert.deepEqual({ ...REVIEWER_TICK_CAPTIONS }, TICK);
+    assert.equal(reviewerTickCaption('blocking', 'advanced'), TICK.blocking);
+    assert.equal(reviewerTickCaption('blocking', 'light'), TICK.blocking);
+    assert.equal(reviewerTickCaption('advisory', 'pro'), TICK.advisory);
+    assert.equal(reviewerTickCaption('blocking', 'cyber_pro'), TICK.cyber_pro);
+    assert.equal(reviewerTickCaption('advisory', 'cyber_pro'), TICK.cyber_pro);
+    // The shipped defaults (advisory, advanced) when the document names neither.
+    assert.equal(reviewerTickCaption(undefined, undefined), TICK.advisory);
+    for (const caption of Object.values(TICK)) assert.doesNotMatch(caption, /\n/);
+});
+
+test('Settings paints the caption from the saved document it loads, and the every-change sentence is gone', () => {
+    destroySubagentsSection();
+    const html = renderSubagentsSection();
+    // Unknown until a document is loaded: an empty, hidden line claims no strictness.
+    assert.match(html, /<div class="settings-inline-note" data-reviewer-tick-caption hidden><\/div>/);
+    assert.doesNotMatch(html, /each of them reviews every change|composes the panel from the pool/);
+    assert.match(html, /an unmarked row Ouroboros asks is an adviser, heard but never counted/);
+    const caption = { textContent: '', hidden: true };
+    const doc = { querySelector: (selector) => (selector === '#subagents-section [data-reviewer-tick-caption]' ? caption : null) };
+    applySubagentsSettings({ OUROBOROS_REVIEW_ENFORCEMENT: 'blocking', OUROBOROS_RUNTIME_MODE: 'pro' }, doc);
+    assert.deepEqual(caption, { textContent: TICK.blocking, hidden: false });
+    applySubagentsSettings({ OUROBOROS_REVIEW_ENFORCEMENT: 'blocking', OUROBOROS_RUNTIME_MODE: 'cyber_pro' }, doc);
+    assert.equal(caption.textContent, TICK.cyber_pro);
+    applySubagentsSettings({ OUROBOROS_REVIEW_ENFORCEMENT: 'advisory', OUROBOROS_RUNTIME_MODE: 'advanced' }, doc);
+    assert.equal(caption.textContent, TICK.advisory);
+    // A page without the section (the wizard mounts the editor alone) is left untouched.
+    assert.doesNotThrow(() => applySubagentsSettings({ OUROBOROS_REVIEW_ENFORCEMENT: 'blocking' }, { querySelector: () => null }));
 });
 
 test('revealNewRow scrolls the shortest distance and focuses the named field without a second scroll', () => {

@@ -349,7 +349,7 @@ def _register_owed_terminal_delivery(
         if stored_status == STATUS_CANCELLED:
             event = build_unreviewed_salvage_event(
                 pathlib.Path(q.DRIVE_ROOT), task, task_id,
-                outcome="cancelled",
+                outcome="stopped",
                 salvaged_text=salvage_text, preserved_path=salvage_path,
                 unreconciled_runs=list(unreconciled_runs or []),
                 settled_status=stored_status,
@@ -446,7 +446,7 @@ def _publish_cancelled_task(
             if settled_status == STATUS_CANCELLED:
                 deliver_unreviewed_salvage(
                     pathlib.Path(q.DRIVE_ROOT), task, task_id,
-                    outcome="cancelled",
+                    outcome="stopped",
                     salvaged_text=salvage_text, preserved_path=salvage_path,
                     unreconciled_runs=list(unreconciled_runs or []),
                     settled_status=settled_status,
@@ -717,30 +717,6 @@ def _finish_captured_chat_turn(
     _settle_intent(q, task_id, outcome=SETTLED_ALREADY,
                    detail=str(stored.get("status") or ""), intent=intent)
     return CANCEL_ALREADY_SETTLED if outcome == DIRECT_TURN_STOP_GONE else CANCEL_CANCELLED
-
-
-def stop_paused_late_phase_custody(q: Any, task_id: str, *, intent: Optional[Dict[str, Any]] = None) -> bool:
-    """The owner's Stop of an answered root's paused late phase (D10).
-
-    Saved post-task work degrades with ``owner_stopped`` and its skipped stages.
-    The delivered answer/status stay, and unused grants revoke. Live work keeps
-    its own owner.
-    """
-    from ouroboros.post_task_synthesis import stop_paused_late_phase
-    from supervisor.owner_pause_control import late_phase_settled
-    from supervisor.task_lifecycle import _settle_intent
-
-    try:
-        if not stop_paused_late_phase(q.DRIVE_ROOT, task_id):
-            return False
-    except Exception:
-        log.warning("Stop of the saved late phase of %s was not recorded", task_id, exc_info=True)
-        return False
-    _settle_intent(q, task_id, outcome="cancelled", detail="late_phase_owner_stopped", intent=intent)
-    late_phase_settled(q.DRIVE_ROOT, task_id)
-    q.append_jsonl(q.DRIVE_ROOT / "logs" / "events.jsonl",
-                   {"ts": utc_now_iso(), "type": "late_phase_stopped", "task_id": task_id, "owner_visible": True})
-    return True
 
 
 def live_presence_row(row: Any) -> bool:

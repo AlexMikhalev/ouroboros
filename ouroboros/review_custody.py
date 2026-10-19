@@ -702,7 +702,7 @@ def _attempt_key(request: Any, slot: Any) -> str:
     }
     if getattr(slot, "default_temperature", None) is not None:
         slot_data["default_temperature"] = slot.default_temperature
-    if getattr(slot, "processing_preference", ""):
+    if getattr(slot, "processing_preference", None) is not None:
         slot_data["processing_preference"] = slot.processing_preference
     if str(getattr(slot, "session_access", "") or "readonly") != "readonly":
         slot_data["session_access"] = slot.session_access  # writable rights are identity
@@ -1041,7 +1041,7 @@ def _settle_review_attempt(
             or (explicit_retry and (entry.released_early or entry.pause_before_launch)
                 and str(getattr(actor, "operation_state", "") or "") == "not_dispatched")
         )
-        released_wave: Dict[str, Any] = {}
+        plan_wave: Dict[str, Any] = {}
         if entry.released_early and entry.wave_key in _RELEASED_WAVES:
             roster = _RELEASED_WAVES[entry.wave_key]
             slot_id = str(getattr(slot, "slot_id", "") or "")
@@ -1055,8 +1055,10 @@ def _settle_review_attempt(
             # store failure) at $0 instead of reporting them as still owed. The live registry cannot
             # serve it — a settled entry leaves it as soon as its worker's publication ends.
             roster.setdefault("actors", {})[slot_id] = {"actor": copy.deepcopy(actor), "slot": slot}
+            if getattr(request, "surface", "") == "plan_review":
+                plan_wave = copy.deepcopy(roster)  # counted completion may precede physical adviser completion
             if all(roster["slots"].values()):
-                released_wave = _RELEASED_WAVES.pop(entry.wave_key)
+                _RELEASED_WAVES.pop(entry.wave_key)  # every seat settled: the wave's roster is done
         if replayable and usage_ctx is not None and (late or explicit_retry):
             settled = getattr(usage_ctx, "_review_settled_attempts", None)
             if not isinstance(settled, dict):
@@ -1072,12 +1074,12 @@ def _settle_review_attempt(
             phase="failed" if actor.status == "error" else "finished",
             actor=actor,
         )
-    if entry.released_early:  # plan review's event route: the reply settles into the plan record; the last one wakes the mailbox
+    if entry.released_early:  # each reply lands; the recorded counted council decides its completion
         from ouroboros.tools.plan_ask import settle_released_reply
 
         settle_released_reply(usage_ctx, request=request, task_id=task_id, actor=actor, slot=slot,
-                              settled_wave=dict(released_wave.get("slots") or {}), roster_size=int(released_wave.get("total") or 0),
-                              settled_actors=released_wave.get("actors") or {})
+                              settled_wave=dict(plan_wave.get("slots") or {}), roster_size=int(plan_wave.get("total") or 0),
+                              settled_actors=plan_wave.get("actors") or {})
     if late and not pending_invocation and not custody_lost and usage_ctx is not None:
         try:
             from ouroboros.tools.review_helpers import emit_review_event

@@ -301,8 +301,7 @@ LEAVES: dict[str, tuple[str, str, frozenset[str]]] = {
         "envelope_from_task", "write_task_result",
     })),
     "ouroboros/post_task_synthesis.py": ("ouroboros/agent_task_pipeline.py", "_atp", frozenset({
-        "_is_root_post_task", "load_task_result", "_run_global_backlog_promotion_only",
-        "_run_post_task_processing_async",
+        "_is_root_post_task", "load_task_result", "_publish_root_post_task_checkpoint",
     })),
     # The root admission seal moved out of the deleted loop_acceptance leaf with the fold;
     # its release ends the fence through the handle.
