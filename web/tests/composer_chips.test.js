@@ -223,6 +223,37 @@ test('chips that do not fit fold into one "+N" whose list holds them; room again
     } finally { f.restore(); }
 });
 
+test('with no room even for "+N", the chips are listed in "+" under their skill; room again brings them back', async () => {
+    const f = roomFixture({ room: 2 });  // a phone's row: ☰ and the host capsules leave 2 px
+    try {
+        const entries = ['a', 'b'].map((name) => ({ item: { ...chip(`${name}:chip`), skill: name, skill_label: name.toUpperCase() },
+            value: chipValue({ text: `${name}1` }), error: '' }));
+        const feed = fakeFeed(entries);
+        const runs = [];
+        const plus = { sections: [], setSections(next) { this.sections = next; } };
+        f.composer.plusMenu = plus;
+        const { bindComposerPlus } = await import('../modules/composer_plus.js');
+        const store = { byPlacement: () => [], voice: () => ({ key: 'x' }), onChange: () => () => {} };
+        const unbindPlus = bindComposerPlus({ composer: f.composer, store });
+        const dispose = bindComposerChips({ composer: f.composer, menu: f.menu, feed,
+            run: async (item) => { runs.push(item.key); return true; }, observe: () => () => {}, resize: () => () => {} });
+        const chipSections = () => plus.sections.filter((section) => section.key.startsWith('skill:'))
+            .map((section) => [section.label, section.items.map((item) => item.label)]);
+        assert.deepEqual(f.chipsShown(), []);
+        assert.equal(f.more().hidden, true, 'a clipped "+N" would hide them: none is drawn');
+        assert.equal(f.slot.dataset.roomless, '1');
+        assert.deepEqual(chipSections(), [['A', ['A a1']], ['B', ['B b1']]]);
+        plus.sections.find((section) => section.key === 'skill:b').items[0].onSelect();
+        assert.deepEqual(runs, ['b:chip'], 'a chip listed in "+" acts here');
+        entries.splice(1);
+        feed.emit();
+        assert.deepEqual(chipSections(), [['A', ['A a1']]]);
+        dispose();
+        assert.deepEqual(chipSections(), [], 'an unbound room leaves nothing in "+"');
+        unbindPlus();
+    } finally { f.restore(); }
+});
+
 test('a room that shows no chips leaves the slot as it found it', () => {
     const f = roomFixture();
     try {

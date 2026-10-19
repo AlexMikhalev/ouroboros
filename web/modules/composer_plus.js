@@ -8,6 +8,21 @@ import { draftPort, getContributions, runContributionAction } from './contributi
 
 const dictation = { offer: null, listeners: new Set() };
 const dictationChanged = () => { for (const listener of [...dictation.listeners]) listener(); };
+// A room's chips that have no room in its capsule row, not even as "+N" (composer_chips.js): listed in "+" under their
+// skill's name. One entry per composer: `{items, sync}`, whichever of the two binds first creates it.
+const chipOverflow = new WeakMap();
+const overflowOf = (composer) => {
+    if (!chipOverflow.has(composer)) chipOverflow.set(composer, { items: [], sync: null });
+    return chipOverflow.get(composer);
+};
+
+/** The chips of `composer`'s room that have no room in the row: `[{key, skill, skill_label, label, title, onSelect}]`. */
+export function setChipOverflow(composer, items) {
+    if (!composer) return;
+    const entry = overflowOf(composer);
+    entry.items = Array.isArray(items) ? items : [];
+    entry.sync?.();
+}
 
 /**
  * The voice controls' chooser behind "Add dictation…": `open({composer, draft})`, or `{open, shown()}` when the voice
@@ -45,6 +60,13 @@ export function bindComposerPlus({ composer, store = getContributions(), notice 
             bySkill.get(item.skill).items.push({ key: item.key, label: item.label, title: item.title || '',
                 icon: item.icon || '', onSelect: verb(item) });
         }
+        for (const chip of overflowOf(composer).items) {
+            if (!bySkill.has(chip.skill)) {
+                bySkill.set(chip.skill, { key: `skill:${chip.skill}`, label: chip.skill_label || chip.skill, items: [] });
+            }
+            bySkill.get(chip.skill).items.push({ key: `chip:${chip.key}`, label: chip.label, title: chip.title || '',
+                icon: '', onSelect: chip.onSelect });
+        }
         const offer = dictation.offer;
         const host = [];
         if (offer && (offer.shown ? offer.shown() : !store.voice('stt')?.key)) {
@@ -62,9 +84,12 @@ export function bindComposerPlus({ composer, store = getContributions(), notice 
     const sync = () => composer.plusMenu.setSections(sections());
     const off = store.onChange(sync);
     dictation.listeners.add(sync);
+    const overflow = overflowOf(composer);
+    overflow.sync = sync;
     sync();
     return () => {
         off();
         dictation.listeners.delete(sync);
+        if (overflow.sync === sync) overflow.sync = null;
     };
 }

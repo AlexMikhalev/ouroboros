@@ -1511,7 +1511,8 @@ capsules: the skill's name, then the value its source answers in the meta ink
 when the value has a status tone. It is read on its own refresh (15 seconds at
 least) only while a room shows it on a visible page; a source that fails says
 "—" with the reason and is asked again later, less often. "+N", the narrowest
-capsule, lists what folds. A skill's trusted page module works
+capsule, lists what folds; with no room even for it (a phone's row, which ☰
+leads), each chip is listed in "+" under its skill's name. A skill's trusted page module works
 only through its small context (its provider, a notice, words into the draft)
 and never draws into the composer or the feed. A module that fails is off for
 this page with one notice naming it; the rest of the page keeps working. A

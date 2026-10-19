@@ -9,6 +9,7 @@
 import { fetchJson } from './api_client.js';
 import { fmt } from './i18n.js';
 import { draftPort, getContributions, runContributionAction } from './contributions.js';
+import { setChipOverflow } from './composer_plus.js';
 
 const MIN_REFRESH_S = 15;
 const BACKOFF_STEPS = 4;  // a source that keeps failing is read at most 2^4 of its refreshes apart
@@ -259,7 +260,17 @@ export function bindComposerChips({ composer, menu, feed = getChipFeed(), notice
         }
         shown.forEach((button, index) => { button.hidden = index >= keep; });
         folded = entries.slice(keep);
-        more.hidden = !folded.length;
+        // No room even for "+N" (a phone's row, where ☰ leads the capsules): the chips are listed in "+" instead.
+        const roomless = folded.length > 0 && !keep && slot.clientWidth + 0.5 < more.offsetWidth;
+        more.hidden = !folded.length || roomless;
+        if (roomless) slot.dataset.roomless = '1';
+        else delete slot.dataset.roomless;
+        setChipOverflow(composer, roomless ? folded.map((entry) => {
+            const face = chipFace(entry);
+            return { key: entry.item.key, skill: entry.item.skill, skill_label: entry.item.skill_label,
+                label: face.text ? `${entry.item.label} ${face.text}` : entry.item.label, title: face.title,
+                onSelect: () => act(entry.item.key) };
+        }) : []);
         if (!folded.length) delete slot.dataset.folded;
         more.textContent = `+${folded.length}`;
         more.setAttribute('aria-label', fmt('{count} more', { count: folded.length }));
@@ -303,6 +314,7 @@ export function bindComposerChips({ composer, menu, feed = getChipFeed(), notice
         release?.();
         release = null;
         list.destroy();
+        setChipOverflow(composer, []);
         for (const button of buttons.values()) button.remove();
         buttons.clear();
         more.remove();
