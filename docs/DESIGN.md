@@ -1084,7 +1084,10 @@ state under the name and one quiet reason beside it: an outcome stays beside
 `Finalizing…`; `Paused` says who or what paused it and stays until Resume;
 `Waiting` says what it waits for and goes on by itself when that happens;
 helpers an earlier attempt left running read as `Working`, with their count; an
-access wait is not an answer wait, and unknown stays unknown.
+access wait is not an answer wait, and unknown stays unknown. Under the state a
+live work shows its own focus line, what Ouroboros says it is doing (stage ·
+done · left, written by it through `update_focus`), quieter and at most two
+lines; a work without one shows none, and a finished row drops it.
 The name goes to the work's message wherever
 it lies, finished work included: its card or the owner's message when loaded, else
 the room reads the page of its history around the work's first message there and

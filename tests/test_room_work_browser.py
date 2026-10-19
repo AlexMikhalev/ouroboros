@@ -399,6 +399,9 @@ def test_main_rows_say_each_census_state_with_its_own_tone_and_controls(room_ui)
             activity("rw-queued", "queued"),
             activity("rw-ask", kind="direct_chat", client_message_id="cm-ask", **waited("q-main")),
         ])
+    # The live work's own focus line (update_focus), which the row shows quieter under its state.
+    focus_text = "Cited pages · 3 of 5 compared · two left"
+    transport.raw["rw-live"] = {"focus": {"text": focus_text, "at": "2026-10-19T09:00:00Z"}}
     page = open_app(room_ui, transport)
     closed = wait_facts(page, "main", lambda f: f["tone"] == "live" and not f["disabled"], "a live control")
     # Moving work with something waiting keeps its live word and turns its one mark amber, said in words too.
@@ -428,6 +431,9 @@ def test_main_rows_say_each_census_state_with_its_own_tone_and_controls(room_ui)
     }
     for task_id, (word, secondary, tone) in expect.items():
         assert (by[task_id]["word"], by[task_id]["secondary"], by[task_id]["tone"]) == (word, secondary, tone), by[task_id]
+    focus_lines = page.evaluate("""() => Object.fromEntries([...document.querySelectorAll('#page-chat .rw-row')]
+        .map(r => [r.dataset.id, (r.querySelector('.rw-focus:not([hidden])')?.textContent || '').trim()]))""")
+    assert focus_lines["rw-live"] == focus_text and focus_lines["rw-queued"] == "", focus_lines
     # An access wait is not an answer wait: only the waited question offers View question.
     assert [item["id"] for item in opened["rows"] if item["question"]] == ["rw-ask"]
     assert by["rw-ask"]["name"].startswith("Reply to “Please check which evidence"), by["rw-ask"]

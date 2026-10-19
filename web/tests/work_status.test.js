@@ -13,7 +13,7 @@ import {
 } from '../modules/task_control_menu.js';
 import { pausePhaseLabel, taskActivityPresentation } from '../modules/task_phase_chip.js';
 import {
-    SHOW_WORK_FOCUS, activityWord, applyCardWorkViews, cardControls, cardMenuActions, cardWorkView, emptyWorkState,
+    activityWord, applyCardWorkViews, cardControls, cardMenuActions, cardWorkView, emptyWorkState,
     ownStopPress, reasonBeside, reasonText, reconcileWorkState, resumeTargets, roomStatusView, workControls,
     workMenuActions, workQuestion, workRowView,
 } from '../modules/work_status.js';
@@ -207,11 +207,11 @@ test('rows: their word, the reason beside it, tone and amber from the work alone
     assert.equal(workQuestion(work('model_access')), null, 'an access wait is not an answer wait');
 });
 
-test('the focus line is drawn only while SHOW_WORK_FOCUS is on, and it is off', () => {
-    assert.equal(SHOW_WORK_FOCUS, false);
-    const focused = { ...work('working_call'), focus: { text: 'Release 7.7 · code merged · waiting for 7 signed files', at: 1 } };
-    assert.equal(workRowView(focused).focus, '');
+test('the focus line is the work\'s own update_focus text under its state, and none without one', () => {
+    const focused = { ...work('working_call'), focus: { text: '  Release 7.7 · code merged · waiting for 7 signed files ', at: 1 } };
+    assert.equal(workRowView(focused).focus, 'Release 7.7 · code merged · waiting for 7 signed files');
     assert.equal(workRowView(work('working_call')).focus, '');
+    assert.equal(workRowView({ ...work('working_call'), focus: { text: '   ', at: 1 } }).focus, '');
 });
 
 test('controls group by action with exact targets; Resume is a button, a pending Stop leaves its escalation', () => {
