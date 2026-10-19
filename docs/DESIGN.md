@@ -601,7 +601,8 @@ Two shapes carry a tone, and they are not interchangeable:
 - **A status sentence** — `.ui-status[data-tone]`. Foreground only, rendered as
   dot + text. Filling it would turn every inline status into a badge and make
   "connected" the loudest thing on the panel. A room's status beside its title is
-  such a sentence, with a caret when it opens, never a filled chip.
+  its word and status mark (the sentence's own green dot only at rest), with a caret
+  when it opens, never a filled chip.
 - **A status chip** — `.ui-chip[data-tone]`. The full triple, because the chip
   *is* the status and has nothing else to carry it.
 
