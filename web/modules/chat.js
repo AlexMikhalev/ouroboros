@@ -554,6 +554,7 @@ export function createChatInstance({
         const budgetFill = byId('budget-bar-fill');
         if (budgetText) budgetText.textContent = budget.label;
         if (budgetFill) budgetFill.style.width = `${budget.fillPct}%`;
+        if (budgetPill) budgetPill.dataset.attention = budget.attention ? '1' : '0';
     }
 
     // Main: a moved work's card is its portal (work_portal.js); Continue episodes share one card (task_episodes.js).

@@ -1361,13 +1361,15 @@ html[data-layout="docked"] .app-page-header[data-empty] {
     background: var(--accent);
 }
 
+/* The budget: a neutral fact (spent / limit and its bar). It turns amber only while a task the spending limit
+   stopped waits for the owner (data-attention, from Main's attention rows): then the money is his move. */
 .chat-budget-pill {
     appearance: none;
     display: flex;
     flex-direction: column;
     align-items: center;
     gap: 3px;
-    border: 1px solid rgba(245, 158, 11, 0.18);
+    border: 1px solid var(--surface-border);
     background: rgba(var(--shell-rgb), 0.55);
     cursor: pointer;
     min-width: 100px;
@@ -1377,8 +1379,7 @@ html[data-layout="docked"] .app-page-header[data-empty] {
 
 @media (hover: hover) {
     .chat-budget-pill:hover {
-        border-color: rgba(245, 158, 11, 0.34);
-        background: rgba(245, 158, 11, 0.08);
+        background: var(--bg-hover);
     }
 }
 
@@ -1389,7 +1390,7 @@ html[data-layout="docked"] .app-page-header[data-empty] {
 .chat-budget-text {
     font-size: var(--type-meta);
     font-weight: 600;
-    color: var(--status-warn-fg);
+    color: var(--text-secondary);
     white-space: nowrap;
     letter-spacing: 0.02em;
 }
@@ -1398,17 +1399,21 @@ html[data-layout="docked"] .app-page-header[data-empty] {
     width: 100%;
     height: 2px;
     border-radius: 1px;
-    background: rgba(245, 158, 11, 0.12);
+    background: var(--surface-border);
     overflow: hidden;
 }
 
 .chat-budget-bar-fill {
     height: 100%;
     border-radius: 1px;
-    background: var(--amber);
+    background: var(--text-meta);
     transition: width 0.4s ease;
     width: 0;
 }
+
+.chat-budget-pill[data-attention="1"] .chat-budget-text { color: var(--status-warn-fg); }
+.chat-budget-pill[data-attention="1"] .chat-budget-bar { background: var(--amber-dim); }
+.chat-budget-pill[data-attention="1"] .chat-budget-bar-fill { background: var(--amber); }
 
 .status-badge {
     padding: 4px 10px;
@@ -3675,7 +3680,7 @@ html[data-layout="stack"] .chat-page-note {
     padding: 0 var(--space-3) var(--space-2);
 }
 /* Inside ⋯ (page_header.js places them there when the bar is too narrow for the full row) the budget is a
-   full-width amber row and Restart the last row. */
+   full-width row and Restart the last row. */
 .chat-header-menu:has(> .chat-budget-pill) {
     min-width: 220px;
 }
@@ -9307,8 +9312,8 @@ body.keyboard-open .project-panel {
 /* Controls: ui.css's tones mapped onto the page's own controls. Every one with a body stands on the rest shadow in
    every state; hover deepens its fill, a press deepens it again, a chosen or switched-on one takes its tone. The bars'
    controls (the Project bar's close and the phone's menu button among them) are neutral capsules; Panic is danger,
-   the budget amber (it is the owner's money). The room's status beside the title is not a control: it stays a bare
-   sentence (room_work.css). */
+   the budget neutral and amber only while a spending limit's stop waits for the owner. The room's status beside the
+   title is not a control: it stays a bare sentence (room_work.css). */
 :root[data-theme] :is(.chat-header-btn.ui-chrome-control, .project-panel-close, .mobile-nav-toggle, .nav-drawer-close) {
     border-color: transparent; background: var(--surface-capsule); color: var(--text-primary); box-shadow: var(--elev-rest);
     -webkit-backdrop-filter: var(--glass); backdrop-filter: var(--glass);
@@ -9319,13 +9324,16 @@ body.keyboard-open .project-panel {
         border-color: transparent; background: var(--surface-capsule-hover); box-shadow: var(--elev-rest);
     }
     :root[data-theme] .chat-header-btn.danger.ui-chrome-control:hover { background: var(--tone-red-hover); }
-    :root[data-theme] .chat-budget-pill.ui-chrome-control:hover { border-color: transparent; background: var(--tone-amber-hover); }
+    :root[data-theme] .chat-budget-pill.ui-chrome-control:hover { border-color: transparent; background: var(--surface-capsule-hover); }
+    :root[data-theme] .chat-budget-pill.ui-chrome-control[data-attention="1"]:hover { background: var(--tone-amber-hover); }
 }
 :root[data-theme] :is(.project-panel-close, .mobile-nav-toggle, .nav-drawer-close) { border-radius: var(--pill-radius); }
 :root[data-theme] .chat-header-btn.danger.ui-chrome-control { background: var(--tone-red); color: var(--status-error-fg); }
 :root[data-theme] .chat-budget-pill.ui-chrome-control {
-    border-color: transparent; background: var(--tone-amber); box-shadow: var(--elev-rest); transition: var(--motion-tone);
+    border-color: transparent; background: var(--surface-capsule); box-shadow: var(--elev-rest); transition: var(--motion-tone);
+    -webkit-backdrop-filter: var(--glass); backdrop-filter: var(--glass);
 }
+:root[data-theme] .chat-budget-pill.ui-chrome-control[data-attention="1"] { background: var(--tone-amber); }
 :root[data-theme] .chat-budget-pill.ui-chrome-control:active { transform: none; }
 /* The composer: Swarm, Context and Effort are neutral capsules. A setting's name takes the secondary ink at 500 and
    its value the meta ink at 600 (owner 16.10: never the darkest ink); the only colour is a ring's lit arc. Send is the
