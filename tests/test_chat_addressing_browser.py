@@ -31,7 +31,7 @@ _OBSERVE_CARDS = """() => {
         if (node.matches('.chat-live-card')) cards.push(node);
         for (const card of cards) {
             window.__mountedCards.push(card.dataset.taskId);
-            window.__journal.push({ mount: card.dataset.taskId, frame: window.__frame });
+            window.__journal?.push({ mount: card.dataset.taskId, frame: window.__frame });  // where the journal runs
         }
     };
     new MutationObserver(rows => rows.forEach(row => row.addedNodes.forEach(record)))
