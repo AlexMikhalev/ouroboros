@@ -5,6 +5,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createChatRowMenu } from '../modules/chat_row_menu.js';
 import { createMessageActions } from '../modules/message_actions.js';
+import { cardMenuActions, emptyWorkState } from '../modules/work_status.js';
 import { installDomDouble } from './dom_double.js';
 
 function fixture({ actions = undefined } = {}) {
@@ -15,6 +16,7 @@ function fixture({ actions = undefined } = {}) {
     const started = [];
     const replies = {
         bubbleRef: (row) => (row.dataset.rowAddress ? { address: row.dataset.rowAddress } : null),
+        cardRef: (record) => (record.replyable ? { address: `task:${record.groupId}` } : null),
         start: (ref) => started.push(ref.address),
     };
     const copied = [];
@@ -32,11 +34,14 @@ function fixture({ actions = undefined } = {}) {
     const plain = el('div', { className: 'chat-bubble user' }, el('div', { className: 'message', text: 'unsaved echo' }));
     feed.append(bubble, plain);
     const activity = { phase: 'working' };
+    const works = emptyWorkState();
     const cards = new Map();
-    const menu = createChatRowMenu({ feed, replies, cardOf: (id) => cards.get(id), activityOf: () => activity, actions });
+    // chat.js's own wiring: the card's Stop… items come from its work, else from the card's own task controls.
+    const menu = createChatRowMenu({ feed, replies, cardOf: (id) => cards.get(id),
+        actionsOf: (record) => cardMenuActions(works, record, activity), actions });
     const openMenu = () => doc.body.children.find((node) => node.classList.contains('chat-row-menu')) || null;
     const items = () => (openMenu()?.children || []).map((node) => node.dataset.rowAction);
-    return { ...env, feed, cards, bubble, plain, copy, link, words, menu, started, copied, opened, activity, openMenu, items,
+    return { ...env, feed, cards, bubble, plain, copy, link, words, menu, started, copied, opened, activity, works, openMenu, items,
         close() { menu.destroy(); env.restore(); } };
 }
 
@@ -54,8 +59,9 @@ function workCard(f, { resume = false, stop = true, cancelPending = false } = {}
         actions.append(node);
         return node;
     };
-    const record = { groupId: 't-1', root: card, titleEl: title, activityEl: line,
-        cardReplyEl: button('Reply', 'reply'), resumeRunBtn: resume ? button('Resume', 'resume') : null,
+    // A work card draws no Reply of its own (owner 17.10, Q9 B): the menu's Reply calls the reply path directly.
+    const record = { groupId: 't-1', root: card, titleEl: title, activityEl: line, replyable: true,
+        resumeRunBtn: resume ? button('Resume', 'resume') : null,
         cancelRunBtn: stop ? button('Stop…', 'stop') : null, cancelPendingPolicy: cancelPending ? 'finalize' : '' };
     const footer = el('button', { className: 'chat-live-bound-pointer', attrs: { 'data-intent': 'open-project' } });
     footer.addEventListener('click', () => pressed.push('project'));
@@ -216,7 +222,8 @@ test('a work card offers Reply, Copy, Open project, Resume, Pause and Stop… ex
             f.openMenu().children.find((node) => node.dataset.rowAction === kind).click();
         };
         press('reply'); press('project'); press('resume'); press('stop');
-        assert.deepEqual(pressed.splice(0), ['reply', 'project', 'resume', 'stop'], 'each item presses the card\'s own control');
+        assert.deepEqual(pressed.splice(0), ['project', 'resume', 'stop'], 'each item presses the card\'s own control');
+        assert.deepEqual(f.started.splice(0), ['task:t-1'], 'Reply quotes the work by its task address');
         // A nested child is part of its root's work: its press opens the root's menu, and its own reference is not the root's.
         child.emit('contextmenu', { clientX: 1, clientY: 1 });
         assert.deepEqual(f.items(), ['reply', 'copy', 'project', 'resume', 'pause', 'stop']);
@@ -233,10 +240,27 @@ test('a work card offers Reply, Copy, Open project, Resume, Pause and Stop… ex
         assert.deepEqual(f.items(), ['reply', 'copy', 'project', 'stop'], 'a pending stop offers only its escalation');
         f.openMenu().emit('keydown', { key: 'Escape', target: f.openMenu().children[0] });
         record.cancelRunBtn.remove();
-        record.cardReplyEl.hidden = true;
+        record.replyable = false;
         summary.emit('contextmenu', { clientX: 1, clientY: 1 });
-        assert.deepEqual(f.items(), ['copy', 'project'], 'a settled card without its Reply and Stop…');
+        assert.deepEqual(f.items(), ['copy', 'project'], 'a card that offers no Reply, settled without Stop…');
         assert.equal(card.contains(f.openMenu()), false, 'the menu is portalled outside the card');
+    } finally { f.close(); }
+});
+
+test('a work card\'s Pause follows its work\'s controls, never the census phase', () => {
+    const f = fixture();
+    try {
+        const { summary } = workCard(f);
+        const work = (controls) => f.works.episodes.set('t-1', { work_id: 't-1', confirmed: true,
+            episode: { task_id: 't-1', live: true }, controls });
+        work([{ action: 'stop', target: 't-1' }]);
+        summary.emit('contextmenu', { clientX: 1, clientY: 1 });
+        assert.deepEqual(f.items(), ['reply', 'copy', 'project', 'stop'], 'the census says working; the work offers no Pause');
+        f.openMenu().emit('keydown', { key: 'Escape', target: f.openMenu().children[0] });
+        work([{ action: 'pause', target: 't-1' }, { action: 'stop', target: 't-1' }]);
+        f.activity.phase = 'budget_paused';
+        summary.emit('contextmenu', { clientX: 1, clientY: 1 });
+        assert.deepEqual(f.items(), ['reply', 'copy', 'project', 'pause', 'stop'], 'the work\'s Pause, whatever the census says');
     } finally { f.close(); }
 });
 

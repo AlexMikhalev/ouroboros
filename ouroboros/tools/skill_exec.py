@@ -744,6 +744,7 @@ def _handle_review_skill(
     author_disposition: str = "",
     author_rationale: str = "",
     review_reference: Optional[Dict[str, Any]] = None,
+    reviewers: Optional[List[str]] = None, reason: str = "",
     _resolved_binding: ResolvedResourceBinding | None = None,
     **_kwargs: Any,
 ) -> str:
@@ -807,7 +808,7 @@ def _handle_review_skill(
     payload = run_skill_review_lifecycle_blocking(
         ctx,
         skill_name,
-        source="tool",
+        source="tool", reviewers=reviewers, reason=reason,
         review_impl=_review_with_optional_rebuttal,
         _resolved_binding=binding,
     )
@@ -849,7 +850,7 @@ def _skill_deps_exec_block(drive_root: pathlib.Path, loaded: Any) -> str:
 
 
 def _non_executable_review_message(prefix: str, skill_name: str, status: str, *, stale: bool = False,
-                                   gate: Dict[str, Any] | None = None) -> str:
+                                   gate: Dict[str, Any] | None = None, strict_review: bool = False) -> str:
     gate = gate or skill_review_gate(status, stale=stale)
     normalized_status = normalize_skill_review_status(status)
     if gate["blocking_reason"] == "blocker_findings_under_blocking_enforcement":
@@ -862,7 +863,8 @@ def _non_executable_review_message(prefix: str, skill_name: str, status: str, *,
     stale_note = f", stale={stale}" if stale else ""
     return (
         f"⚠️ {prefix}: skill {skill_name!r} review status is {normalized_status!r}{stale_note}, "
-        f"not executable ({gate['blocking_reason']}). Execution needs {executable_review_requirement(gate)}. "
+        f"not executable ({gate['blocking_reason']}). "
+        f"Execution needs {executable_review_requirement(gate, strict_review=strict_review)}. "
         f"{gate['summary']}"
     )
 
@@ -983,14 +985,15 @@ def _handle_skill_exec(
         )
     stale = loaded.review.is_stale_for(current_hash)
     gate = loaded.review.gate_for(current_hash)
+    strict_review = bool((getattr(loaded.review, "acceptance", None) or {}).get("strict_review"))
     if stale and not gate["executable_review"]:
         return (
             f"⚠️ SKILL_EXEC_BLOCKED: skill {skill_name!r} was edited since "
-            f"the last review. Execution needs {executable_review_requirement(gate)}."
+            f"the last review. Execution needs {executable_review_requirement(gate, strict_review=strict_review)}."
         )
     if not gate["executable_review"]:
         return _non_executable_review_message("SKILL_EXEC_BLOCKED", skill_name, loaded.review.status, stale=stale,
-                                              gate=gate)
+                                              gate=gate, strict_review=strict_review)
     deps_block = _skill_deps_exec_block(drive_root, loaded)
     if deps_block:
         return deps_block
@@ -1312,6 +1315,8 @@ _REVIEW_SCHEMA = {
                 "type": "string",
                 "description": "Skill name (directory name in OUROBOROS_SKILLS_REPO_PATH).",
             },
+            "reviewers": {"type": "array", "items": {"type": "string"}, "description": "Enabled row ids/handles; omitted means the whole pool. Blocking widens to all ticked reviewers; Advisory requires at least one ticked reviewer and a reason when narrowed. Unticked advisers are heard, not counted. Cyber Pro composes freely."},
+            "reason": {"type": "string", "description": "Why these reviewers; required for a narrowed Advisory panel, including a re-review after blockers."},
             "review_rebuttal": {
                 "type": "string",
                 "description": (
@@ -1403,7 +1408,9 @@ _TOGGLE_SCHEMA = {
         "skill's review_gate to permit the current bytes (outside Cyber Pro: "
         "a current executable reviewer verdict or a qualified Advisory author "
         "acceptance of these exact bytes), any requested key or "
-        "host-permission grants, and ready isolated dependencies. "
+        "host-permission grants, and ready isolated dependencies. Enabling a skill "
+        "accepted without a review prepares its declared isolated dependencies first; "
+        "other skills require them to be ready already. "
         "For selected-skill development, interpret the real owner request: "
         "Repair and run authorizes enabling and leaving the repaired skill running. "
         "The host resolves that task's original owner message when owner_source is omitted; "
@@ -1488,7 +1495,7 @@ def get_tools() -> List[ToolEntry]:
             schema=_TOGGLE_SCHEMA,
             handler=_handle_toggle_skill,
             is_code_tool=False,
-            timeout_sec=15,
+            timeout_sec=_SKILL_REVIEW_TOOL_TIMEOUT_SEC,
         ),
         ToolEntry(
             name="skill_owner_action", schema=_OWNER_ACTION_SCHEMA,

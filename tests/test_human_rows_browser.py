@@ -179,7 +179,7 @@ def test_reworded_host_rows_live_and_after_reload(subscription_ui, tmp_path, mon
     # 2. A cancellation receipt without a saved message promises nothing below.
     write_task_result(tmp_path, "t-cancel", "cancelled", chat_id=1, result="stopped")
     events_chat_delivery._handle_send_message(build_unreviewed_salvage_event(
-        tmp_path, {"chat_id": 1}, "t-cancel", outcome="cancelled", settled_status="cancelled"), sender)
+        tmp_path, {"chat_id": 1}, "t-cancel", outcome="stopped", settled_status="cancelled"), sender)
     # 3. A helper the pool refused: the parent's card reads the owner sentence.
     _reject_schedule_task(sender, tid="kid12345", chat_id=1, delegation_role="subagent", parent_id="t-parent",
                           root_task_id="t-parent", role="researcher", result_fields={},
@@ -201,7 +201,7 @@ def test_reworded_host_rows_live_and_after_reload(subscription_ui, tmp_path, mon
 
     texts = {
         "custody": "Confirmed delegated terminal receipts: run-7c1: failed on leaf-model.",
-        "cancel": "Task t-cancel was cancelled.",
+        "cancel": "Task t-cancel was stopped.",
         "helper": "Task kid12345 not scheduled: worker pool unavailable.",
     }
     for text in texts.values():
@@ -224,8 +224,10 @@ def test_reworded_host_rows_live_and_after_reload(subscription_ui, tmp_path, mon
     def check(phase):
         page.evaluate(FRAMES)
         for card in page.locator(".chat-live-card").all():
-            if card.get_attribute("data-expanded") != "1" and card.locator("[data-live-summary-button]").count():
-                card.locator("[data-live-summary-button]").first.click()
+            # A card opens by its own Show details (a portal has none: its room holds the details).
+            disclosure = card.locator(":scope > [data-live-summary-button] [data-live-disclosure]")
+            if card.get_attribute("data-expanded") != "1" and disclosure.is_visible():
+                disclosure.click()
         page.evaluate(FRAMES)
         body = page.locator("#page-chat").inner_text()
         found = {key: text in body for key, text in texts.items()}

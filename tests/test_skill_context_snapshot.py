@@ -84,7 +84,7 @@ def test_tail_prefix_real_round_and_final_serializers(publisher, monkeypatch):
     assert observe_send(recorder, messages, round_idx=1) is None
     round_ctx = _CompactionRoundContext(tools=SimpleNamespace(_ctx=ctx), drive_root=root,
         drive_logs=root / "logs", task_id="root", round_idx=2, event_queue=None, emit_progress=lambda x: None)
-    messages, _ = _run_round_compaction(messages, round_ctx)
+    messages = _run_round_compaction(messages, round_ctx)
     assert messages[:-1] == before
     assert observe_send(recorder, messages, round_idx=2) is None
     assert messages[-1]["_host_context_kind"] == SNAPSHOT_KIND
@@ -104,7 +104,7 @@ def test_tail_prefix_real_round_and_final_serializers(publisher, monkeypatch):
     assert ctx._owner_directives == owner_corpus
     assert owner_source_sha256(ctx) == owner_hash and directive_owner_rows(ctx) == owner_words
     _write(path, "B")
-    messages, _ = _run_round_compaction(messages, round_ctx)
+    messages = _run_round_compaction(messages, round_ctx)
     assert observe_send(recorder, messages, round_idx=3) is None
     assert messages[:len(before)] == before
 
@@ -268,7 +268,7 @@ def test_real_round_reaches_native_model_upload_with_prefix_unchanged(publisher,
     _write(path, "Actual uploaded note")
     round_ctx = _CompactionRoundContext(tools=SimpleNamespace(_ctx=ctx), drive_root=root,
         drive_logs=root / "logs", task_id="root", round_idx=2, event_queue=None, emit_progress=lambda x: None)
-    messages, _ = _run_round_compaction(messages, round_ctx)
+    messages = _run_round_compaction(messages, round_ctx)
     client.chat(messages, MODEL)
     first, second = [upload[0] for upload in gateway.uploads]
     assert first["messages"] == before

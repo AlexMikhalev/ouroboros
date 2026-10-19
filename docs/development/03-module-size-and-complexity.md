@@ -97,10 +97,7 @@ B3/B3w in `tests/test_cost_contract.py` fix visible questions while delivered hi
   transactional summaries (`usage_store.py`, `store.py`);
   indexed selects (`task_store.py`); task-event SSE v2 cursor (ARCHITECTURE §3).
 
-CHECKLISTS item 9 `perf_lifecycle` advises on changed readers, startup/shutdown, batches,
-endpoints, pollers, subscriptions and timers. A new interactive append-only store reader
-must enroll in `agent_startup_checks.py::hot_store_growth_notes` in the same commit,
-with a justified threshold in `context_budget.py`; unenrolled stores evade the tripwire.
+CHECKLISTS item 9 `perf_lifecycle` covers changed readers, startup/shutdown, batches, endpoints, pollers, subscriptions and timers. Runtime `storage` supplies the last count; `query_data(kind="storage")` its detail. The mind judges growth (P5). New growing stores name their `storage.PLACES` entry and PERSISTENCE retirer.
 
 `tests/test_store_boot.py` fixes `prepare_startup_state` at 50/500 frozen results and 20/200
 child stores (a clean boot is one read transaction, no history access or writes);
@@ -121,8 +118,8 @@ Every new or changed continuity surface is reviewed as one narrow chain:
   not permission to infer missing material. Every over-limit tool result persists its
   exact source, with no per-tool exemption; only `source_unavailable` (no
   actor-resolvable source at all) is an unresolved partial that withholds dispatch.
-- An `api_chat` acceptance reviewer has no tools to resolve `repo_diff_source_ref`;
-  a criterion depending on the unseen diff remains at most `partial`.
+- An `api_chat` result reviewer cannot open the produced files; a judgement on their
+  content stays at most `partial`.
 - A consumer that can authorize PASS, a destructive rewrite or replacement of a full
   contract materializes the named source first; a known `partial` marker and an
   unverified claim that some host might retrieve more are not equivalent.
@@ -152,16 +149,13 @@ cost copy (ARCHITECTURE §3 "Chat and Projects"). Enforcement:
 
 #### Context and growth matrix
 
-The canonical continuity map is ARCHITECTURE §10 "Continuity data-flow map", which
-carries the source, projection and retention rule of chat and biography, plan/review
-authority and execution evidence. Record a new hot store there, add its growth proof
-here, and enroll it in `hot_store_growth_notes` in the same change.
+ARCHITECTURE §10 "Continuity data-flow map" owns sources, projections and retention for chat/biography, plan/review and execution. Add new hot stores there and their growth proof here together.
 
 | Store / surface | Complete source → interactive projection | Growth and retention proof |
 |---|---|---|
-| Chat and biography | `state/dialog.sqlite` (`dialogue_store.py`; the frozen archive imported once) and `memory/chronicle/records.jsonl` → the memory view (`memory_view.py`) and `chat_history` | Reads cost the page, never another room's history; import coverage is disclosed; pages and parts compress the horizon, never delete it; the journal warns at `CHRONICLE_JOURNAL_WARN_BYTES` |
+| Chat and biography | `state/dialog.sqlite` (`dialogue_store.py`; the frozen archive imported once) and `memory/chronicle/records.jsonl` → the memory view (`memory_view.py`) and `chat_history` | Reads cost the page, never another room's history; import coverage is disclosed; pages and parts compress the horizon, never delete it; size appears in the storage count |
 | Plan/review evidence | ARCHITECTURE §10.1, "Plan/review authority" | Source and retention rules live in that row |
-| Skill-review root tasks | Per-skill `state/skills/<name>/review_history.jsonl`; `skill_review_runner._append_terminal_history` projects terminal identities to `state/skill_review_root_tasks.jsonl` → `skill_readiness._skill_names_from_review_history` reads a bounded newest-first suffix | Append-only and idempotent by root/task/outcome identity; warns at `SKILL_REVIEW_ROOT_TASKS_WARN_BYTES` |
+| Skill-review root tasks | Per-skill `state/skills/<name>/review_history.jsonl`; `skill_review_runner._append_terminal_history` projects terminal identities to `state/skill_review_root_tasks.jsonl` → `skill_readiness._skill_names_from_review_history` reads a bounded newest-first suffix | Append-only and idempotent by root/task/outcome identity; size appears under App state |
 | Task/project execution | ARCHITECTURE §10.1, "Execution evidence" | Promotion and retention rules live in that row |
 
 ### Invariant: Continuation authority and bounded role projections
@@ -172,14 +166,15 @@ defensive projection of a predecessor's authority, never a raw head/tail slice, 
 summary or a canonical-result mutation (ARCHITECTURE §1 "CLI / Headless Boundary"); the
 optional exact read is `get_task_result(include_authority=True)`.
 
-The root startup injection is a bounded envelope, not a body copy, from the one producer
-`contracts.task_contract.bounded_continuation_envelope`: each field is whole-or-pointer
-under its serialized budget (previews carry `full_chars` and a `source_ref`;
-`previous_task_id` keeps the chain walkable), durable `task_results` bodies stay the SSOT,
-and no hop cap exists: depth belongs to the mind, the floor only keeps bodies off the wire.
-Children and external work orders receive the pure, idempotent brief
-`main_context_authority.project_helper_predecessor_authority`; a brief never stands in
-for the omitted evidence. Enforcement: `tests/test_continuation_context_authority.py`.
+Every predecessor consumer (the successor's start, children, external work orders) gets
+the same pure, idempotent brief `main_context_authority.project_helper_predecessor_authority`
+of the one envelope producer `contracts.task_contract.bounded_continuation_envelope` (fields
+whole-or-pointer under the serialized budget; previews carry `full_chars` and a
+`source_ref`). Durable `task_results` bodies stay the SSOT; the brief names each omitted
+field and size and never stands in for it. No hop cap, no chain walk: a successor reads its
+predecessor through `get_task_result(include_authority=True)`, and the predecessor mind's
+notes follow the assignment as one foldable row. Enforcement:
+`tests/test_continuation_context_authority.py`, `tests/test_helper_predecessor_history.py`.
 
 ### Invariant: notifications ring for live events only
 

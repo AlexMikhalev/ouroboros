@@ -17,11 +17,14 @@ function focusable(root) {
  * Install after mounting a dialog; dispose before removing it. Only boundary
  * Tab presses are intercepted, leaving native editing/radio behavior intact.
  * onEscape belongs to the caller's result contract (confirm/input/Project).
+ * `preventScroll` returns focus without scrolling its container, for an opener
+ * in a scrolled feed whose place must not move.
  */
 export function bindDialogFocus(dialog, {
     initialFocus,
     returnFocus = dialog.ownerDocument.activeElement,
     onEscape,
+    preventScroll = false,
 } = {}) {
     const doc = dialog.ownerDocument;
     let disposed = false;
@@ -33,7 +36,7 @@ export function bindDialogFocus(dialog, {
         // An independently mounted nested dialog owns its own keyboard cycle.
         if (event.target.closest('[aria-modal="true"]') !== dialog) return;
         if (event.key === 'Escape' && onEscape) {
-            event.preventDefault();
+            event.preventDefault();  // layers.back() relies on it: Back closes this dialog and keeps the layer under it
             event.stopPropagation();
             onEscape();
         } else if (event.key === 'Tab') {
@@ -57,7 +60,7 @@ export function bindDialogFocus(dialog, {
         dialog.removeEventListener('keydown', onKey);
         const ownedFocus = dialog.contains(doc.activeElement) || doc.activeElement === doc.body;
         if (originalTabIndex === null) dialog.removeAttribute('tabindex');
-        if (restoreFocus && ownedFocus && returnFocus && available(returnFocus)) returnFocus.focus();
+        if (restoreFocus && ownedFocus && returnFocus && available(returnFocus)) returnFocus.focus({ preventScroll });
     };
 }
 

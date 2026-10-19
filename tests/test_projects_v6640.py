@@ -391,8 +391,10 @@ def test_project_sidebar_and_menu_static_contracts():
     css = (root / "web" / "style.css").read_text(encoding="utf-8")
 
     assert 'class="nav-projects-header"' in html
-    assert '<svg class="nav-chevron"' in html
-    assert 'aria-label="New project"><svg' in html
+    # The header's chevron and "+" are the shell's shared glyphs, rendered from the page registry (pages.js).
+    pages = (root / "web" / "modules" / "pages.js").read_text(encoding="utf-8")
+    assert '<span class="nav-chevron" aria-hidden="true">${SHELL_ICONS.chevron}</span>' in pages
+    assert 'aria-label="New project">${SHELL_ICONS.plus}</button>' in pages
     assert ".nav-projects-header" in css
     assert ".nav-projects-header .nav-row-meta:not(:empty)" in css
     projects_css = css[css.index(".nav-projects-header"):css.index("/* New Project dialog */")]
@@ -405,7 +407,6 @@ def test_project_sidebar_and_menu_static_contracts():
     assert "await markProjectViewed(project.id, revision)" in app
     assert "async function markProjectViewed" in app
     assert "await fetchJson('/api/ui/preferences'" in app
-    assert "item.append(btn, trailing)" in app
     assert "hideProjectFromSidebar" not in app
     assert "project_last_viewed" not in app
     assert "project_hidden" not in app

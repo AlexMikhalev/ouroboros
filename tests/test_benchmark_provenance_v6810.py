@@ -601,6 +601,9 @@ _TRUNCATION_DECISIONS: dict[str, tuple[bool, str]] = {
     "pin_write_failed": (False, "gateway/cards.py: Keep on Widgets could not be saved; HTTP 503, never a task terminal"),
     "revision_required": (False, "gateway/card_decision.py: a press without the card revision it was drawn from; HTTP 400, never a task terminal"),
     "values_invalid": (False, "gateway/card_decision.py: form values the card's form does not accept; HTTP 400, never a task terminal"),
+    "github_actor_unavailable": (False, "skill_publish_github.py: the GitHub account behind the token cannot be read before any publication mutation; a typed publication refusal, not a task terminal"),
+    "fork_prepare_failed": (False, "skill_publish_github.py: the account's fork could not be prepared; the publication result is partial and retryable, not a task terminal"),
+    "fork_sync_failed": (False, "skill_publish_github.py: a 422-only fork synchronization failed; the publication result is partial and retryable, not a task terminal"),
     # -- truncating: the rail stopped the attempt, so reward 0 is not a capability fact ----
     "budget_exhausted": (True, "loop.py:287 per-task USD reservation rail"),
     "round_limit": (True, "loop.py:3128 _handle_round_limit, the round cap"),

@@ -1,7 +1,9 @@
 import { escapeHtmlAttr, escapeHtmlText as escapeHtml } from './utils.js';
 import { bindMarkdownTables, destroyChatMarkdown, enhanceChatMarkdown, mountChatMarkdown, renderChatMarkdown } from './chat_markdown.js';
-import { renderPageHeader } from './page_header.js';
-import { PAGE_ICONS } from './page_icons.js';
+import { bindHeaderControlPlacement, renderPageHeader } from './page_header.js';
+import { strokeIcon } from './page_icons.js';
+import { mainHeaderActionsHtml } from './chat_header.js';
+import { pageLabel } from './pages.js';
 import { showToast } from './toast.js';
 import { tx } from './i18n.js';
 import { hostRowDisplayText } from './host_notice_text.js';
@@ -13,6 +15,7 @@ import { createChatMedia, showTaskIncidentToast } from './chat_media.js';
 import { attachmentCaption, attachmentViews, createUnconfirmedSends } from './chat_attachments.js';
 import { createChatDecision } from './chat_decision.js';
 import { createRoomWork } from './room_work.js';
+import { applyCardWorkViews, cardControls, cardMenuActions, emptyWorkState, openCardControls, ownStopPress, reconcileWorkState, roomStatusView } from './work_status.js';
 import { createMainWaiting } from './main_waiting.js';
 import { createHostStart } from './host_starting_status.js';
 import { createModelWaitController, isModelWaitReference } from './model_wait.js';
@@ -44,9 +47,7 @@ import {
     REUSABLE_TASK_IDS,
     TASK_CONTROL_TRIGGER_LABEL,
     cancelRunEligibility,
-    resumeRunEligibility,
     createTaskResumeButton,
-    openTaskControls,
     requestStop,
 } from './task_control_menu.js';
 import { openConfirmDialog } from './confirm_dialog.js';
@@ -55,6 +56,7 @@ import { composerMarkup, createComposer } from './composer.js';
 import { effortFact } from './effort_chip.js';
 import { mountEmptyChatWelcome } from './welcome_preference.js';
 import { createChatReplies } from './chat_reply.js';
+import { createHistoryReveal } from './chat_history_reveal.js';
 import { createChatRowMenu } from './chat_row_menu.js';
 import { clearTransientRoutingAnnotations } from './routing_receipt.js';
 import {
@@ -106,14 +108,12 @@ import {
     boundActivityPreview,
     buildTimelineItemHtml,
     buildMessageKey,
-    chatStatusCounts,
     chatLogThreadAccepts,
     chatMediaMessageKey,
     chatThreadAccepts,
     clearStickyCardState,
     confirmAndSendPanic,
     confirmAndSendRestart,
-    computeDerivedChatStatus,
     computeHydratedDirectActivities,
     documentMessageKey,
     durableChatMediaUrl,
@@ -126,7 +126,6 @@ import {
     isTerminalTaskPhase,
     markIngressSaved,
     liveLineRowToggleKey,
-    bindContentButton,
     bindLiveCardTimeline,
     subagentIdentityTitle,
     subagentTwin,
@@ -166,7 +165,6 @@ export {
     clearStickyCardState,
     clearTransientRoutingAnnotations,
     confirmAndSendPanic,
-    computeDerivedChatStatus,
     computeHydratedDirectActivities,
     headerBudgetPresentation,
     insertTimelineNode,
@@ -186,6 +184,8 @@ export {
 
 // Host placement: custody warns; settled reviews show results.
 const CARD_ROW_PHASES = new Map([['timeline', 'warn'], ['reviews', 'result']]);
+const SUBAGENT_LIFECYCLE_EVENTS = new Set(['scheduled', 'running', 'completed', 'completed_warn', 'failed',
+    'cancelled', 'rejected', 'interrupted']);  // a helper's narration is `progress`
 const CHAT_STORAGE_KEY = 'ouro_chat';
 
 export function initChat(ctx) {
@@ -199,12 +199,12 @@ export function createChatInstance({
     ws, state, updateUnreadBadge, openSettingsTab, openDashboardTab,
     stateSnapshots,
     chatId = 1, projectId = '', idPrefix = 'chat', mountEl = null,
-    asPanel = false, title = 'Chat',
+    asPanel = false, title = pageLabel('chat'),
     // app.js signal "a project panel is opening right now" — Main
     // defers its first hydration to it (bounded by an unconditional deadline).
     isProjectOpening = null,
     onHistoryRetry = null,
-    onReadingLatest,
+    onReadingLatest, revealQuotedSource,
 }) {
     const container = mountEl || document.getElementById('content');
     const chatSessionId = getOrCreateChatSessionId(sessionStorage, globalThis.crypto);
@@ -215,47 +215,26 @@ export function createChatInstance({
     const page = document.createElement('div');
     page.id = asPanel ? `panel-${idPrefix}` : 'page-chat';
     page.className = asPanel ? 'chat-instance-panel' : 'page active';
-    // A project panel reuses index.html's `.project-panel-bar` (title + close): a
-    // status-only header, never the page header's global agent chrome (Restart,
-    // Panic, budget). Main keeps the full header.
+    // A Project panel's bar comes from app.js (page_header.js); the instance seeds only its status badge.
     const headerHtml = asPanel
         ? `<div class="chat-panel-statusbar"><span id="chat-status" class="status-badge offline">Connecting…</span></div>`
         : renderPageHeader({
             title: title,
-            icon: PAGE_ICONS.chat,
             variant: 'overlay',
             className: 'chat-page-header',
             toolbarClass: 'ui-chrome-group',
-            actionsHtml: `
-                <div class="chat-header-actions" id="chat-header-actions">
-                    <button class="chat-header-btn ui-chrome-control" type="button" data-chat-command="restart" title="Restart agent">Restart</button>
-                    <button class="chat-header-btn danger ui-chrome-control" type="button" data-chat-command="panic" title="Stop all workers">Panic</button>
-                    <details class="chat-header-more">
-                        <summary class="chat-header-btn ui-chrome-control" title="More agent controls">More</summary>
-                        <div class="chat-header-menu">
-                            <button class="chat-header-menu-item" type="button" data-chat-command="bg" title="Toggle background consciousness">Consciousness</button>
-                            <button class="chat-header-menu-item" type="button" data-chat-command="evolve" title="Toggle evolution mode">Evolve</button>
-                            <button class="chat-header-menu-item" type="button" data-chat-command="review" title="Run review now">Review</button>
-                            <button class="chat-header-menu-item" type="button" data-plugins="off" title="Reload without skills' page code">Restart without plugins</button>
-                        </div>
-                    </details>
-                </div>
-                <button class="chat-budget-pill ui-chrome-control" id="chat-budget-pill" type="button" title="Open budget controls" aria-label="Open budget controls">
-                    <span class="chat-budget-text" id="chat-budget-text">Loading…</span>
-                    <div class="chat-budget-bar">
-                        <div class="chat-budget-bar-fill" id="chat-budget-bar-fill"></div>
-                    </div>
-                </button>
-                <span id="chat-status" class="status-badge offline">Connecting…</span>
-            `,
+            actionsHtml: mainHeaderActionsHtml(),
+            showMobileNav: false,  // a room's ☰ is its composer row's first control
         });
+    // Main: the history note (gaps, a failed read, an approximate position) floats UNDER the bar as its own
+    // strip, never as a second row of it; the Project panel keeps its in-flow status bar.
     page.innerHTML = `
-        ${headerHtml}
+        ${headerHtml}${asPanel ? '' : '<div class="chat-page-note"></div>'}
         <div id="chat-messages"></div>
         <div id="chat-input-area">
             <div class="chat-input-wrap">
                 <button class="chat-scroll-bottom-btn" id="chat-scroll-bottom" type="button" aria-label="Scroll to latest message" title="Scroll to latest message">
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5v14"/><path d="M19 12l-7 7-7-7"/></svg>
+                    ${strokeIcon('<path d="M12 5v14"/><path d="M19 12l-7 7-7-7"/>', 16)}
                     <span class="chat-scroll-activity-dot" aria-hidden="true" hidden></span>
                 </button>
                 ${composerMarkup()}
@@ -280,7 +259,9 @@ export function createChatInstance({
     const statusBadge = byId('status');
     const headerActions = byId('header-actions');
     const pageHeader = page.querySelector('.chat-page-header');
+    const pageNote = page.querySelector('.chat-page-note');
     const budgetPill = byId('budget-pill');
+    const disposeHeaderPlacement = asPanel ? () => {} : bindHeaderControlPlacement({ headerActions, budgetPill });
     const scrollBottomBtn = byId('scroll-bottom');
     const scrollActivityDot = scrollBottomBtn?.querySelector('.chat-scroll-activity-dot');
     let nestedSubagentsExpanded = false;
@@ -294,7 +275,8 @@ export function createChatInstance({
     const wsDisposers = [];
     const onWs = (event, fn) => wsDisposers.push(ws.on(event, fn));
     const replies = createChatReplies({ chatId, feed: messagesDiv, input, key: storeKey('ouro_chat_reply'),
-        reading: () => reading, onDomWrite: withStableViewport });
+        reading: () => reading, onDomWrite: withStableViewport, history: () => historyReveal,
+        navigate: revealQuotedSource, present: () => !destroyed && isInstanceVisible() });
     const chatMedia = createChatMedia({
         chatSessionId,
         durableChatMediaUrl,
@@ -375,8 +357,9 @@ export function createChatInstance({
     const LIVE_CARD_CAP = 200;
     const liveCardBound = createLiveCardBound(LIVE_CARD_CAP);
     const liveCardRecords = new Map();
-    // The room's work status in its header (room_work.js), mounted once the owners it reads exist.
-    let roomWork = null;
+    // The server's work projection (work_status.js), re-read on facts only.
+    let roomWork = null, workState = emptyWorkState();
+    const reread = () => void refreshHeaderControlState(true);
     // A wait creates its task record; its open/closed state is one
     // input of the block predicate, so the block appears with the controls and
     // leaves with them (the record and its no-reopen wait ledger stay).
@@ -492,14 +475,13 @@ export function createChatInstance({
         }
     }
 
-    function setStatus({ kind, text, tone = 'online', dots = 'one', title = '' }) {
-        // Replay frames never touch the badge; syncChatStatus writes the producer's word, tone and dots once.
+    function setStatus({ kind, text, tone = 'online', dots = 'one', amber = '', mark = '', title = '' }) {
+        // Replay frames never touch the badge; syncChatStatus writes it once.
         if (!statusBadge) return;
         statusBadge.className = `status-badge ${kind}`;
         statusBadge.textContent = text;
         statusBadge.title = title; // a failed boot step's cause; empty otherwise
-        statusBadge.dataset.tone = tone;
-        statusBadge.dataset.dots = dots;
+        Object.assign(statusBadge.dataset, { tone, dots, amber, mark });
         roomWork?.update();
     }
 
@@ -543,7 +525,7 @@ export function createChatInstance({
         activity: (record) => currentActivity(record), follow: portals.follow,
         expand: (record) => { setLiveCardExpanded(record, true); hydrateCardReviews(record.groupId); } });
     const rowMenu = createChatRowMenu({ feed: messagesDiv, replies, cardOf: (id) => liveCardRecords.get(id),
-        activityOf: (record) => currentActivity(record) });
+        actionsOf: (record) => cardMenuActions(workState, record, currentActivity(record)), afterAction: reread });
 
     let childHoldRead = false;
     async function refreshChildProjectHolds() {
@@ -574,13 +556,14 @@ export function createChatInstance({
                     }
                 }
             });
-            syncChatStatus();
         } catch { /* Keep the last fact; absence or a failed read proves no recovery. */ }
         finally { childHoldRead = false; }
     }
 
     function hydrateStateSnapshot(data, snapshotRequestedAt = Infinity) {
         if (data) void refreshChildProjectHolds();
+        workState = reconcileWorkState(workState, data, chatId, ws.isConnected?.() !== false);
+        applyCardWorkViews(liveCardRecords, workState);
         syncHeaderControlState(data ?? { accounting: { available: false } });
         portals.sync(data);
         mainWaiting?.snapshot(data, snapshotRequestedAt);
@@ -735,11 +718,6 @@ export function createChatInstance({
             || (record.finished && record.phaseEl?.dataset?.phase !== 'done');
     }
 
-    // Lane facts from census/task_done/history affect only the header, never chrome.
-    function noteDirectTurn(record, direct) {
-        if (record && typeof direct === 'boolean') record.direct = direct;
-    }
-
     // Work chooses card chrome (owner 16.09): title and Main conversion, regardless
     // of lane. Attention-only or non-Done endings have neither title nor conversion.
     // Bare outcome/receipts are not work; _is_direct_chat retains its host duties.
@@ -800,7 +778,7 @@ export function createChatInstance({
     }
 
     // Main blocks with work offer conversion unless their origin is bound (the same /api/state fact app.js
-    // reads); titles use the same work predicate. Every root work card offers Reply first (never the primary).
+    // reads); titles use the same work predicate. Every root work card offers Reply in its row menu.
     function syncBlockChrome(record) {
         replies.syncCard(record, !record.isSubagent && (isPortal(record) || blockHasWork(record)));
         // A child is never a convertible unit (it inherits its root's Project by
@@ -833,7 +811,8 @@ export function createChatInstance({
 
     function syncCancelRunButtonMutation(record) {
         if (!record?.root) return false;
-        const canResume = () => resumeRunEligibility(record, currentActivity(record));
+        // Resume where the card's work offers it.
+        const canResume = () => cardControls(workState, record.groupId).resume;
         const resumable = canResume();
         let changed = false;
         if (resumable && !record.resumeRunBtn) {
@@ -846,7 +825,7 @@ export function createChatInstance({
         } else if (!resumable && record.resumeRunBtn) {
             record.resumeRunBtn.remove(); record.resumeRunBtn = null; changed = true;
         }
-        const eligible = stopEligible(record) || resumable;
+        const eligible = stopEligible(record) || resumable || cardControls(workState, record.groupId).menu;
         const existing = record.root.querySelector('[data-cancel-run]');
         if (!eligible) {
             if (!existing) return changed;
@@ -869,8 +848,8 @@ export function createChatInstance({
         // Pending cancel offers only hard escalation; dismiss keeps the run.
         btn.addEventListener('click', (event) => {
             event.stopPropagation();
-            openTaskControls(btn, record.groupId, { record, activity: currentActivity(record),
-                cancelPending: Boolean(record.cancelPendingPolicy), stop: (action) => cancelRunFromCard(record, action) });
+            openCardControls(btn, record, cardControls(workState, record.groupId).work, { activity: currentActivity(record),
+                stop: (action) => cancelRunFromCard(record, action), afterAction: reread });
         });
         actions.appendChild(btn);
         record.cancelRunBtn = btn;
@@ -1127,7 +1106,6 @@ export function createChatInstance({
             const activity = activeDirectActivities.get(row.task_id);
             if (row.ts) reanchorTaskCard(record, row.ts);
             if (row.suggested_name) applySuggestedName(row.task_id, row.suggested_name);
-            noteDirectTurn(record, activity ? activity.kind !== 'managed_task' : row._is_direct_chat);
             if (row.task_phase === 'finalizing') markLiveCardFinalizing(row.task_id, row);
             else if (!row.task_terminal_status && !activity) setHistoricalUnconfirmed(record);
             if (activity) syncParkedPhase(record, activity.phase, activity);
@@ -1173,8 +1151,10 @@ export function createChatInstance({
             ? explicitCardExpansion.get(normalizedGroupId)
             : Boolean(options.isSubagent && nestedSubagentsExpanded);
         root.dataset.expanded = initialExpanded ? '1' : '0';
+        // The summary band is reading content (selectable, never a control); its one disclosure is the
+        // "N notes · Show details" button (DESIGN §5 "A task card's summary outranks its details").
         root.innerHTML = `
-            <div class="chat-live-summary-button" role="button" tabindex="0" data-live-summary-button aria-expanded="false" aria-controls="${escapeHtmlAttr(timelineId)}">
+            <div class="chat-live-summary-button" data-live-summary-button>
                 <div class="chat-live-summary">
                     <div class="chat-live-summary-main">
                         <span class="chat-live-phase working" data-live-phase role="status" aria-live="polite" aria-atomic="true" aria-label="${options.isSubagent ? 'Subagent' : 'Task'} status: Working">Working</span>
@@ -1185,13 +1165,13 @@ export function createChatInstance({
                         </div>
                     </div>
                     <span class="chat-live-title" data-live-title>Waiting for work</span>
-                    <div class="chat-live-summary-side">
-                        <span class="chat-live-count" data-live-count hidden>2 notes</span>
+                    <button type="button" class="chat-live-summary-side ui-hit-area" data-live-disclosure aria-expanded="false" aria-controls="${escapeHtmlAttr(timelineId)}">
+                        <span class="chat-live-count" data-live-count hidden></span>
                         <span class="chat-live-toggle" data-live-toggle>Show details</span>
                         <svg class="chat-live-chevron" width="14" height="14" viewBox="0 0 20 20" fill="none" aria-hidden="true">
                             <path d="M5 7.5 10 12.5 15 7.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"></path>
                         </svg>
-                    </div>
+                    </button>
                 </div>
                 <div class="chat-live-episodes" data-live-episodes hidden></div>
                 <div class="chat-live-activity" data-live-activity></div>
@@ -1221,6 +1201,7 @@ export function createChatInstance({
             episodeHistoryEl: root.querySelector('[data-live-episode-history]'),
             activityEl: root.querySelector('[data-live-activity]'),
             countEl: root.querySelector('[data-live-count]'),
+            disclosureEl: root.querySelector('[data-live-disclosure]'),
             footEl: root.querySelector('[data-live-foot]'),
             footEndEl: root.querySelector('[data-live-foot-end]'),
             metaEl: root.querySelector('[data-live-meta]'),
@@ -1240,9 +1221,6 @@ export function createChatInstance({
             // The proactively-coined LLM name; becomes the card title when set.
             suggestedName: '',
             reviewOwnerDetailObserved: false,
-            // Host fact for the header pill: a direct conversation turn (census
-            // kind, rebuilt task_done, history rows) vs a managed/Swarm root.
-            direct: String(activeDirectActivities.get(normalizedGroupId)?.kind || 'managed_task') !== 'managed_task',
         };
         const reviewDisclosure = reviewDisclosureByTask.get(normalizedGroupId) || {
             sectionExpanded: false,
@@ -1266,12 +1244,14 @@ export function createChatInstance({
             ),
             onDomWrite: withStableViewport,
         });
-        bindContentButton(record.summaryButtonEl, () => {
+        // A native button: Enter and Space press it. A portal hides it (its room holds what it would open).
+        record.disclosureEl?.addEventListener('click', () => {
+            if (isPortal(record)) return;
             const nowExpanded = record.root.dataset.expanded !== '1';
             explicitCardExpansion.set(record.groupId, nowExpanded);
             setLiveCardExpanded(record, nowExpanded);
             if (nowExpanded) hydrateCardReviews(record.groupId);
-        }, () => !isPortal(record));  // a portal's summary is content, not a disclosure
+        });
         record.timelineDispose = bindLiveCardTimeline(record.timelineEl, (lineKey) => {
             const nowExpanded = !record.expandedLineKeys.has(lineKey);
             if (nowExpanded) record.expandedLineKeys.add(lineKey);
@@ -1295,6 +1275,9 @@ export function createChatInstance({
             if (record.titleEl) record.titleEl.textContent = _pendingName;
         }
         resetLiveCardRecord(record);
+        // A card the last complete body does not name asks for a read.
+        if (!_historyReplayActive && workState.complete && !workState.members.has(normalizedGroupId)) reread();
+        applyCardWorkViews(new Map([[normalizedGroupId, record]]), workState);
         const activity = activeDirectActivities.get(normalizedGroupId);
         if (activity) syncParkedPhase(record, activity.phase, activity);
         const ended = concludedDirectActivities.get(normalizedGroupId);
@@ -1443,6 +1426,7 @@ export function createChatInstance({
             ? explicitCardExpansion.get(record.groupId)
             : Boolean(record.isSubagent && nestedSubagentsExpanded);
         setLiveCardExpanded(record, expanded);
+        syncLiveCardToggle(record);  // a card born expanded says so from its first paint
     }
 
     function ensureLiveCardVisible(
@@ -1773,7 +1757,6 @@ export function createChatInstance({
         const summary = taskTerminalSummary({ ...msg, task_id: taskId });
         const record = getLiveCardRecord(taskId);
         changed = noteTaskDetails(record, msg) || changed;
-        noteDirectTurn(record, msg?._is_direct_chat);
         syncSettledItems(record, msg);
         changed = Boolean(record.reviewController?.updateMany(reviewGroupsFromTaskDetail(msg, taskId))) || changed;
         if (finalizing && !record.finished) record.finalizingHold = true;
@@ -1901,7 +1884,6 @@ export function createChatInstance({
         changed = queueTaskLiveUpdate(
             presented, taskId, normalizeLogTs(rawTs), presented.dedupeKey || '', rawTs,
         ) || changed;
-        noteDirectTurn(liveCardRecords.get(taskId), msg._is_direct_chat);
         // History may carry the coined name that live frames deliver separately.
         if (msg.suggested_name) changed = applySuggestedName(taskId, msg.suggested_name) || changed;
         // Outcome survives a lost summary even while post-work keeps controls live.
@@ -1926,10 +1908,7 @@ export function createChatInstance({
         // Worker narration carries subagent_event="progress" too. It is activity,
         // not a lifecycle row: route it through the progress key so the later
         // terminal frame cannot overwrite the only full narration disclosure.
-        if (![
-            'scheduled', 'running', 'completed', 'completed_warn',
-            'failed', 'cancelled', 'rejected', 'interrupted',
-        ].includes(event)) {
+        if (!SUBAGENT_LIFECYCLE_EVENTS.has(event)) {
             return routeSubagentProgressToCard(childId, evt);
         }
         const rawTs = tsValue || new Date().toISOString();
@@ -2079,8 +2058,7 @@ export function createChatInstance({
         );
         if (childInfo) return Boolean(changed || queued);
         const subagentChanged = updateSubagentCardFromEvent(evt, rawTs);
-        // Host-attested lane and Stop facts also travel on tool-only turns.
-        if (typeof evt._is_direct_chat === 'boolean') noteDirectTurn(liveCardRecords.get(taskId), evt._is_direct_chat);
+        // Host-attested Stop facts also travel on tool-only turns.
         if (evt.cancelable === true) markTaskCancelable(taskId);
         if (eventType === 'task_done' && summary.terminal) {
             recordTerminalActivity(taskId, summary.phase);
@@ -2461,7 +2439,7 @@ export function createChatInstance({
                 // Persisted terminals without task_summary (crash/timeout/cancel) also settle
                 // progress-only cards, or reload revives them as Working. A child's terminal
                 // resolves the child card, never its parent; a root's uses the shared terminal
-                // mapping (P5: a cancelled root replays as "Cancelled", never a generic "Done").
+                // mapping (P5: a cancelled root replays as "Stopped", never a generic "Done").
                 const settleReplayedTerminal = (tid, terminalRecord, phase, summary = false) => {
                     if (!taskDoneIsTerminal(terminalRecord)) return;
                     if (subagentChildParents.has(tid)) return routeSubagentTerminalToCard(tid, terminalRecord);
@@ -2641,7 +2619,7 @@ export function createChatInstance({
         // A destroyed page reports hidden===false, hence the lifecycle flag.
         isShown: () => !destroyed && !page.hidden,
         // A place still being restored is not where the reader is.
-        isReadingLatest: latest => !destroyed && !reading.pending && isInstanceVisible() && isAtNewestMessage(latest, {
+        isReadingLatest: latest => !destroyed && !reading.pending && !replies.revealing && isInstanceVisible() && isAtNewestMessage(latest, {
             ...newestFacts, atBottom: () => isNearBottom() && !historyPager.getState().canNewer,
         }),
         onReadingLatest, arriving: () => reading.arriving, delivered: newestFacts.delivered,
@@ -2762,8 +2740,15 @@ export function createChatInstance({
         const mutate = () => {
             let changed = false;
             if (pageHeader && messagesDiv) {
-                const headerReserve = Math.max(56, Math.ceil(pageHeader.offsetHeight || 0));
-                const value = `${headerReserve}px`;
+                // The bar's own height places the note under it; the transcript clears both.
+                const bar = Math.ceil(pageHeader.offsetHeight || 0);
+                const note = pageNote?.offsetParent ? Math.ceil(pageNote.offsetHeight || 0) : 0;
+                const barValue = `${bar}px`;
+                if (page.style.getPropertyValue('--chat-header-bar') !== barValue) {
+                    page.style.setProperty('--chat-header-bar', barValue);
+                    changed = true;
+                }
+                const value = `${Math.max(56, bar + note)}px`;
                 if (page.style.getPropertyValue('--chat-header-reserve') !== value) {
                     page.style.setProperty('--chat-header-reserve', value);
                     changed = true;
@@ -2804,6 +2789,7 @@ export function createChatInstance({
         chatResizeObserver = new ResizeObserver(schedule);
         chatResizeObserver.observe(messagesDiv);
         if (pageHeader) chatResizeObserver.observe(pageHeader);
+        if (pageNote) chatResizeObserver.observe(pageNote);
         if (inputArea) chatResizeObserver.observe(inputArea);
     }
 
@@ -2848,21 +2834,25 @@ export function createChatInstance({
     let documentKeydownHandler = null;
     if (!asPanel) {
         const collapseHeaderMenus = (predicate) => {
+            let collapsed = false;
             page.querySelectorAll('details.chat-header-more[open]').forEach((details) => {
-                if (predicate(details)) details.removeAttribute('open');
+                if (predicate(details)) { details.removeAttribute('open'); collapsed = true; }
             });
+            return collapsed;
         };
         documentClickHandler = (event) => {
             collapseHeaderMenus((details) => !details.contains(event.target));
         };
         document.addEventListener('click', documentClickHandler);
         documentKeydownHandler = (event) => {
-            if (event.key === 'Escape') collapseHeaderMenus(() => true);
+            // An open menu owns its Escape.
+            if (event.key === 'Escape' && !event.defaultPrevented && collapseHeaderMenus(() => true)) event.preventDefault();
         };
         document.addEventListener('keydown', documentKeydownHandler);
     }
 
     budgetPill?.addEventListener('click', () => {
+        budgetPill.closest('details')?.removeAttribute('open');
         if (typeof openDashboardTab === 'function') openDashboardTab('costs');
         else if (typeof openSettingsTab === 'function') openSettingsTab('costs');
     });
@@ -2871,7 +2861,7 @@ export function createChatInstance({
     if (asPanel) {
         // Late panels missed socket open; seed from the socket and latest snapshot.
         hostStart.read(stateSnapshots.latest?.());
-        const seed = computeDerivedChatStatus(hostStart.status());
+        const seed = deriveChatStatus();
         if (ws.isConnected?.()) setStatus(seed);
     } else headerControlInterval = setInterval(refreshHeaderControlState, 3000);
     // Both Main and late panels hydrate once; each instance filters its chat.
@@ -2976,7 +2966,7 @@ export function createChatInstance({
         }
     }
 
-    const historyControls = createHistoryControls(messagesDiv, pageHeader || page.querySelector('.chat-panel-statusbar'));
+    const historyControls = createHistoryControls(messagesDiv, pageNote || page.querySelector('.chat-panel-statusbar'));
     const { olderButton: loadOlderBtn } = historyControls;
 
     const historyPager = createChatHistoryPager({
@@ -3088,13 +3078,11 @@ export function createChatInstance({
     // Active blocks host their own running indicator.
     const foregroundCards = () => Array.from(liveCardRecords.values()).filter((r) => isForegroundLiveCard(r) && !r.modelWaiting);
 
+    // The server's room under this client's own facts.
     function deriveChatStatus() {
-        return computeDerivedChatStatus({
-            ...chatStatusCounts(activeDirectActivities, liveCardRecords.values(), (id) => modelWaits.waiting(id)),
-            isConnected: ws.isConnected ? ws.isConnected() : true,
-            pendingSubmissionsCount: pendingSubmissions.size,
-            ...hostStart.status(),
-        });
+        return roomStatusView(workState, { connected: ws.isConnected ? ws.isConnected() : true, ready: hostStart.ready(),
+            boot: hostStart.status().bootPhase,
+            sending: pendingSubmissions.size > 0, stopping: ownStopPress(workState, liveCardRecords) });
     }
 
     function syncChatStatus() {
@@ -3208,7 +3196,6 @@ export function createChatInstance({
             syncParkedPhase(record, v.phase, v);
             syncCancelRunButton(record);
             markReviewAnchor(record);
-            noteDirectTurn(record, v.kind !== 'managed_task');
             if (v.kind === 'managed_task') missingManagedTaskIds.delete(k);
         }
         for (const taskId of globallyActiveActivityIds) missingManagedTaskIds.delete(taskId);
@@ -3256,13 +3243,9 @@ export function createChatInstance({
 
     onWs('typing', (msg) => {
         if (!isMyThread(msg)) return;  // each column shows typing only for its own thread
-        // A typing frame is a submission receipt, never liveness: it pulls the
-        // authoritative census at once and retires the linked `Sending...`
-        // only once that census has answered, so the header steps from
-        // Sending... straight to Thinking... when the census lists the turn
-        // (hydration retires the cmid itself) and to Online otherwise, never
-        // through a blank in between. The header derives from that census,
-        // pending sends and live cards only.
+        // A typing frame is a submission receipt, never liveness: it re-reads the
+        // state at once and retires the linked `Sending...` only once that read
+        // answers, so the room steps from Sending... to the server's word.
         const cmid = String(msg.client_message_id || '');
         if (!cmid) return;
         void refreshHeaderControlState(true).then(() => {
@@ -3315,6 +3298,7 @@ export function createChatInstance({
                 syncChatStatus();
                 return result;
             };
+            if (isModelWaitReference(msg)) reread();
             const reference = admitCardMetadata(msg);
             if (reference !== undefined) return settled(reference, false);
             const review = attachReviewFromRow(msg, msg.ts || '', true);
@@ -3327,6 +3311,7 @@ export function createChatInstance({
             learnSubagentLineage(msg);
             if (msg.is_progress) {
                 showTaskIncidentToast(msg);
+                if (SUBAGENT_LIFECYCLE_EVENTS.has(String(msg.subagent_event || '').toLowerCase())) reread();  // members
                 const changed = updateLiveCardFromProgressMessage(msg, { grantCancelAuthority: true });
                 return settled(changed, false);
             }
@@ -3335,6 +3320,7 @@ export function createChatInstance({
             // conclusion; task_done or the queue snapshot concludes it.
             const finalizing = Boolean(explicitTaskId) && msg.task_phase === 'finalizing';
             const typedTerminal = positiveTaskTerminalFact(msg);
+            if (typedTerminal) reread();
             if (!finalizing && (!explicitTaskId || typedTerminal)) {
                 if (explicitTaskId) {
                     // 4A (active set): a keyed final concludes ITS OWN turn —
@@ -3409,6 +3395,7 @@ export function createChatInstance({
         // frames without chat_id default to the main chat.
         if (!isMyLogThread(msg)) return;
         withRemoteActivity(() => updateLiveCardFromLogEvent({ ...msg.data, _live_tool_frame: !msg.data._historical }));
+        if (!msg.data._historical && ['task_done', 'task_model_wait'].includes(msg.data.type)) reread();
     });
 
     // Admission names the card and its future Project. The broadcast has only
@@ -3444,6 +3431,7 @@ export function createChatInstance({
         applyQuizStateFrame: chatDecision.applyQuizStateFrame,
         messagesRoot: () => messagesDiv,
         deliverContentMutation: withRemoteActivity,
+        onQuestionFrame: reread,
     });
 
     let wsHasConnectedOnce = false;
@@ -3504,8 +3492,11 @@ export function createChatInstance({
     const revealQuestion = (taskId, quizId, options) => chatDecision.revealQuestion(
         taskId, quizId, projectId, chatId, appendQuizMessage, isInstanceVisible,
         () => { const current = reading.claim(); reading.stick = false; return current; }, reading.scroll, options);
+    const historyReveal = createHistoryReveal({ pager: historyPager, reading, feed: messagesDiv, records: liveCardRecords,
+        present: isInstanceVisible, expand: record =>
+            (explicitCardExpansion.set(record.groupId, true), setLiveCardExpanded(record, true)) });
     roomWork = createRoomWork({ page, asPanel, ws, statusBadge, messagesDiv, reading, stateSnapshots, revealQuestion,
-        activeDirectActivities, liveCardRecords, pendingSubmissions, pendingSuggestedNames, modelWaits, stopEligible,
+        works: () => workState, liveCardRecords, pendingSubmissions, pendingSuggestedNames,
         cancelRunFromCard, refreshHeaderControlState, captureVisibleTimelineAnchor, restoreVisibleTimelineAnchor,
         historyPager, showLatest, hostReady: hostStart.ready });
 
@@ -3520,6 +3511,7 @@ export function createChatInstance({
         showLatest,
         refreshHistory: readReceipt.refresh,
         revealQuestion,
+        revealSource: replies.reveal,
         cancelHistoryPaint: readReceipt.cancel,
         // app.js fans its already-existing /api/state refresh to every open
         // thread; panels gain convergence without acquiring their own poll.
@@ -3534,7 +3526,7 @@ export function createChatInstance({
         // app.js, when this room leaves the screen without being destroyed: the
         // modal a file card opened (reader, file dialog) closes and its read
         // stops; staged attachments and uploads are untouched.
-        closeTransient: () => { roomWork?.leave(); chatMedia.closeTransient(); },
+        closeTransient: () => { reading.cancel(); roomWork?.leave(); chatMedia.closeTransient(); },
         // Full teardown (P3): release every resource this instance acquired —
         // ws subscriptions, window/document listeners, the ResizeObserver, all
         // timers — then drop the buffered collections and remove the DOM last.
@@ -3565,6 +3557,7 @@ export function createChatInstance({
             document.removeEventListener('visibilitychange', handlePageShown);
             if (documentClickHandler) document.removeEventListener('click', documentClickHandler);
             if (documentKeydownHandler) document.removeEventListener('keydown', documentKeydownHandler);
+            disposeHeaderPlacement();
             chatResizeObserver?.disconnect();
             chatResizeObserver = null;
             historyResyncScheduler.cancel();

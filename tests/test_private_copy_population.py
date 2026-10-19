@@ -16,6 +16,7 @@ import shutil
 import stat
 import subprocess
 import threading
+import time
 
 import pytest
 
@@ -62,6 +63,17 @@ def provision(tmp_path, target, *, snapshot_id="fill", independent=False):
     return trees.provision_execution_snapshot(
         target_root=target, task_id="fill-task", snapshot_id=snapshot_id,
         worktree_root=tmp_path / "snapshots", data_dir=tmp_path / "data", independent=independent)
+
+
+def open_files_deletable(tmp_path):
+    """POSIX unlinks a file another handle holds open; Windows refuses (a sharing violation)."""
+    probe = tmp_path / "open-probe"
+    with open(probe, "wb"):
+        try:
+            os.unlink(probe)
+        except PermissionError:
+            return False
+    return True
 
 
 def nothing_left(tmp_path, target, snapshot_id):
@@ -135,6 +147,38 @@ def test_a_source_edit_after_the_baseline_is_refused_by_the_whole_tree_diff(tmp_
     nothing_left(tmp_path, target, "fill")
 
 
+def test_a_same_size_edit_git_would_trust_by_its_stat_is_still_refused(tmp_path, monkeypatch):
+    """Git compares times to the second, and Git for Windows reports a file's creation time as its
+    ctime: a same-size source edit whose time population puts back onto a row checkout wrote in that
+    same second looks unchanged to Git once the index is written later (proving run 39251921588). The
+    rows checkout wrote are hashed whatever their stat says, so the whole-tree diff still refuses the
+    edit. Emulated on every platform: ctime is not trusted, and the edit and the checkout share a time
+    older than every later index write."""
+    for key, value in (("GIT_CONFIG_COUNT", "1"), ("GIT_CONFIG_KEY_0", "core.trustctime"),
+                       ("GIT_CONFIG_VALUE_0", "false")):
+        monkeypatch.setenv(key, value)
+    target = source_tree(tmp_path)
+    real_git = trees._git
+
+    def edit_at_checkout(repo_dir, *args, **kwargs):
+        if args[:1] != ("reset",):
+            return real_git(repo_dir, *args, **kwargs)
+        (target / "dirty.cfg").write_bytes(b"v3 dirty\n")  # the baseline's b"v2 dirty\n", same size
+        result = real_git(repo_dir, *args, **kwargs)
+        earlier = time.time_ns() - 2_000_000_000
+        for path in (target / "dirty.cfg", pathlib.Path(repo_dir) / "dirty.cfg"):
+            os.utime(path, ns=(earlier, earlier))
+        real_git(repo_dir, "update-index", "-q", "--refresh", check=False)  # checkout's row takes that time
+        return result
+
+    monkeypatch.setattr(trees, "_git", edit_at_checkout)
+    with pytest.raises(subprocess.CalledProcessError) as refused:
+        provision(tmp_path, target)
+    assert refused.value.returncode == 1 and refused.value.cmd[:3] == ["git", "diff", "--quiet"]
+    assert (target / "dirty.cfg").read_bytes() == b"v3 dirty\n"
+    nothing_left(tmp_path, target, "fill")
+
+
 @pytest.mark.parametrize("consumer", ["startup_gc", "disposition"])
 def test_a_copy_whose_provisioning_has_not_returned_is_never_a_ready_copy(tmp_path, monkeypatch, consumer):
     target = source_tree(tmp_path)
@@ -172,17 +216,30 @@ def test_a_copy_whose_provisioning_has_not_returned_is_never_a_ready_copy(tmp_pa
         # The provisional row is light: no completion facts, and its bytes are checkout's, not the source's.
         assert row["provisioning_sec"] == 0 and row["file_baseline"] == {} and row["untracked_baseline"] == {}
         assert (copy / "lines.txt").read_bytes() == b"alpha\r\nbeta\r\n" != (target / "lines.txt").read_bytes()
-        if consumer == "startup_gc":  # custody holds nothing open for a start that has not returned
+        if consumer == "startup_gc":  # custody is not open yet, but the task has not been proved over
             assert trees.prune_execution_snapshots(set(), worktree_root=tmp_path / "snapshots",
-                                                   data_dir=tmp_path / "data")["removed"] == ["fill"]
+                                                   data_dir=tmp_path / "data") == {"removed": [], "kept": ["fill"]}
         else:
-            assert trees.remove_execution_snapshot("fill", worktree_root=tmp_path / "snapshots",
-                                                   data_dir=tmp_path / "data")
+            removed = trees.remove_execution_snapshot("fill", worktree_root=tmp_path / "snapshots",
+                                                      data_dir=tmp_path / "data")
+            # Where a file population holds open cannot be deleted (Windows), the removal defers: its
+            # row stays marked for custody GC, and the failing provisioning discards the copy below.
+            assert removed or (not open_files_deletable(tmp_path)
+                               and (trees.find_execution_snapshot("fill", tmp_path / "data") or {}).get("removal_failed"))
     finally:
         release.set()
         worker.join(_WAIT_SEC)
-    assert "handle" not in outcome  # the run never receives the removed copy as ready
-    assert isinstance(outcome["error"], (OSError, subprocess.CalledProcessError)), outcome
+    if consumer == "startup_gc":
+        from ouroboros.task_results import write_task_result
+        assert "error" not in outcome and outcome["handle"].path == str(copy)
+        assert (copy / "lines.txt").read_bytes() == (target / "lines.txt").read_bytes()
+        write_task_result(tmp_path / "data", "fill-task", "completed")
+        monkeypatch.setattr("supervisor.queue.task_settlement_liveness", lambda _task: False)
+        assert trees.prune_execution_snapshots(set(), worktree_root=tmp_path / "snapshots",
+                                               data_dir=tmp_path / "data")["removed"] == ["fill"]
+    else:
+        assert "handle" not in outcome  # explicit disposition cannot return a removed copy as ready
+        assert isinstance(outcome["error"], (OSError, subprocess.CalledProcessError)), outcome
     nothing_left(tmp_path, target, "fill")  # nothing resurrected after the removal
 
 

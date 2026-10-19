@@ -346,6 +346,22 @@ def test_a_torn_line_holding_the_timestamp_is_unreadable_not_missing(tmp_path):
     assert cc.resolve_row(tmp_path, address)[1] == found  # frozen files cannot erase an imported gap
 
 
+def test_a_torn_line_elsewhere_keeps_a_substituted_rows_mismatch_candidates(tmp_path):
+    # Generic readers (chronicle marks, iter_rows bounds) name the same-time rows a stale address
+    # meant; navigation applies its own gap rule (chat_references.resolve_history_row).
+    live, _archive = _layout(tmp_path)
+    said = _msg("2026-09-01T00:00:00+00:00", "what was said")
+    _append(live, said, '{"ts": "2026-09-01T00:00:09+00:00", "chat_id": 1, "text": "torn\n')
+    stale = cc.row_address({**said, "text": "what was never said"})
+    row, found = cc.resolve_row(tmp_path, stale)
+    assert row is None and found["status"] == "row_mismatch", found
+    assert [candidate["row_sha256"] for candidate in found["candidates"]] == [
+        address["row_sha256"] for address, _row, _pos in cc.iter_rows(tmp_path)]
+    with pytest.raises(cc.RowAddressError) as refused:
+        list(cc.iter_rows(tmp_path, from_addr=stale))
+    assert refused.value.resolution["status"] == "row_mismatch"
+
+
 def test_chat_chain_keeps_no_index_and_no_physical_locator():
     source = (REPO / "ouroboros/chat_chain.py").read_text(encoding="utf-8")
     for banned in ("sqlite3", "st_ino", "st_birthtime", "st_dev"):

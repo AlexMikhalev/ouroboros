@@ -2,13 +2,14 @@
 // without hover — a right-click, Shift+F10 or the ContextMenu key on the focused row, a long press (no movement)
 // on touch. Its items are the row's own doors, never second ones: Reply, Copy, Open project (when the row has
 // one) and, on a work card, Resume / Pause / Stop… exactly when the card itself offers them (Pause is the item of
-// the card's Stop… menu, offered by the same rule); a bubble then lists the registered message actions its control
+// the card's Stop… menu, offered by the same rule). A work card's Reply lives only here (owner 17.10, Q9 B): the
+// card's action row holds commands over the work; a bubble then lists the registered message actions its control
 // row shows (message_actions.js), in words. Esc and an outside press close it; keyboard focus enters the
 // menu and returns to the row. A right-click on a link, a field or selected words keeps the browser's own menu,
 // so selected text stays copyable.
 import { tr } from './i18n.js';
 import { bindMenu } from './ui_interactions.js';
-import { ACTION_PAUSE, pauseTaskAction, taskControlActions } from './task_control_menu.js';
+import { ACTION_PAUSE, pauseTaskAction } from './task_control_menu.js';
 import { copyTextWithToast } from './ui_helpers.js';
 import { fullText } from './text_fit.js';
 import { getMessageActions, messageRow, presentAction, runMessageAction } from './message_actions.js';
@@ -22,10 +23,12 @@ const shown = (node) => Boolean(node?.isConnected && !node.hidden && !node.disab
 
 /**
  * `feed` is the chat's transcript, `replies` its reply controller (chat_reply.js), `cardOf(taskId)` its root card
- * record, `activityOf(record)` the census row that card's controls read, `actions` the message-action registry (the
- * page's own when omitted). Returns `{ open, destroy }`.
+ * record, `actionsOf(record)` the items that card's own Stop… menu offers now (its work's controls),
+ * `afterAction()` the re-read once an action settled, `actions` the message-action registry (the page's own when
+ * omitted). Returns `{ open, destroy }`.
  */
-export function createChatRowMenu({ feed, replies, cardOf, activityOf, actions = getMessageActions() }) {
+export function createChatRowMenu({ feed, replies, cardOf, actionsOf, afterAction = () => {},
+    actions = getMessageActions() }) {
     const doc = feed.ownerDocument;
     let current = null;  // { menu, binding, row }
     let press = null;  // a touch that may become (or became) a long press
@@ -57,17 +60,17 @@ export function createChatRowMenu({ feed, replies, cardOf, activityOf, actions =
 
     function cardItems(row, record) {
         const items = [];
-        if (shown(record.cardReplyEl)) items.push(['reply', tr('chat.reply.reply', 'Reply'), () => record.cardReplyEl.click()]);
+        // A work card draws no Reply of its own (its action row holds only commands): the menu is its Reply.
+        if (replies.cardRef(record)) items.push(['reply', tr('chat.reply.reply', 'Reply'), () => replies.start(replies.cardRef(record))]);
         const words = [record.titleEl?.textContent, fullText(record.activityEl)].map((text) => String(text || '').trim());
         if (words.some(Boolean)) items.push(['copy', tr('code.copy', 'Copy'),
             () => copyTextWithToast(words.filter(Boolean).join('\n')), true]);
         if (shown(record.resumeRunBtn)) items.push(['resume', tr('task.control.resume', 'Resume'), () => record.resumeRunBtn.click(), true]);
         if (shown(record.cancelRunBtn)) {
             // The card's own Stop… offers Pause on the same facts; its menu re-checks before any effect.
-            const activity = activityOf(record);
-            if (taskControlActions({ cancelPending: Boolean(record.cancelPendingPolicy),
-                budgetPaused: activity?.phase === 'budget_paused' }).includes(ACTION_PAUSE)) {
-                items.push(['pause', tr('task.control.pause', 'Pause'), () => pauseTaskAction(record.groupId), true]);
+            if (actionsOf(record).includes(ACTION_PAUSE)) {
+                items.push(['pause', tr('task.control.pause', 'Pause'),
+                    () => pauseTaskAction(record.groupId).finally(afterAction), true]);
             }
             items.push(['stop', record.cancelRunBtn.textContent, () => record.cancelRunBtn.click()]);
         }
