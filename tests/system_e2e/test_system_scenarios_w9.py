@@ -61,6 +61,7 @@ from datetime import datetime, timezone
 import pytest
 
 from devtools.benchmarks.common.server_runner import seed_owner_state
+from ouroboros.task_status import SETTLED_STATUSES
 from tests.candidate_checkout import SENTINEL_ROUTE, candidate_checkout
 from tests.system_e2e.harness import (
     LANE_MOCK,
@@ -294,9 +295,6 @@ def _fetch(url: str) -> bytes:
         return response.read()
 
 
-_TERMINAL_TASK_STATUSES = {"completed", "failed", "cancelled", "rejected_duplicate"}
-
-
 def _s37_dead_end(server, data_root: pathlib.Path, task_id: str, fixture: dict) -> str:
     """Why the adoption can no longer settle as S37 needs, or ``""`` while it still can.
 
@@ -316,8 +314,13 @@ def _s37_dead_end(server, data_root: pathlib.Path, task_id: str, fixture: dict) 
     unconfirmed = _jsonl(logs / "supervisor.jsonl", "body_adoption_unconfirmed")
     if unconfirmed:
         return "generation B left the adoption unconfirmed: " + json.dumps(unconfirmed[-1], ensure_ascii=False)
+    # A handoff closed without adopting (a refused restart abandons it) is final: no generation will
+    # verify the candidate, and the server keeps running on the old body.
+    outcomes = [str(row.get("outcome") or "") for row in _jsonl(logs / "supervisor.jsonl", "body_adoption_closed")]
+    if any(outcome != "adopted" for outcome in outcomes):
+        return "the adoption closed without adopting: " + json.dumps(outcomes, ensure_ascii=False)
     if (not _jsonl(logs / "supervisor.jsonl", "body_adoption_authorized")
-            and str(ArtifactOracle(data_root).task_result(task_id).get("status") or "") in _TERMINAL_TASK_STATUSES):
+            and str(ArtifactOracle(data_root).task_result(task_id).get("status") or "") in SETTLED_STATUSES):
         return "the task ended without authorizing an adoption"
     return ""
 
@@ -334,6 +337,49 @@ def _s37_await(found, dead_end, deadline: float) -> tuple:
         if time.monotonic() >= deadline:
             return [], f"nothing settled within the {S37_DEADLINE_SEC}s scenario budget"
         time.sleep(0.5)
+
+
+def _s37_settle(data_root: pathlib.Path, old_head: str, dead_end, deadline: float) -> tuple:
+    """``(closed, verified, why)``: the closed handoff, then generation B's restart verification.
+
+    The closure's outcome is read before the second wait: a close that did not adopt is a dead
+    end at once, never a wait for a verification that cannot come.
+    """
+    logs = pathlib.Path(data_root) / "logs"
+    closed, why = _s37_await(lambda: _jsonl(logs / "supervisor.jsonl", "body_adoption_closed"), dead_end, deadline)
+    why = why or dead_end()
+    if why:
+        return closed, [], why
+    verified, why = _s37_await(lambda: [row for row in _jsonl(logs / "events.jsonl", "restart_verify")
+                                        if row.get("expected_sha") != old_head], dead_end, deadline)
+    return closed, verified, why
+
+
+def test_adoption_wait_of_s37_ends_at_a_close_that_did_not_adopt(tmp_path):
+    """A refused restart closes the authorized handoff ``abandoned:…`` and leaves the server up: the
+    wait must end there, not run out the scenario budget waiting for a restart verification."""
+    server = type("Server", (), {"proc": type("Proc", (), {"poll": staticmethod(lambda: None)})()})()
+    logs = tmp_path / "logs"
+    logs.mkdir()
+
+    def journal(name: str, *rows: dict) -> None:
+        (logs / name).write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
+
+    def settle() -> tuple:
+        started = time.monotonic()
+        result = _s37_settle(tmp_path, "old", lambda: _s37_dead_end(server, tmp_path, "task", {}), started + 60)
+        return result, time.monotonic() - started
+
+    journal("supervisor.jsonl", {"type": "body_adoption_authorized"},
+            {"type": "body_adoption_closed", "outcome": "abandoned:restart_refused: the serving checkout moved"})
+    (closed, verified, why), elapsed = settle()
+    assert closed and verified == [] and "abandoned:restart_refused" in why and elapsed < 5, (why, elapsed)
+
+    journal("supervisor.jsonl", {"type": "body_adoption_authorized"},
+            {"type": "body_adoption_closed", "outcome": "adopted"})
+    journal("events.jsonl", {"type": "restart_verify", "ok": True, "expected_sha": "new", "observed_sha": "new"})
+    (closed, verified, why), elapsed = settle()
+    assert why == "" and [row["expected_sha"] for row in verified] == ["new"], (why, verified)
 
 
 def _s37_diagnostics(data_root: pathlib.Path, stub, fixture: dict) -> None:
@@ -372,21 +418,13 @@ def test_s37_restart_adopts_the_reviewed_candidate_commit_on_one_real_server(tmp
             started = time.monotonic()
             deadline = started + S37_DEADLINE_SEC
             task_id = submit_running(server, "Write the S37 note, land it reviewed, then adopt it with a restart.")
-            supervisor_log, events_log = data_root / "logs" / "supervisor.jsonl", data_root / "logs" / "events.jsonl"
-
-            def dead_end() -> str:
-                return _s37_dead_end(server, data_root, task_id, fixture)
-
-            closed, why = _s37_await(lambda: _jsonl(supervisor_log, "body_adoption_closed"), dead_end, deadline)
-            closed_after, verified = time.monotonic() - started, []
-            if closed:
-                verified, why = _s37_await(lambda: [row for row in _jsonl(events_log, "restart_verify")
-                                                    if row.get("expected_sha") != old_head], dead_end, deadline)
+            events_log = data_root / "logs" / "events.jsonl"
+            closed, verified, why = _s37_settle(
+                data_root, old_head, lambda: _s37_dead_end(server, data_root, task_id, fixture), deadline)
             if why:
                 _s37_diagnostics(data_root, stub, fixture)
                 pytest.fail(f"S37 {'restart verification' if closed else 'adoption'}: {why}", pytrace=False)
-            print(f"S37 adoption closed {closed_after:.0f}s and verified {time.monotonic() - started:.0f}s "
-                  f"after submit (budget {S37_DEADLINE_SEC}s)")
+            print(f"S37 adoption verified {time.monotonic() - started:.0f}s after submit (budget {S37_DEADLINE_SEC}s)")
 
             # The adoption of exactly the gate-recorded commit, armed by generation A's own stop
             # evidence and switched before generation B's imports, in the same server process.
