@@ -45,6 +45,17 @@ class ChatHistoryQuiz(TypedDict, total=False):
     owner_wait_resume_reason: str
 
 
+class ChatHistoryCard(TypedDict):
+    """The living card of a ``msg_type: "card"`` row (its plain ``fallback_text`` is the row's ``text``):
+    its identity as first published. The current body, revision and presses are read from
+    ``GET /api/cards/{card_id}``; a ``card_state`` frame says when they changed."""
+
+    card_id: str
+    kind: Literal["components", "widget", "app"]
+    title: str
+    revision: int
+
+
 class ChatHistoryMessage(TypedDict, total=False):
     """One ``GET /api/chat/history`` row. Every row has the six required keys; a stored row also
     has ``history_id`` and ``history_position``. Live frames call ``text`` ``content``.
@@ -81,7 +92,7 @@ class ChatHistoryMessage(TypedDict, total=False):
     chat_annotation: Dict[str, Any]  # the routing outcome shown on an owner message
     origin_id: str
     origin_projected: bool  # a Project's start message rebuilt from its binding's own copy
-    msg_type: Literal["document", "photo", "video", "links", "quiz"]
+    msg_type: Literal["document", "photo", "video", "links", "quiz", "card"]
     filename: str
     mime: str
     download_url: str
@@ -91,6 +102,7 @@ class ChatHistoryMessage(TypedDict, total=False):
     actions: List[Dict[str, str]]  # LinkAction rows: {label, url}
     title: str
     quiz: ChatHistoryQuiz
+    card: ChatHistoryCard
     summary_kind: str
     historical_terminal: Dict[str, Any]
     model_waits: Dict[str, Any]  # system_type task_model_wait: wait_id -> the wait's latest revision
@@ -196,6 +208,6 @@ class ChatHistoryResponse(TypedDict, total=False):
 
 
 __all__ = [
-    "ChatHistoryPosition", "ChatHistoryQuiz", "ChatHistoryMessage",
+    "ChatHistoryPosition", "ChatHistoryQuiz", "ChatHistoryCard", "ChatHistoryMessage",
     "ChatHistoryCoverage", "ChatHistoryWindow", "ChatHistoryAnchor", "ChatHistoryResponse",
 ]

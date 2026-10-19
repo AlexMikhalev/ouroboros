@@ -398,8 +398,10 @@ export function createUnconfirmedSends({ send, root, onDomWrite, showToast, comp
             else unreadable = true;
         }
     } catch { unreadable = true; }
+    // The tab's own storage, not an action of the owner's that failed: said, but not felt (toast.js, haptics.js).
     if (unreadable) showToast(tr('chat.send_unconfirmed_unread',
-        'This tab could not read an unsaved message it kept for a reload, so it cannot be offered again.'), 'error');
+        'This tab could not read an unsaved message it kept for a reload, so it cannot be offered again.'), 'error',
+        { haptic: false });
 
     function persist() {
         if (!storage || !storageKey) return;
@@ -409,7 +411,8 @@ export function createUnconfirmedSends({ send, root, onDomWrite, showToast, comp
                 .map(({ frame, views, ts }) => ({ frame: keptFrame(frame), views, ts }))));
         } catch {
             showToast(tr('chat.send_unconfirmed_unkept',
-                'This tab could not keep the unsaved message for a reload. Send again still works until then.'), 'error');
+                'This tab could not keep the unsaved message for a reload. Send again still works until then.'), 'error',
+                { haptic: false });
         }
     }
 

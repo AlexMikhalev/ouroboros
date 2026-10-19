@@ -537,7 +537,9 @@ def test_uninstall_handler_waits_for_the_queue_lock_off_the_event_loop(monkeypat
         )
         await asyncio.get_running_loop().run_in_executor(None, entered.wait, 5)
         assert entered.is_set(), "the handler never reached the schedule resync"
-        other = await asyncio.wait_for(api_widgets(None), 5)
+        # GET /api/widgets reads the owner's kept cards from the request's data root.
+        widgets_request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(drive_root=tmp_path)))
+        other = await asyncio.wait_for(api_widgets(widgets_request), 5)
         still_held = holding["value"]
         release.set()
         response = await uninstall

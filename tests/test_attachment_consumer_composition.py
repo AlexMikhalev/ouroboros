@@ -3,7 +3,7 @@
 Three paths the first file does not walk, each through the real candidate server
 (CandidateCheckout via ``direct_server_with_data``) with synthetic bytes, Chromium and WebKit:
 
-* a phone's composer by touch: the paperclip opens the file chooser, a finger removes a staged
+* a phone's composer by touch: "+" → Attach file opens the file chooser, a finger removes a staged
   file, an IME's Enter never sends, a failed upload is retried and cleaned up, thumbnails are released;
 * a Project room with a mixed message (photos, a playable video, audio, a document), live and in
   replay (reload, a new tab, a server restart), then at phone width;
@@ -182,9 +182,10 @@ def test_phone_composer_touch_removal_ime_failed_upload_and_cleanup(direct_serve
             _ready(page, url)
             badges = page.locator("#chat-attachment-preview .attach-badge")
 
-            # The paperclip, tapped, opens the chooser; the chosen files are staged as badges.
+            # "+", tapped, opens the composer's menu; its Attach file opens the chooser; the chosen files are staged.
+            page.locator("#chat-plus").tap()
             with page.expect_file_chooser() as chooser:
-                page.locator("#chat-attach").tap()
+                page.locator(".chat-plus-menu [data-plus-item='attach']").tap()
             chooser.value.set_files(_phone_files())
             page.wait_for_function("() => document.querySelectorAll('#chat-attachment-preview .attach-badge').length === 6")
             geometry = page.evaluate(_COMPOSER_GEOMETRY)

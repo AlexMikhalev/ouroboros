@@ -84,7 +84,7 @@ EXECUTION_LIMIT_RAILS = frozenset({"round_limit", "finalization_grace"})
 # The work's own hard bounds (its deadline, its money): a new task id never
 # extends them, so a task they ended is not offered Continue.
 HARD_LIMIT_REASON_CODES = frozenset({"deadline", "deadline_local", "budget_exhausted"})
-OWNER_SOURCE_KINDS = frozenset({"owner_text", "quiz_answer", "quiz_closed"})
+OWNER_SOURCE_KINDS = frozenset({"owner_text", "quiz_answer", "quiz_closed", "card_input"})
 # The retained owner corpus (``review_evidence.task_inputs``) labels each row
 # by its recorder's typed ``source`` (``loop_messages._record_owner_directive``):
 # owner-authored rows (the successor's seeding set), the run's first text (a

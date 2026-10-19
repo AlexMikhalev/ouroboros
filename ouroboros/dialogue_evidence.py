@@ -164,11 +164,12 @@ def read_room_source(drive_root: Any, chat_id: int, *, task_id: str = "",
                         if row.get("direction") == "in" and row.get("client_message_id")}
     if task_id:
         from ouroboros.owner_mailbox import (
-            KIND_OWNER_TEXT, KIND_QUIZ_ANSWER, KIND_QUIZ_CLOSED, KIND_TASK_MESSAGE,
+            KIND_CARD_INPUT, KIND_OWNER_TEXT, KIND_QUIZ_ANSWER, KIND_QUIZ_CLOSED, KIND_TASK_MESSAGE,
             deliver_task_message, drain_owner_entries,
         )
         entries = drain_owner_entries(pathlib.Path(mailbox_root or root), task_id, include_acknowledged=True,
-                                      kinds={KIND_OWNER_TEXT, KIND_QUIZ_ANSWER, KIND_QUIZ_CLOSED, KIND_TASK_MESSAGE}, _read_status=mailbox_coverage)
+                                      kinds={KIND_OWNER_TEXT, KIND_QUIZ_ANSWER, KIND_QUIZ_CLOSED, KIND_CARD_INPUT, KIND_TASK_MESSAGE},
+                                      _read_status=mailbox_coverage)
         for i, entry in enumerate(entries, 1):
             row = {**entry, "task_id": task_id}
             if entry.get("kind") in {KIND_QUIZ_ANSWER, KIND_QUIZ_CLOSED}:

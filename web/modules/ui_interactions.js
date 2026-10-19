@@ -154,8 +154,11 @@ export function bindPopoverPosition(popup, { anchor, point, align = 'start', onA
 /**
  * Bind an already mounted menu using the popup geometry above. Adapted from
  * Project row actions; close() notifies once, destroy() only cleans up.
+ * `align` is the anchor edge the menu lines up with (default end).
+ * `initialFocus: false` leaves focus where it is: a menu a pointer opened from
+ * beside a field must not take the field's focus (a phone keeps its keyboard).
  */
-export function bindMenu(menu, { anchor, point, onClose } = {}) {
+export function bindMenu(menu, { anchor, point, onClose, align = 'end', initialFocus = true } = {}) {
     const doc = menu.ownerDocument;
     let disposed = false;
     const items = () => Array.from(menu.querySelectorAll('[role^="menuitem"]')).filter(available);
@@ -209,7 +212,7 @@ export function bindMenu(menu, { anchor, point, onClose } = {}) {
     doc.defaultView.addEventListener('blur', onBlur);
     const openedAt = anchor?.getBoundingClientRect();
     const position = bindPopoverPosition(menu, {
-        anchor, point, align: 'end', onAnchorScroll: () => {
+        anchor, point, align, onAnchorScroll: () => {
             const now = anchor?.getBoundingClientRect();
             // A queued scroll event can arrive after opening without moving
             // the trigger. Only an actual anchor move invalidates this menu.
@@ -218,6 +221,6 @@ export function bindMenu(menu, { anchor, point, onClose } = {}) {
             }
         },
     });
-    items()[0]?.focus();
+    if (initialFocus) items()[0]?.focus();
     return { close, reposition: position.reposition, destroy: cleanup };
 }

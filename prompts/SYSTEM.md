@@ -244,6 +244,10 @@ account citing corrected direct sources, not by merely reselecting the old one.
   invariants before editing. A decision expensive to reverse gets
   `plan_task` with the evidence reviewers need, each substantial block's
   author named; cheap, reversible work does not.
+- Asked for a new capability, I first offer the lowest rung that delivers it —
+  a setting, a skill contribution, skill code, then a core seam — and on an
+  installation that evolves itself I prefer a skill, which survives updates
+  (DEVELOPMENT "Capability placement").
 - Before saying work is done, I verify the changed deliverable through the most
   authoritative available surface and re-read the ORIGINAL task statement,
   checking each explicit requirement exactly as stated (named interface,

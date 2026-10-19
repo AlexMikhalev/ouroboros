@@ -721,19 +721,19 @@
   },
   {
     "id": "test_swarm_and_context_dom_present",
-    "path": "web/modules/chat.js",
+    "path": "web/modules/composer.js",
     "kind": "contains",
     "value": "id=\"chat-swarm\""
   },
   {
     "id": "test_swarm_and_context_dom_present",
-    "path": "web/modules/chat.js",
+    "path": "web/modules/composer.js",
     "kind": "contains",
     "value": "id=\"chat-context-mode\""
   },
   {
     "id": "test_swarm_and_context_dom_present",
-    "path": "web/modules/chat.js",
+    "path": "web/modules/composer.js",
     "kind": "contains",
     "value": "class=\"chat-composer-pills\""
   },
@@ -751,7 +751,7 @@
   },
   {
     "id": "test_swarm_and_context_dom_present",
-    "path": "web/modules/chat.js",
+    "path": "web/modules/composer.js",
     "kind": "contains",
     "value": "class=\"chat-send-group\""
   },
@@ -775,37 +775,37 @@
   },
   {
     "id": "test_swarm_send_listener_uses_arrow_function",
-    "path": "web/modules/chat.js",
+    "path": "web/modules/composer.js",
     "kind": "contains",
     "value": "sendMessage(swarmArmed())"
   },
   {
     "id": "test_swarm_send_listener_uses_arrow_function",
-    "path": "web/modules/chat.js",
+    "path": "web/modules/composer.js",
     "kind": "contains",
     "value": "sendBtn.addEventListener('click', () => sendMessage(swarmArmed()))"
   },
   {
     "id": "test_swarm_default_off",
-    "path": "web/modules/chat.js",
+    "path": "web/modules/composer.js",
     "kind": "contains",
     "value": "data-armed=\"false\""
   },
   {
     "id": "test_swarm_functions_exist",
-    "path": "web/modules/chat.js",
+    "path": "web/modules/composer.js",
     "kind": "contains",
     "value": "function swarmArmed()"
   },
   {
     "id": "test_swarm_functions_exist",
-    "path": "web/modules/chat.js",
+    "path": "web/modules/composer.js",
     "kind": "contains",
     "value": "function setSwarm(armed)"
   },
   {
     "id": "test_swarm_one_shot_disarms_on_send",
-    "path": "web/modules/chat.js",
+    "path": "web/modules/composer.js",
     "kind": "contains",
     "value": "if (planMode) setSwarm(false);"
   },
@@ -865,7 +865,7 @@
   },
   {
     "id": "test_context_segment_click_handler",
-    "path": "web/modules/chat.js",
+    "path": "web/modules/composer.js",
     "kind": "contains",
     "value": "data-context-mode"
   },
@@ -937,25 +937,25 @@
   },
   {
     "id": "test_chat_input_disables_autocorrect",
-    "path": "web/modules/chat.js",
+    "path": "web/modules/composer.js",
     "kind": "contains",
     "value": "id=\"chat-input\""
   },
   {
     "id": "test_chat_input_disables_autocorrect",
-    "path": "web/modules/chat.js",
+    "path": "web/modules/composer.js",
     "kind": "contains",
     "value": "autocorrect=\"off\""
   },
   {
     "id": "test_chat_input_disables_autocorrect",
-    "path": "web/modules/chat.js",
+    "path": "web/modules/composer.js",
     "kind": "contains",
     "value": "autocapitalize=\"off\""
   },
   {
     "id": "test_chat_input_disables_autocorrect",
-    "path": "web/modules/chat.js",
+    "path": "web/modules/composer.js",
     "kind": "contains",
     "value": "spellcheck=\"false\""
   },
@@ -991,13 +991,13 @@
   },
   {
     "id": "test_chat_composer_uses_two_row_toolbar",
-    "path": "web/modules/chat.js",
+    "path": "web/modules/composer.js",
     "kind": "contains",
     "value": "class=\"chat-text-row\""
   },
   {
     "id": "test_chat_composer_uses_two_row_toolbar",
-    "path": "web/modules/chat.js",
+    "path": "web/modules/composer.js",
     "kind": "contains",
     "value": "class=\"chat-toolbar-row\""
   },

@@ -261,6 +261,16 @@
  */
 
 /**
+ * The living card of a `msg_type: "card"` history row (its plain `fallback_text` is the row's `text`): its
+ * identity as first published. Read the current body, revision and presses from `GET /api/cards/{card_id}`.
+ * @typedef {Object} ChatHistoryCard
+ * @property {string} card_id
+ * @property {'components'|'widget'|'app'} kind
+ * @property {string} title
+ * @property {number} revision
+ */
+
+/**
  * One `GET /api/chat/history` row (live frames call `text` `content`). A row may also carry the
  * task-progress and outcome fields of a live `chat` frame (`ChatOutbound`). Replay-evidence rows
  * (`quiz_answer`, `quiz_closed`, `task_evidence`, or `summary_kind` + `historical_terminal`) are never shown.
@@ -290,7 +300,7 @@
  * @property {Object=} chat_annotation
  * @property {string=} origin_id
  * @property {boolean=} origin_projected
- * @property {('document'|'photo'|'video'|'links'|'quiz')=} msg_type
+ * @property {('document'|'photo'|'video'|'links'|'quiz'|'card')=} msg_type
  * @property {string=} filename
  * @property {string=} mime
  * @property {string=} download_url
@@ -300,6 +310,7 @@
  * @property {Object[]=} actions  // LinkAction rows {label, url}
  * @property {string=} title
  * @property {ChatHistoryQuiz=} quiz
+ * @property {ChatHistoryCard=} card
  * @property {string=} summary_kind
  * @property {Object=} historical_terminal
  * @property {Object=} model_waits
@@ -690,4 +701,92 @@
  * @property {string[]=} held_siblings
  * @property {string[]=} rebound_held_siblings
  * @property {string=} released_hold
+ */
+
+/* Living-message cards (`ouroboros.gateway.card_contracts`): the `card` / `card_state` frames, the read API
+ * and the pin receipt. Presses go to `POST /api/decisions` with `card:{card_id}:{action_id}`. */
+
+/**
+ * One recorded owner press: `delivery` is `delivered` (the authoring task's mailbox), `forwarded` (the owner's
+ * message after that task ended) or `owed`; `request_id` retries an owed press, after a reload too.
+ * @typedef {Object} CardSubmissionSummary
+ * @property {string} action_id
+ * @property {string} label
+ * @property {string} at
+ * @property {'owed'|'delivered'|'forwarded'} delivery
+ * @property {string} request_id
+ */
+
+/**
+ * A living card in Ouroboros's message; its history row is `msg_type: "card"` with the same `card`.
+ * @typedef {Object} CardOutbound
+ * @property {string=} row_address
+ * @property {Object=} reply_to
+ * @property {Object=} relay
+ * @property {string=} reply_to_relay
+ * @property {string=} kind  // ChatReferenceFields' row kind; the card's own kind is card.kind
+ * @property {'card'} type
+ * @property {'assistant'} role
+ * @property {ChatHistoryCard} card
+ * @property {string} fallback_text
+ * @property {string} ts
+ * @property {number=} chat_id
+ * @property {string=} task_id
+ * @property {boolean=} project_thread
+ */
+
+/**
+ * A shown card changed (a new body: `card.revision` grew; or a recorded press): read `GET /api/cards/{card_id}`.
+ * @typedef {Object} CardStateOutbound
+ * @property {'card_state'} type
+ * @property {ChatHistoryCard} card
+ * @property {CardSubmissionSummary[]} submissions_summary
+ * @property {number} submissions_dropped
+ * @property {string} ts
+ * @property {number=} chat_id
+ */
+
+/**
+ * @typedef {Object} CardWidgetRef
+ * @property {string} skill
+ * @property {string} tab_id
+ * @property {Object=} input
+ */
+
+/**
+ * `url` serves the app's HTML as `text/plain` (nosniff, no-store): build a sandboxed `srcdoc`, never navigate to it.
+ * @typedef {Object} CardAppRef
+ * @property {string} sha256
+ * @property {number} size
+ * @property {string} url
+ */
+
+/**
+ * `GET /api/cards/{card_id}`: exactly one of `components` (with optional `data`), `widget` or `app`.
+ * @typedef {Object} CardResponse
+ * @property {string} card_id
+ * @property {'components'|'widget'|'app'} kind
+ * @property {string} title
+ * @property {string} fallback_text
+ * @property {number} chat_id
+ * @property {string} task_id
+ * @property {number} revision
+ * @property {string} created_at
+ * @property {string} updated_at
+ * @property {boolean} pinned
+ * @property {Object[]=} components
+ * @property {Object=} data
+ * @property {CardWidgetRef=} widget
+ * @property {CardAppRef=} app
+ * @property {CardSubmissionSummary[]} submissions_summary
+ * @property {number} submissions_dropped
+ */
+
+/**
+ * `POST`/`DELETE /api/cards/{card_id}/pin`.
+ * @typedef {Object} CardPinResponse
+ * @property {boolean} ok
+ * @property {string} card_id
+ * @property {boolean} pinned
+ * @property {string=} pinned_at
  */

@@ -397,6 +397,8 @@ export async function confirmAndSendPanic(deps) {
     });
     if (shouldFirePanic(decision)) {
         deps.ws.send({ type: 'command', cmd: '/panic' });
+        // Only after the stop is on its way: the page's own work (skills' page modules) stops with it.
+        globalThis.dispatchEvent?.(new CustomEvent('ouro:panic'));
         return true;
     }
     return false;
