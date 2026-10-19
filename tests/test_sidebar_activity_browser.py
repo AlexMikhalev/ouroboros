@@ -201,7 +201,8 @@ def test_sidebar_activity_census_and_navigation(subscription_ui, width, theme, r
     assert page.locator(WORK).get_attribute('data-unread') == ''
     assert page.locator('[data-project-id="p-queue"]').get_attribute('data-unread') is None
     assert page.locator('#nav-projects-list .nav-unread-dot, #nav-projects-list .nav-activity-marker').count() == 0
-    assert page.locator('#nav-projects-count').inner_text() == '1'
+    # The Projects number counts unread messages (owner Q1 = B): the working room's four, not one room.
+    assert page.locator('#nav-projects-count').inner_text() == '4'
     assert page.locator(WORK).get_attribute('aria-label') == 'Working room · Working · new messages'
     # Ink: amber is only what waits for the owner and crimson only new messages, so this wait and the queue take the
     # row's own foreground: the marks never out-shout the name, and every name has one ink, read or not.
@@ -213,22 +214,32 @@ def test_sidebar_activity_census_and_navigation(subscription_ui, width, theme, r
         assert dot_color(page, project) != token_color(page, project, '--project')
     assert marker('p-queue').evaluate('el => getComputedStyle(el).opacity') == '0.4'
     assert marker('p-work').evaluate('el => getComputedStyle(el).opacity') == '1'
-    header = page.locator('#nav-projects-toggle .status-mark')
-    geometry = header.evaluate("""el => {
-        const a=el.getBoundingClientRect(), b=el.previousElementSibling.getBoundingClientRect();
-        return {gap:a.left-b.right, top:a.top, labelTop:b.top, height:b.height};}""")
-    assert 0 < geometry['gap'] <= 10, geometry
-    assert geometry['labelTop'] <= geometry['top'] <= geometry['labelTop'] + geometry['height']
+    header = page.locator('.nav-projects-facts .status-mark')
+    # The header's mark stands in the rows' mark column, its count just before it, its chevron after its word.
+    geometry = page.evaluate("""() => {
+        const box = (el) => el.getBoundingClientRect();
+        const mark = box(document.querySelector('.nav-projects-facts .status-mark'));
+        const row = box(document.querySelector('[data-project-id="p-work"] .status-mark'));
+        const count = box(document.getElementById('nav-projects-count'));
+        const word = box(document.querySelector('#nav-projects-toggle .nav-row-label'));
+        const chevron = box(document.querySelector('#nav-projects-toggle .nav-chevron'));
+        const head = box(document.getElementById('nav-projects-toggle'));
+        return {mark: [mark.left, mark.right], row: [row.left, row.right], gap: mark.left - count.right,
+                chevron: chevron.left - word.right, middle: (mark.top + mark.bottom) / 2 - (head.top + head.bottom) / 2};
+    }""")
+    assert geometry['mark'] == pytest.approx(geometry['row'], abs=0.5), geometry
+    assert 8 <= geometry['gap'] <= 16 and 0 <= geometry['chevron'] <= 12, geometry
+    assert abs(geometry['middle']) <= 1, geometry
     # The header's one mark: the strongest Project work in the toggle's ink (Main's own work never moves it).
     assert (header.get_attribute('data-shape'), header.get_attribute('data-hue')) == ('moving', 'ink')
     capture('states')
 
-    # The header's mark is beside Projects in both states; collapse keeps only pinned rows; activity sorts nothing.
+    # The header's mark keeps its column in both states; collapse keeps only pinned rows; activity sorts nothing.
     order = page.locator('.nav-project-row').evaluate_all('els => els.map(el=>el.dataset.projectId)')
     page.locator('#nav-projects-toggle').click()
     assert page.locator('#nav-projects-list').is_hidden(), 'nothing pinned: no row stays, work or unread alike'
     assert page.locator('#nav-projects-show-all').count() == 0
-    assert header.is_visible() and page.locator('#nav-projects-count').inner_text() == '1'
+    assert header.is_visible() and page.locator('#nav-projects-count').inner_text() == '4'
     capture('collapsed')
     page.locator('#nav-projects-toggle').click()
 
@@ -362,8 +373,8 @@ def test_sidebar_activity_census_and_navigation(subscription_ui, width, theme, r
     # At rest, a room with new messages is one crimson dot; a read one draws nothing, nor does the header.
     observe('p-work', 'dot', 'unread')
     observe('p-queue', 'none')
-    assert page.locator('#nav-projects-toggle .status-mark').is_hidden()
-    assert page.locator('#nav-projects-count').inner_text() == '1'
+    assert page.locator('.nav-projects-facts .status-mark').is_hidden()
+    assert page.locator('#nav-projects-count').inner_text() == '4'
     capture('complete-empty')
 
     # Merely observing state has not marked any project read. Keyboard opening

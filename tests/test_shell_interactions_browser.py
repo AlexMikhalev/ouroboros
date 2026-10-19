@@ -95,7 +95,7 @@ def open_reader(page):
 
 
 def sync_project_rows(page):
-    """The next /api/state snapshot changes one row (Project 5 has a new visible message). The 20 s poll would
+    """The next /api/state snapshot changes one row (Project 5 has three new messages). The 20 s poll would
     deliver it; the projects_changed frame (a backend-created project) asks for the same snapshot now."""
     rows = [dict(p) for p in PROJECTS]
     rows[5]['visible_revision'] = 3
@@ -103,7 +103,7 @@ def sync_project_rows(page):
              'project_chat_ids': [p['chat_id'] for p in rows]}
     page.route('**/api/state', lambda route: route.fulfill(json=state))
     page.evaluate("window.__ouroWs.emit('projects_changed', {})")
-    page.wait_for_function("() => document.querySelector('#nav-projects-count')?.textContent === '1'")
+    page.wait_for_function("() => document.querySelector('#nav-projects-count')?.textContent === '3'")
     page.wait_for_timeout(300)
 
 
@@ -534,7 +534,7 @@ SIDEBAR_FACTS = """() => {
     const rows = [...side.querySelectorAll('#nav-projects-list > .nav-project-item')].filter((e) => !e.hidden);
     const zone = document.getElementById('nav-projects').getBoundingClientRect();
     const files = side.querySelector('[data-nav-page="files"]').getBoundingClientRect();
-    const mark = document.querySelector('#nav-projects-toggle .status-mark');
+    const mark = document.querySelector('.nav-projects-facts .status-mark');
     return {rows: rows.map((e) => e.querySelector('[data-project-id]').dataset.projectId),
             gapToTools: Math.round(files.top - zone.bottom), filesTop: Math.round(files.top),
             sidebarBottom: Math.round(side.getBoundingClientRect().bottom),
@@ -861,7 +861,7 @@ def test_collapsed_projects_ignore_the_census_and_the_open_one(shell_ui, tmp_pat
     page = seed_page(shell_ui, 1108, 680)
     current = {'state': live_state([PROJECTS[3]['id']])}
     facts = {'engine': shell_ui['engine']}
-    header = "() => document.querySelector('#nav-projects-toggle .status-mark').dataset.shape"
+    header = "() => document.querySelector('.nav-projects-facts .status-mark').dataset.shape"
     try:
         page.route('**/api/state', lambda route: route.fulfill(json=current['state']))
         boot(page, shell_ui)

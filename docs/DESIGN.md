@@ -678,9 +678,12 @@ In a Project row the mark owns one reserved trailing column, so it sits at one x
 across rows whatever the name length and, with a fine pointer, while the ⋯ is
 hovered, focused or open (on touch a focused ⋯ brings back its own column);
 Main's row puts its mark at the same x, its count just before it. A deleting row draws only `Deleting…`, its
-census fact kept in the accessible name. The Projects header carries one mark beside
-its label in both states: amber when a Project waits for the owner, else the
-strongest work among the Projects in ink. An activity repaint keeps the row and menu
+census fact kept in the accessible name. The Projects header carries one mark in the
+same column in both states, its count just before it as Main's is: amber when a
+Project waits for the owner, else the strongest work among the Projects in ink. Its
+chevron follows its word, and + takes the ⋯ column; on touch, where rows have no ⋯
+column, + follows the chevron instead, so numbers, marks and actions each keep one
+column (owner 19.10, Q1 = B). An activity repaint keeps the row and menu
 nodes. A mark never carries a counter, percent or text animation.
 
 Enforcement: `web/tests/status_marks.test.js` pins the mapping and that only
@@ -691,17 +694,21 @@ under one of the four categories above and fails on a new one;
 
 ### Unread
 
-New messages are crimson, and only where the owner reads: a Project row's mark
-takes the crimson tint (its work's shape, or a dot where nothing works), the
-Projects header counts unread Projects in a crimson pill, and ☰ carries a crimson
-dot while Main or a Project hidden in the drawer has some. Project names keep one
-ink, read or not. Main counts the messages that arrive while another place is
-shown, as a crimson number on its row; showing Main clears it.
+New messages are crimson, and only where the owner reads. The two sidebar numbers
+count the same thing, the standalone messages not read yet (below): Main's on its
+row, shown while another place is, and the Projects header's, summed over its rows,
+each a crimson pill in one column just before the marks (owner 19.10, Q1 = B). A
+Project row's mark takes the crimson tint (its work's shape, or a dot where nothing
+works), and ☰ carries a crimson dot while Main or a Project hidden in the drawer has
+some. Project names keep one ink, read or not. Main's count is kept as a Project's
+is, its room's revision against a shared read cursor read the same way (below), so
+every window and device shows the same number; a cursor no client has set yet starts
+at what Main holds.
 
-For a Project, the crimson mark and the Projects count mean *there is a new
-message in this Project's conversation that you have not read*, never *something
-moved*; work marks, notifications, toasts, task controls and Stop/Panic keep their
-own meaning, unaffected by it.
+For Main and a Project, the crimson number and mark mean *there is a new message in
+this conversation that you have not read*, never *something moved*; work marks,
+notifications, toasts, task controls and Stop/Panic keep their own meaning,
+unaffected by it.
 
 Unread revisions follow successfully stored conversation rows: a failed write
 keeps the existing live-delivery behavior but cannot advance saved history's

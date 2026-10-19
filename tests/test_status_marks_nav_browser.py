@@ -44,10 +44,11 @@ def expect():
     return pytest.importorskip('playwright.sync_api').expect
 
 
-def snapshot(work=(), asking=(), unread=(), pins=(), main=''):
-    """An /api/state body: work running in the ``work`` Projects, a question waiting for the owner in ``asking``, new
-    messages in ``unread``, ``pins`` pinned, Main's own work in ``main`` (a census phase); the work fields are the
-    server's own projection of those rows."""
+def snapshot(work=(), asking=(), unread=(), pins=(), main='', main_revision=None):
+    """An /api/state body: work running in the ``work`` Projects, a question waiting for the owner in ``asking``, three
+    new messages in each ``unread`` Project, ``pins`` pinned, Main's own work in ``main`` (a census phase) and Main's
+    room revision ``main_revision`` (its read cursor starts at 0, see ``open_app``); the work fields are the server's
+    own projection of those rows."""
     rows = [dict(activity_id=f'work-{pid}', root_task_id=f'work-{pid}', project_id=pid, chat_id=CHATS[pid],
                  kind='managed_task', phase='working') for pid in work]
     rows += [dict(activity_id=f'ask-{pid}', root_task_id=f'ask-{pid}', project_id=pid, chat_id=CHATS[pid],
@@ -56,14 +57,25 @@ def snapshot(work=(), asking=(), unread=(), pins=(), main=''):
     if main:
         rows.append(dict(activity_id='main-work', root_task_id='main-work', chat_id=1, kind='direct_chat', phase=main))
     projects = [dict(p, pinned=p['id'] in pins, visible_revision=3 if p['id'] in unread else 0) for p in PROJECTS]
+    main_unread = {} if main_revision is None else {'main_visible_revision': main_revision}
     return {'supervisor_ready': True, 'projects': projects, 'project_chat_ids': list(CHATS.values()),
-            'active_chat_activities_complete': True, 'active_chat_activities': rows, **work_fields(rows)}
+            'active_chat_activities_complete': True, 'active_chat_activities': rows, **work_fields(rows), **main_unread}
 
 
 def open_app(ui, width, height, body, touch=None, init=()):
     page = seed_page(ui, width, height, touch=touch)
     current = {'state': body}
     page.route('**/api/state', lambda route: route.fulfill(json=current['state']))
+    # The shared read cursors, as the server keeps them: Main's starts read at 0, a write is clamped and monotonic.
+    cursors = {'main_seen_revision': 0}
+
+    def preferences(route):
+        asked = route.request.post_data_json if route.request.method == 'POST' else None
+        if isinstance((asked or {}).get('main_seen_revision'), int):
+            held = int(current['state'].get('main_visible_revision') or 0)
+            cursors['main_seen_revision'] = max(cursors['main_seen_revision'], min(asked['main_seen_revision'], held))
+        route.fulfill(json={'project_seen_revision': {}, **cursors})
+    page.route('**/api/ui/preferences', preferences)
     for script in init:
         page.add_init_script(script)
     page.goto(ui['url'] + '/')
@@ -124,11 +136,8 @@ def test_the_menu_button_says_what_waits_behind_it_in_both_places(nav_ui, tmp_pa
         page.locator('#page-files.active').wait_for()
         settle(page)
         facts['header_owner'] = toggle(header)
-        # Main's own new messages, read away from Main, light the ☰ too; showing Main reads them.
-        sync(snapshot())
-        page.evaluate("window.__ouroWs.emit('chat', {role: 'assistant', content: 'A reply while you were away',"
-                      " chat_id: 1, ts: new Date().toISOString()})")
-        settle(page)
+        # Main's own new messages (its room revision past the shared cursor), away from Main, light the ☰ too.
+        sync(snapshot(main_revision=1))
         facts['main_unread'] = toggle(header)
         facts['main_badge'] = page.locator('[data-nav-page="chat"] .unread-badge').count()
         setup_browser.capture(page, f'nav-menu-button-{ui["engine"]}')
@@ -200,10 +209,8 @@ def test_mains_unread_count_sits_beside_its_mark_never_on_it(nav_ui, tmp_path):
                 page.wait_for_function(drawer)
             page.locator('#primary-sidebar [data-nav-page="files"]').click()
             page.locator('#page-files.active').wait_for()
-            # Away from Main its new messages count: a hundred and twenty read 99+.
-            page.evaluate("for (let i = 0; i < 120; i += 1) window.__ouroWs.emit('chat', {role: 'assistant',"
-                          " content: `reply ${i}`, chat_id: 1, ts: new Date().toISOString()})")
-            settle(page)
+            # Away from Main its unread messages count: a hundred and twenty read 99+.
+            sync(snapshot(main='thinking', main_revision=120))
             if touch:
                 page.locator('#page-files [data-mobile-nav-toggle]').click()
                 page.wait_for_function(drawer)
@@ -227,6 +234,56 @@ def test_mains_unread_count_sits_beside_its_mark_never_on_it(nav_ui, tmp_path):
         assert seen['badge']['right'] <= seen['mark']['left'] - 2, (case, facts)
         assert rest['mark'] is None, facts
         assert all(abs(rest['badge'][side] - seen['badge'][side]) <= 0.5 for side in seen['badge']), (case, facts)
+
+
+COLUMNS = """work => {
+    const box = (selector) => { const el = document.querySelector(selector); const r = el.getBoundingClientRect();
+        return {left: r.left, right: r.right, text: el.textContent.trim()}; };
+    return {main_count: box('[data-nav-page="chat"] .unread-badge'), main_mark: box('[data-nav-page="chat"] .status-mark'),
+            count: box('#nav-projects-count'), header_mark: box('.nav-projects-facts .status-mark'),
+            row_mark: box(`[data-project-id="${work}"] .status-mark`), kebab: box(`[data-project-id="${work}"] ~ .nav-project-kebab`),
+            add: box('#nav-projects-add'), chevron: box('#nav-projects-toggle .nav-chevron')};
+}"""
+
+
+def test_main_and_the_projects_header_share_the_rows_columns(nav_ui, tmp_path):
+    """Both numbers count unread messages (owner 19.10, Q1 = B): Main's its room's, the Projects' the rows' sum. Each
+    stands just before one mark column shared with the rows; + takes the ⋯ column with a mouse and follows the chevron
+    on touch, where rows have no ⋯ column."""
+    ui = nav_ui
+    facts = {'engine': ui['engine']}
+    work, asking, unread = PROJECTS[2]['id'], PROJECTS[6]['id'], [PROJECTS[1]['id'], PROJECTS[4]['id']]
+    for case, width, touch in (('mouse', 1280, False), ('touch', 390, True)):
+        page, sync = open_app(ui, width, 844, snapshot(work=[work], asking=[asking], main='thinking'), touch=touch)
+        try:
+            drawer = "() => window.__ouroLayers.top() === 'drawer'"
+            if touch:
+                page.locator('#page-chat [data-mobile-nav-toggle]').click()
+                page.wait_for_function(drawer)
+            page.locator('#primary-sidebar [data-nav-page="files"]').click()
+            page.locator('#page-files.active').wait_for()
+            sync(snapshot(work=[work], asking=[asking], unread=unread, main='thinking', main_revision=2))
+            if touch:
+                page.locator('#page-files [data-mobile-nav-toggle]').click()
+                page.wait_for_function(drawer)
+                page.wait_for_timeout(300)
+            facts[case] = page.evaluate(COLUMNS, work)
+            setup_browser.capture(page, f'nav-columns-{case}-{ui["engine"]}')
+        finally:
+            save_evidence(tmp_path, f'nav-columns-{ui["engine"]}', facts)
+            page.close()
+    for case in ('mouse', 'touch'):
+        seen = facts[case]
+        assert (seen['main_count']['text'], seen['count']['text']) == ('2', '6'), facts  # 2 in Main, 3 + 3 in Projects
+        assert seen['count']['right'] == pytest.approx(seen['main_count']['right'], abs=0.5), (case, facts)
+        for mark in ('header_mark', 'row_mark'):
+            assert (seen[mark]['left'], seen[mark]['right']) == pytest.approx(
+                (seen['main_mark']['left'], seen['main_mark']['right']), abs=0.5), (case, mark, facts)
+    mouse, touch = facts['mouse'], facts['touch']
+    assert (mouse['add']['left'], mouse['add']['right']) == pytest.approx(
+        (mouse['kebab']['left'], mouse['kebab']['right']), abs=0.5), facts
+    assert touch['chevron']['right'] <= touch['add']['left'] <= touch['chevron']['right'] + 12, facts
+    assert touch['add']['right'] < touch['count']['left'], facts
 
 
 def test_mains_row_carries_its_rooms_mark_in_the_project_rows_column(nav_ui, tmp_path):

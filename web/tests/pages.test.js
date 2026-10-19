@@ -48,8 +48,12 @@ test('the Projects header keeps the hooks the shell reads and uses the shared gl
     for (const id of ['nav-projects-toggle', 'nav-projects-count', 'nav-projects-add']) {
         assert.ok(html.includes(`id="${id}"`), id);
     }
-    // The Projects' one status mark sits beside the label in both states (app.js paints it); unread is the count.
-    assert.ok(html.includes(`<span class="nav-row-label">Projects</span>${statusMarkHtml('nav-mark')}</span><span id="nav-projects-count"`));
+    // The toggle is the word and its chevron; its facts (the unread count, then the Projects' one status mark, which
+    // app.js paints) follow "+" in Main's number and mark columns, outside the button and hidden from readers, whose
+    // name of the toggle carries their words (owner Q1 = B).
+    assert.ok(html.includes(`<span class="nav-row-label">Projects</span><span class="nav-chevron" aria-hidden="true">`));
+    assert.ok(html.includes(`</button><span class="nav-projects-facts" aria-hidden="true"><span id="nav-projects-count" class="nav-row-meta"></span>`
+        + `<span class="nav-mark-slot">${statusMarkHtml('nav-mark')}</span></span>`));
     assert.doesNotMatch(html, /nav-activity-marker|chat-live-typing|nav-projects-activity/);
     assert.match(html, /aria-expanded="true" aria-controls="nav-projects-list"/);
     assert.ok(html.includes(PAGE_ICONS.projects));

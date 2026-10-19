@@ -40,6 +40,7 @@
  * @property {Object} accounting  // physical-attempt ledger projection
  * @property {Array<ProjectEntry>} projects  // active/deleting sidebar projection
  * @property {Array<number>} project_chat_ids  // complete (uncapped) project chat_ids — WS fan-out isolation SSOT (v6.32.0)
+ * @property {?number=} main_visible_revision  // Main's room revision (its standalone messages, as a Project's visible_revision counts); null while unreadable
  * @property {Object<string, {project_id: string, chat_id: number, origin_bound?: boolean}>} task_bindings  // bound task -> its project: suppress the stray "turn into project" button (v6.33.0 P2) + render a pointer that opens the project panel (v6.33.0 F4). origin_bound marks a task the host included because its OWNER MESSAGE already has a project (#902), so one message cannot keep a second convertible card
  * @property {ActiveDirectTurn[]=} active_direct_turns  // active direct/ephemeral chat turns snapshot
  * @property {boolean=} active_chat_activities_complete
@@ -1458,6 +1459,7 @@
  * @property {number} sidebar_width  // px; 0 = CSS default (v6.33.0)
  * @property {number} project_panel_width  // px; 0 = CSS default
  * @property {Object.<string,number>} project_seen_revision  // monotonic paint ACK
+ * @property {?number} main_seen_revision  // Main's monotonic paint ACK; null until a client first reads Main
  * @property {{mode:'default'|'hidden'|'custom',text:string}} welcome  // install-wide empty-Main UI copy, not chat history
  * @property {boolean=} ok
  */

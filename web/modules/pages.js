@@ -49,14 +49,16 @@ export function renderNavRows(zone) {
     return pagesInZone(zone).map(renderNavRow).join('\n');
 }
 
-/** The Projects header of the middle zone: the toggle (icon, label, the Projects' one status mark, unread count,
- * chevron) and "+". The ids are the hooks app.js and its tests read. */
+/** The Projects header of the middle zone: the toggle (icon, label, chevron), "+", and the toggle's facts (the unread
+ * count and the Projects' one status mark) in Main's number and mark columns; the toggle's name carries their words.
+ * The ids are the hooks app.js and its tests read. */
 export function renderProjectsHeader() {
     return `<button id="nav-projects-toggle" class="nav-section-toggle" type="button" aria-expanded="true" aria-controls="nav-projects-list">`
         + `<span class="nav-row-icon" aria-hidden="true">${PAGE_ICONS.projects}</span>`
-        + `<span class="nav-activity-label"><span class="nav-row-label">Projects</span>${statusMarkHtml('nav-mark')}</span>`
-        + `<span id="nav-projects-count" class="nav-row-meta"></span>`
+        + `<span class="nav-row-label">Projects</span>`
         + `<span class="nav-chevron" aria-hidden="true">${SHELL_ICONS.chevron}</span>`
         + `</button>`
-        + `<button id="nav-projects-add" class="nav-projects-add" type="button" title="New project" aria-label="New project">${SHELL_ICONS.plus}</button>`;
+        + `<button id="nav-projects-add" class="nav-projects-add" type="button" title="New project" aria-label="New project">${SHELL_ICONS.plus}</button>`
+        + `<span class="nav-projects-facts" aria-hidden="true"><span id="nav-projects-count" class="nav-row-meta"></span>`
+        + `<span class="nav-mark-slot">${statusMarkHtml('nav-mark')}</span></span>`;
 }

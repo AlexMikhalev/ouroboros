@@ -389,8 +389,8 @@ def test_pins_keep_unread_live_rows_menu_anchor_other_windows_and_deleting(pins_
     groups = page.evaluate(GROUPS)
     assert [g["id"] for g in groups] == ["older"]
     assert_one_boundary(groups)
-    expect()(page.locator('#nav-projects-count')).to_have_text("1")
-    expect()(page.locator('#nav-projects-toggle .status-mark')).to_have_attribute("data-shape", "moving")
+    expect()(page.locator('#nav-projects-count')).to_have_text("2")  # its two unread messages (owner Q1 = B)
+    expect()(page.locator('.nav-projects-facts .status-mark')).to_have_attribute("data-shape", "moving")
     page.locator('#nav-projects-toggle').click()
     # Another window unpins while this one's menu is open on that row: the menu stays with its row, and its label
     # still names what it does, so pressing it never flips the pin back. A menu opened from the ⋯ follows its moved
@@ -457,7 +457,7 @@ def test_many_pins_order_within_groups_long_names_and_short_windows(pins_ui, tmp
     assert page.locator('#primary-sidebar').evaluate("e => e.scrollWidth <= e.clientWidth")
     page.locator('#primary-sidebar').screenshot(path=str(evidence / f"many-{ui['tag']}.png"), animations="disabled")
     page.locator('#nav-projects-toggle').click()
-    expect()(page.locator('#nav-projects-count')).to_have_text("2")
+    expect()(page.locator('#nav-projects-count')).to_have_text("4")  # two rooms, two unread messages each
     collapsed = page.evaluate(GROUPS)
     assert [g["id"] for g in collapsed] == ["p1", "p7", "p4"]
     assert_one_boundary(collapsed)

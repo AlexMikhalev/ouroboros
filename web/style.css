@@ -270,16 +270,8 @@ html[data-layout="stack"] .resize-handle { display: none; }
 
 /* The sidebar's marks are the shared status marks (ui.css "Status marks", status_mark.js): one per place, in the
    place's own ink (hover and the chosen row's ink included), the owner's amber and the unread crimson its only hues.
-   The Projects header carries the Projects' one mark beside its label. */
-.nav-activity-label {
-    display: inline-flex;
-    align-items: center;
-    gap: var(--space-2);
-    flex: 1 1 auto;
-    min-width: 0;
-}
-
-.nav-activity-label .nav-row-label { flex: 0 1 auto; }
+   The Projects header carries the Projects' one mark in the rows' mark column; its chevron follows its word. */
+#nav-projects-toggle > .nav-row-label { flex: 0 1 auto; }
 
 .nav-row-meta {
     flex: 0 0 auto;
@@ -6941,15 +6933,58 @@ body.keyboard-open .chat-instance-panel .chat-input-area {
 }
 
 /* The Projects header: the toggle, the unread count, its status mark, then "+" (New project). */
+/* The Projects header keeps Main's columns (owner 19.10, Q1 = B): the toggle (icon, word, chevron), then its facts,
+   the count and the mark in the number and mark columns of Main and the rows, and + in the ⋯ column. On touch, where
+   rows have no ⋯ column, + follows the chevron so the facts keep those columns. A press on the facts toggles too. */
 .nav-projects-header {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) var(--nav-control-h);
+    display: flex;
     align-items: center;
     width: 100%;
 }
 
 .nav-projects-header > .nav-section-toggle {
+    flex: 0 1 auto;
+    width: auto;
     min-width: 0;
+    padding-right: var(--space-2);
+    border-radius: var(--radius-inner) 0 0 var(--radius-inner);
+}
+
+.nav-projects-facts {
+    order: 1;
+    flex: 1 0 auto;
+    align-self: stretch;
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: var(--space-3);
+    /* A Project row ends its mark column one border and --space-1 before its edge; the facts end where it does. */
+    padding-right: calc(var(--space-1) + 1px);
+    border-radius: 0 var(--radius-inner) var(--radius-inner) 0;
+    color: var(--text-secondary);
+    cursor: pointer;
+    transition: var(--motion-tone);
+}
+
+.nav-projects-facts > .nav-mark-slot {
+    flex: 0 0 18px;
+    display: inline-flex;
+    align-items: center;
+}
+
+.nav-projects-add { order: 2; }
+
+@media (pointer: coarse) {
+    .nav-projects-add { order: 0; }
+}
+
+@media (hover: hover) {
+    .nav-projects-facts:hover,
+    .nav-projects-header:has(> .nav-projects-facts:hover) > .nav-section-toggle,
+    .nav-projects-header:has(> .nav-section-toggle:hover) > .nav-projects-facts {
+        background: var(--tone-quiet-hover);
+        color: var(--text-primary);
+    }
 }
 
 .nav-projects-header .nav-chevron {

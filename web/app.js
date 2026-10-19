@@ -43,7 +43,11 @@ const state = {
     logs: [],
     dashboard: {},
     activeFilters: { tools: true, llm: true, errors: true, tasks: true, system: true, consciousness: true },
-    unreadCount: 0,
+    // Main's number (DESIGN "Unread"): its room revision from each state snapshot against the shared read cursor,
+    // null until known; the comparison a Project row makes (owner Q1 = B, 19.10.2026).
+    mainVisibleRevision: null,
+    mainSeenRevision: null,
+    mainSeenLoaded: false,
     activePage: 'chat',
     settingsActiveSubtab: 'providers',
     dashboardActiveSubtab: 'logs',
@@ -82,6 +86,7 @@ primarySidebar?.querySelector('.sidebar-head')?.insertAdjacentHTML('beforeend', 
 primarySidebar?.querySelector('.sidebar-foot-meta')?.insertAdjacentHTML('beforebegin', renderNavRows('foot'));
 const navProjectsHeader = primarySidebar?.querySelector('.nav-projects-header');
 if (navProjectsHeader) navProjectsHeader.innerHTML = renderProjectsHeader();
+const navProjectsFacts = navProjectsHeader?.querySelector('.nav-projects-facts');
 const navDrawerBackdrop = document.getElementById('nav-drawer-backdrop');
 const projectPanelBackdrop = document.getElementById('project-panel-backdrop');
 const projectPanel = document.getElementById('project-panel');
@@ -152,10 +157,9 @@ async function showPage(name, options = {}) {
         document.getElementById(`page-${pageName}`)?.classList.add('active');
         state.activePage = pageName;
         window.dispatchEvent(new CustomEvent('ouro:page-shown', { detail: { page: pageName } }));
-        if (pageName === 'chat') {
-            state.unreadCount = 0;
-            updateUnreadBadge();
-        }
+        // Main's number shows only away from Main; showing it offers its read decision.
+        updateUnreadBadge();
+        if (pageName === 'chat') void acknowledgeMainAfterPaint();
     }
     if (options.closeProject !== false) closeProjectPanel({ sync: false });
     if (options.closeDrawer !== false) navState.mobileDrawerOpen = false;
@@ -178,20 +182,80 @@ async function openDashboardTab(tabName) {
     }
 }
 
+// Main's unread standalone messages, the count a Project's revision gives; unknown counts none.
+function mainUnreadCount() {
+    const { mainVisibleRevision: revision, mainSeenRevision: seen } = state;
+    return Number.isSafeInteger(revision) && Number.isSafeInteger(seen) ? Math.max(0, revision - seen) : 0;
+}
+
 function updateUnreadBadge() {
     const btn = document.querySelector('[data-nav-page="chat"]');
     let badge = btn?.querySelector('.unread-badge');
-    if (state.unreadCount > 0 && state.activePage !== 'chat') {
+    const count = state.activePage === 'chat' ? 0 : mainUnreadCount();
+    if (count > 0) {
         if (!badge) {
             badge = document.createElement('span');
             badge.className = 'unread-badge';
             btn.appendChild(badge);
         }
-        badge.textContent = state.unreadCount > 99 ? '99+' : state.unreadCount;
+        badge.textContent = count > 99 ? '99+' : String(count);
     } else if (badge) {
         badge.remove();
     }
     paintNavToggles();
+}
+
+// Main's revision from a state snapshot (null: unreadable, keep what was known). A cursor the server has never held is
+// set to what Main holds now, as the per-window count this replaced started at zero; a newer one offers the read.
+function observeMainRevision(revision) {
+    if (Number.isSafeInteger(revision)) state.mainVisibleRevision = revision;
+    if (!Number.isSafeInteger(state.mainVisibleRevision) || !state.mainSeenLoaded) return;
+    if (state.mainSeenRevision === null) void markMainViewed(state.mainVisibleRevision);
+    else if (mainUnreadCount() > 0) {
+        refreshSharedProjectSeen();
+        if (state.activePage === 'chat') void acknowledgeMainAfterPaint();
+    }
+    updateUnreadBadge();
+}
+
+// The shared cursor only moves forward here (a stale answer never revives a read number).
+function mergeMainSeenRevision(value) {
+    state.mainSeenLoaded = true;
+    const advanced = Number.isSafeInteger(value) && value > (state.mainSeenRevision ?? -1);
+    if (advanced) state.mainSeenRevision = value;
+    updateUnreadBadge();
+    return advanced;
+}
+
+async function markMainViewed(revision) {
+    try {
+        const prefs = await fetchJson('/api/ui/preferences', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ main_seen_revision: Math.max(0, Number(revision) || 0) }),
+        });
+        return mergeMainSeenRevision(prefs?.main_seen_revision);
+    } catch {
+        return false;  // still unread here: the next snapshot or arrival offers the same revision again
+    }
+}
+
+// Main reads as a Project room does (DESIGN "Unread"): a revision is acknowledged only once a history read covering it
+// was painted while Main is shown and its reader is at the newest message.
+let mainPaintRequest = null;
+async function acknowledgeMainAfterPaint() {
+    const revision = state.mainVisibleRevision;
+    if (state.activePage !== 'chat' || !mainChat?.refreshHistory || !Number.isSafeInteger(revision)
+        || !Number.isSafeInteger(state.mainSeenRevision) || revision <= state.mainSeenRevision) return;
+    if (mainPaintRequest && mainPaintRequest.revision >= revision) return mainPaintRequest.promise;
+    const promise = (async () => {
+        let paint = null;
+        try { paint = await mainChat.refreshHistory({ revision }); } catch (err) {
+            console.error('Main history paint failed:', err);
+        }
+        if (paint?.read && Number(paint.revision) === revision && state.activePage === 'chat') await markMainViewed(revision);
+    })().finally(() => { if (mainPaintRequest?.promise === promise) mainPaintRequest = null; });
+    mainPaintRequest = { revision, promise };
+    return promise;
 }
 
 // The scrim fades with the drawer (style.css): shown at once when the drawer opens, put away once its fade has run
@@ -344,6 +408,7 @@ const stateSnapshots = createStateSnapshotSequencer((data, requestedAt, generati
         data.project_chat_ids ?? (data.projects ? undefined : Array.from(state.projectChatIds)), projectActivityIndex);
     applyTaskBindings(data.task_bindings || {});
     hydrateOpenChatsFromState(data, requestedAt, generation);
+    observeMainRevision(data.main_visible_revision);
 }, undefined, (requestedAt) => {
     markProjectActivityUnknown();
     hydrateOpenChatsFromState(null, requestedAt);
@@ -352,8 +417,8 @@ const stateSnapshots = createStateSnapshotSequencer((data, requestedAt, generati
 const ctx = {
     ws,
     state,
-    updateUnreadBadge,
     showPage,
+    onReadingLatest: () => void acknowledgeMainAfterPaint(),
     openSettingsTab,
     openDashboardTab,
     isProjectOpening: () => projectPanelOpeningSince > 0,
@@ -661,6 +726,8 @@ navProjectsToggle?.addEventListener('click', () => {
     } catch { /* storage unavailable: the choice holds until the page reloads */ }
     syncNavigationState();
 });
+// The header's count and mark are the toggle's facts: a press on them toggles the list as well.
+navProjectsFacts?.addEventListener('click', () => navProjectsToggle?.click());
 
 // Collapse is all or nothing (owner 19.10, 2A): collapsed, the Projects keep only the pinned ones, and the header's mark
 // and unread count speak for the rest (docs/DESIGN.md "Shell"); expanded, every row shows. A row that hides gives the
@@ -767,7 +834,7 @@ function setActivityOwnerName(owner, baseName, words) {
 // count), Main's row and the ☰ (paintMainRow, paintNavToggles). Nodes are painted in place, so focus and menus stay.
 function patchProjectActivityMarkers(activityIndex = projectActivityIndex) {
     const aggregate = activityIndex.aggregate;
-    paintStatusMark(navProjectsToggle?.querySelector('.nav-mark'), markView({ mark: aggregate.mark, owner: aggregate.owner }));
+    paintStatusMark(navProjectsFacts?.querySelector('.nav-mark'), markView({ mark: aggregate.mark, owner: aggregate.owner }));
     const unread = navProjectsCount?.title;
     setActivityOwnerName(navProjectsToggle, unread ? `Projects · ${unread}` : 'Projects', aggregate.label);
     const buttons = new Map(
@@ -809,7 +876,7 @@ function paintMainRow() {
 // room's composer row) are painted; a composer that mounted later is painted by the navigation sync that shows it.
 function paintNavToggles() {
     const owner = (projectRooms.get('1') || IDLE_SUMMARY).owner || projectActivityIndex.aggregate.owner;
-    const unread = (state.unreadCount > 0 && state.activePage !== 'chat') || lastProjectRows.some((row) => row._unread);
+    const unread = (state.activePage !== 'chat' && mainUnreadCount() > 0) || lastProjectRows.some((row) => row._unread);
     const view = markView({ owner, unread });
     const name = owner ? 'Open navigation · something waits for you' : unread ? 'Open navigation · new messages' : 'Open navigation';
     for (const toggle of document.querySelectorAll('[data-mobile-nav-toggle]')) {
@@ -862,6 +929,7 @@ function mergeProjectSeenRevisions(cursors) {
         if (row._unread !== unread) { row._unread = unread; changed = true; }
     }
     if (changed) paintProjectsNav();
+    else { paintProjectsCount(); patchProjectActivityMarkers(); }  // a cursor moved within an unread room
     return advanced;
 }
 
@@ -870,8 +938,21 @@ function mergeProjectSeenRevisions(cursors) {
 let sharedSeenRead = null;
 function refreshSharedProjectSeen() {
     sharedSeenRead ||= fetchJson('/api/ui/preferences', { cache: 'no-store' })
-        .then((prefs) => mergeProjectSeenRevisions(prefs?.project_seen_revision), () => false)
+        .then((prefs) => { mergeMainSeenRevision(prefs?.main_seen_revision); return mergeProjectSeenRevisions(prefs?.project_seen_revision); },
+            () => false)
         .finally(() => { sharedSeenRead = null; });
+}
+
+// The Projects number counts what Main's does (owner Q1 = B): unread standalone messages, summed over the rows.
+function paintProjectsCount() {
+    if (!navProjectsCount) return;
+    const seen = state.projectSeenRevision || {};
+    const count = lastProjectRows.reduce((sum, row) => sum + (row._unread
+        ? Math.max(0, (Number(row.visible_revision) || 0) - (Number(seen[row.id]) || 0)) : 0), 0);
+    navProjectsCount.textContent = count ? (count > 99 ? '99+' : String(count)) : '';
+    navProjectsCount.title = count ? `${count} unread message${count === 1 ? '' : 's'} in Projects` : '';
+    if (count) navProjectsCount.setAttribute('aria-label', navProjectsCount.title);
+    else navProjectsCount.removeAttribute('aria-label');
 }
 
 // Keep keyed controls (and menu anchors) when pinning reorders the list.
@@ -880,13 +961,7 @@ function paintProjectsNav() {
     const keyed = new Map([...navProjectsList.children].map(item => [item.dataset.navProjectId, item]));
     const focused = document.activeElement;
     navProjects.hidden = false;
-    const unreadCount = rows.filter((project) => project._unread).length;
-    if (navProjectsCount) {
-        navProjectsCount.textContent = unreadCount ? (unreadCount > 99 ? '99+' : String(unreadCount)) : '';
-        navProjectsCount.title = unreadCount ? `${unreadCount} unread project${unreadCount === 1 ? '' : 's'}` : '';
-        if (unreadCount) navProjectsCount.setAttribute('aria-label', navProjectsCount.title);
-        else navProjectsCount.removeAttribute('aria-label');
-    }
+    paintProjectsCount();
     for (const [index, project] of rows.entries()) {
         const deleting = String(project.lifecycle || 'active') === 'deleting';
         let item = keyed.get(project.id);
@@ -1147,6 +1222,8 @@ apiFetch('/api/ui/preferences', { cache: 'no-store' })
     .then((r) => (r.ok ? r.json() : null))
     .then((prefs) => {
         mergeProjectSeenRevisions(prefs?.project_seen_revision);
+        mergeMainSeenRevision(prefs?.main_seen_revision);
+        observeMainRevision(null);
         setupResizablePanels(prefs || {});
         // Re-evaluate unread now that revision cursors are known.
         if (Array.isArray(lastProjectRows)) { knownProjectsJson = null; renderProjectsNav(lastProjectRows, Array.from(state.projectChatIds || [])); }
