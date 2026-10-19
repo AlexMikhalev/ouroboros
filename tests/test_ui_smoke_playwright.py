@@ -45,6 +45,20 @@ def _browser_missing(exc) -> bool:
     return "Executable doesn't exist" in str(exc) or "playwright install" in str(exc).lower()
 
 
+def _store_rows(data_dir, stream: str, rows) -> None:
+    """History for a running server: it reads its dialogue store (#1982), never a log file written after it started."""
+    from ouroboros import dialogue_store
+
+    for row in rows:
+        dialogue_store.append(pathlib.Path(data_dir), stream, row)
+
+
+# A box's place in its flex row is its margin box: the card's disclosure overhangs its row by the padding its
+# negative margin pays back, so its words stand where they stood (style.css .chat-live-summary-side, #1998).
+_ROW_SLOT = """(el) => { const r = el.getBoundingClientRect(), s = getComputedStyle(el);
+    return {top: r.top - parseFloat(s.marginTop), bottom: r.bottom + parseFloat(s.marginBottom)}; }"""
+
+
 def _open_review_checkpoint(card, *, open_card=True):
     if open_card:
         card.locator(":scope > [data-live-summary-button] [data-live-disclosure]").click()
@@ -943,28 +957,22 @@ def test_ui_smoke_collapsed_activity_line_named_vs_unnamed(
 
     url = direct_server_with_data["url"]
     data_dir = direct_server_with_data["data_dir"]
-    logs_dir = data_dir / "logs"
-    logs_dir.mkdir(parents=True, exist_ok=True)
-    (logs_dir / "chat.jsonl").write_text("", encoding="utf-8")
     unique_tail = "UNIQUE_FULL_ACTIVITY_TAIL"
     long_activity = (
         "Analyzing the dataset and comparing every source. " * 18
         + "https://example.com/" + "unbroken-segment-" * 18 + unique_tail
     )
-    (logs_dir / "progress.jsonl").write_text(
-        json.dumps({
-            "ts": "2026-07-29T10:00:00+00:00",
-            "chat_id": 1,
-            "task_id": "named-act",
-            "content": long_activity,
-        }) + "\n" + json.dumps({
-            "ts": "2026-07-29T10:00:01+00:00",
-            "chat_id": 1,
-            "task_id": "unnamed-act",
-            "content": "Doing things without a name",
-        }) + "\n",
-        encoding="utf-8",
-    )
+    _store_rows(data_dir, "progress", [{
+        "ts": "2026-07-29T10:00:00+00:00",
+        "chat_id": 1,
+        "task_id": "named-act",
+        "content": long_activity,
+    }, {
+        "ts": "2026-07-29T10:00:01+00:00",
+        "chat_id": 1,
+        "task_id": "unnamed-act",
+        "content": "Doing things without a name",
+    }])
     from tests._store_shared import seed_result  # the server reads its store, not later files
 
     seed_result(data_dir, "named-act", {
@@ -985,6 +993,18 @@ def test_ui_smoke_collapsed_activity_line_named_vs_unnamed(
                 if _browser_missing(exc):
                     pytest.fail(f"required Playwright {browser_engine} browser is not installed: {exc}")
                 raise
+            from tests._work_projection_shared import with_work_fields
+
+            def vouch_running(route):
+                # The running card's work is the server's too, as a real one always is: its census row keeps the
+                # chip saying Working between frames. A work no census lists loses the chip at every state read
+                # and takes it back with the next frame, which would move the band under any one frame.
+                body = route.fetch().json()
+                body["active_chat_activities"] = [*body.get("active_chat_activities", []), {
+                    "activity_id": "running-act", "chat_id": 1, "project_id": "", "client_message_id": "",
+                    "kind": "managed_task", "phase": "working", "started_at": 1.0}]
+                route.fulfill(content_type="application/json", body=json.dumps(with_work_fields(body)))
+
             try:
                 for width, height, mobile in [(1440, 1000, False), (390, 844, True)]:
                     context = browser.new_context(
@@ -994,6 +1014,7 @@ def test_ui_smoke_collapsed_activity_line_named_vs_unnamed(
                     )
                     page = context.new_page()
                     page.add_init_script(f"({_CAPTURE_TEST_SOCKET})();({_OBSERVE_STATE_READS})()")
+                    page.route("**/api/state*", vouch_running)
                     page.goto(url, wait_until="domcontentloaded", timeout=30_000)
                     _wait_socket_open_quiescent(page)  # the frames below live on the test socket only
                     named = page.locator('.chat-live-card[data-task-id="named-act"]')
@@ -1176,8 +1197,6 @@ def test_ui_smoke_chat_chronology_reconnect_and_plain_answer_marker(direct_serve
 
     url = direct_server_with_data["url"]
     data_dir = direct_server_with_data["data_dir"]
-    logs_dir = data_dir / "logs"
-    logs_dir.mkdir(parents=True, exist_ok=True)
     evidence_dir = pathlib.Path(
         os.environ.get("OUROBOROS_UI_EVIDENCE_DIR", str(data_dir.parent))
     )
@@ -1209,10 +1228,7 @@ def test_ui_smoke_chat_chronology_reconnect_and_plain_answer_marker(direct_serve
         ),
         "format": "markdown",
     }
-    (logs_dir / "chat.jsonl").write_text(
-        json.dumps(anchor_summary) + "\n" + json.dumps(t3) + "\n",
-        encoding="utf-8",
-    )
+    _store_rows(data_dir, "chat", [anchor_summary, t3])
 
     try:
         with sync_playwright() as pw:
@@ -1265,30 +1281,22 @@ def test_ui_smoke_chat_chronology_reconnect_and_plain_answer_marker(direct_serve
                     "text": "Fourth new message below the reading anchor.",
                     "format": "markdown",
                 }
-                (logs_dir / "chat.jsonl").write_text(
-                    "".join(
-                        json.dumps(row) + "\n"
-                        for row in (anchor_summary, t3, t1, t2, disconnected_summary, t4)
-                    ),
-                    encoding="utf-8",
-                )
-                (logs_dir / "progress.jsonl").write_text(
-                    json.dumps({
-                        "ts": "2025-07-18T10:00:01.500000+00:00",
-                        "chat_id": 1,
-                        "task_id": "chronology-progress-only",
-                        "content": "Progress-only terminal card.",
-                    }) + "\n" + json.dumps({
-                        "ts": "2025-07-18T10:00:01.750000+00:00",
-                        "chat_id": 1,
-                        "task_id": "chronology-anchor",
-                        "content": "Earlier progress backfilled for the mounted anchor card.",
-                    }) + "\n",
-                    encoding="utf-8",
-                )
-                task_results = data_dir / "task_results"
-                task_results.mkdir(parents=True, exist_ok=True)
-                (task_results / "chronology-progress-only.json").write_text(json.dumps({
+                # Backfilled while the page reads the room: older rows land after the ones it shows.
+                _store_rows(data_dir, "chat", [t1, t2, disconnected_summary, t4])
+                _store_rows(data_dir, "progress", [{
+                    "ts": "2025-07-18T10:00:01.500000+00:00",
+                    "chat_id": 1,
+                    "task_id": "chronology-progress-only",
+                    "content": "Progress-only terminal card.",
+                }, {
+                    "ts": "2025-07-18T10:00:01.750000+00:00",
+                    "chat_id": 1,
+                    "task_id": "chronology-anchor",
+                    "content": "Earlier progress backfilled for the mounted anchor card.",
+                }])
+                from tests._store_shared import seed_result  # the server reads its store, not later files
+
+                seed_result(data_dir, "chronology-progress-only", {
                     "_schema_version": 1,
                     "task_id": "chronology-progress-only",
                     "status": "completed",
@@ -1299,7 +1307,7 @@ def test_ui_smoke_chat_chronology_reconnect_and_plain_answer_marker(direct_serve
                         "review": {"status": "degraded"},
                         "artifacts": {"status": "ready"},
                     },
-                }) + "\n", encoding="utf-8")
+                })
 
                 scroll_before = page.evaluate(
                     """() => {
@@ -1362,7 +1370,9 @@ def test_ui_smoke_chat_chronology_reconnect_and_plain_answer_marker(direct_serve
                 assert page.locator(".final-answer-chip").count() == 0
                 assert "FINAL ANSWER: 41" in page.locator("#chat-messages").inner_text()
                 assert "FINAL ANSWER: 42" in page.locator("#chat-messages").inner_text()
-                assert "2025" in page.locator(
+                # The card names its own last note's time in the chat's one clock (formatMsgTime short, #1959): the
+                # day it worked, never the reload's.
+                assert "updated Jul 18," in page.locator(
                     '.chat-live-card[data-task-id="chronology-progress-only"]'
                 ).inner_text()
                 scroll_after = page.evaluate(
@@ -1475,8 +1485,6 @@ def test_ui_smoke_direct_mode_nests_subagent_child_cards(direct_server_with_data
 
     url = direct_server_with_data["url"]
     data_dir = direct_server_with_data["data_dir"]
-    logs_dir = data_dir / "logs"
-    logs_dir.mkdir(parents=True, exist_ok=True)
     child_review_projection = {
         "panels": [{
             "panel_id": "panel_child_review",
@@ -1631,27 +1639,21 @@ def test_ui_smoke_direct_mode_nests_subagent_child_cards(direct_server_with_data
             "result": "Nested evidence result",
         },
     ]
-    (logs_dir / "progress.jsonl").write_text(
-        "".join(json.dumps(row) + "\n" for row in rows),
-        encoding="utf-8",
-    )
-    (logs_dir / "chat.jsonl").write_text(
-        json.dumps({
-            "ts": "2026-05-25T10:00:03.500000+00:00",
-            "chat_id": 1,
-            "direction": "out",
-            "task_id": "child1",
-            "text": "Final child answer should stay inside the child card.",
-            "format": "markdown",
-            "delegation_role": "subagent",
-            "subagent_event": "completed",
-            "subagent_task_id": "child1",
-            "parent_task_id": "parent1",
-            "root_task_id": "parent1",
-            "subagent_role": "researcher",
-            }) + "\n",
-        encoding="utf-8",
-    )
+    _store_rows(data_dir, "progress", rows)
+    _store_rows(data_dir, "chat", [{
+        "ts": "2026-05-25T10:00:03.500000+00:00",
+        "chat_id": 1,
+        "direction": "out",
+        "task_id": "child1",
+        "text": "Final child answer should stay inside the child card.",
+        "format": "markdown",
+        "delegation_role": "subagent",
+        "subagent_event": "completed",
+        "subagent_task_id": "child1",
+        "parent_task_id": "parent1",
+        "root_task_id": "parent1",
+        "subagent_role": "researcher",
+    }])
 
     try:
         with sync_playwright() as pw:
@@ -2327,8 +2329,6 @@ def test_ui_smoke_live_cards_keep_usable_geometry_at_depth_and_in_project_panel(
     data_dir = direct_server_with_data["data_dir"]
     url = direct_server_with_data["url"]
     project = create_project(data_dir, "layout-project", name="Layout Project")
-    logs_dir = data_dir / "logs"
-    logs_dir.mkdir(parents=True, exist_ok=True)
     rows = [{
         "ts": "2026-05-25T10:00:00+00:00",
         "chat_id": 1,
@@ -2367,12 +2367,10 @@ def test_ui_smoke_live_cards_keep_usable_geometry_at_depth_and_in_project_panel(
         "suggested_name": "Narrow Project panel keeps a usable title column",
         "is_progress": True,
     }
-    (logs_dir / "progress.jsonl").write_text(
-        "".join(json.dumps(row) + "\n" for row in rows),
-        encoding="utf-8",
-    )
+    _store_rows(data_dir, "progress", rows)
 
     mobile_geometry = """() => {
+        const slot = """ + _ROW_SLOT + """;
         const messages = document.querySelector('#page-chat #chat-messages');
         const messagesStyle = getComputedStyle(messages);
         const usableMessageWidth = messages.clientWidth
@@ -2391,7 +2389,7 @@ def test_ui_smoke_live_cards_keep_usable_geometry_at_depth_and_in_project_panel(
             const activityLineHeight = parseFloat(activityStyle.lineHeight);
             const activityRect = activity.getBoundingClientRect();
             const cardMain = card.querySelector(':scope > .chat-live-summary-button .chat-live-summary-main').getBoundingClientRect();
-            const cardSide = card.querySelector(':scope > .chat-live-summary-button .chat-live-summary-side').getBoundingClientRect();
+            const cardSide = slot(card.querySelector(':scope > .chat-live-summary-button .chat-live-summary-side'));
             return {
                 id: card.dataset.taskId,
                 collapsedChild: card.classList.contains('subagent') && card.dataset.expanded !== '1',
@@ -2410,7 +2408,7 @@ def test_ui_smoke_live_cards_keep_usable_geometry_at_depth_and_in_project_panel(
             };
         });
         const main = root.querySelector(':scope > .chat-live-summary-button .chat-live-summary-main').getBoundingClientRect();
-        const side = root.querySelector(':scope > .chat-live-summary-button .chat-live-summary-side').getBoundingClientRect();
+        const side = slot(root.querySelector(':scope > .chat-live-summary-button .chat-live-summary-side'));
         const title = root.querySelector(':scope > .chat-live-summary-button [data-live-title]').getBoundingClientRect();
         return {
             messageWidth: usableMessageWidth,
@@ -2455,8 +2453,9 @@ def test_ui_smoke_live_cards_keep_usable_geometry_at_depth_and_in_project_panel(
         assert max(card["activityLines"] for card in facts["cardFacts"]
                    if card["collapsedChild"]) <= 1.2, facts
         # #623: a collapsed child keeps its identity row: its title beside the chip
-        # and side controls, whole if short, ellipsized if long (child-01).
-        assert page.get_by_role("button", name=long_role).count() == 1
+        # and side controls, whole if short, ellipsized if long (child-01). The summary is reading content, no
+        # button (#1998): the title holds the whole role as its text, however much of it shows.
+        assert page.get_by_text(long_role, exact=True).count() == 1
         for card in facts["cardFacts"]:
             if card["collapsedChild"]:
                 assert 0 < card["titleClient"] and (
@@ -2586,12 +2585,13 @@ def test_ui_smoke_live_cards_keep_usable_geometry_at_depth_and_in_project_panel(
                 assert len(rendered_ids) == 11, rendered_ids
                 wide_facts = wide.evaluate(
                     """() => {
+                        const slot = """ + _ROW_SLOT + """;
                         const ids = ['layout-root', 'layout-child-01', 'layout-child-02'];
                         return ids.map((id) => {
                             const card = document.querySelector(`#page-chat .chat-live-card[data-task-id="${id}"]`);
                             const summary = card.querySelector(':scope > .chat-live-summary-button .chat-live-summary');
                             const main = summary.querySelector('.chat-live-summary-main').getBoundingClientRect();
-                            const side = summary.querySelector('.chat-live-summary-side').getBoundingClientRect();
+                            const side = slot(summary.querySelector('.chat-live-summary-side'));
                             const rect = card.getBoundingClientRect();
                             const title = summary.querySelector('.chat-live-title').getBoundingClientRect();
                             return {
@@ -2696,8 +2696,7 @@ def test_ui_smoke_live_cards_keep_usable_geometry_at_depth_and_in_project_panel(
                 )
                 assert_jump_geometry(wide, "#page-chat")
 
-                with (logs_dir / "progress.jsonl").open("a", encoding="utf-8") as handle:
-                    handle.write(json.dumps(panel_row) + "\n")
+                _store_rows(data_dir, "progress", [panel_row])
                 wide.evaluate(
                     "() => document.documentElement.style.setProperty('--project-panel-width', '440px')"
                 )
@@ -2710,10 +2709,11 @@ def test_ui_smoke_live_cards_keep_usable_geometry_at_depth_and_in_project_panel(
                 panel_card.wait_for(state="visible", timeout=30_000)
                 panel_facts = panel_card.evaluate(
                     """card => {
+                        const slot = """ + _ROW_SLOT + """;
                         const panel = card.closest('.chat-instance-panel');
                         const summary = card.querySelector(':scope > .chat-live-summary-button .chat-live-summary');
                         const main = summary.querySelector('.chat-live-summary-main').getBoundingClientRect();
-                        const side = summary.querySelector('.chat-live-summary-side').getBoundingClientRect();
+                        const side = slot(summary.querySelector('.chat-live-summary-side'));
                         const title = summary.querySelector('[data-live-title]').getBoundingClientRect();
                         return {
                             panelWidth: panel.getBoundingClientRect().width,

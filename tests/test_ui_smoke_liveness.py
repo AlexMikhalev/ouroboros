@@ -31,9 +31,11 @@ def _seed_orphan_swarm(data_dir: pathlib.Path) -> None:
     """Durable state reproducing the stuck pill: a subagent FINAL chat row whose
     swarm parent has no rows in the window, a STALE progress floor (older than
     the child, so the server honestly keeps the lineage — the client reconcile
-    is the load-bearing fix), and the parent's completed task result on disk."""
-    logs = data_dir / "logs"
-    logs.mkdir(parents=True, exist_ok=True)
+    is the load-bearing fix), and the parent's completed task result on disk.
+    The rows go into the dialogue store the running server reads (#1982): a log
+    file written after it started is never read."""
+    from ouroboros import dialogue_store
+
     child = {
         "ts": "2026-08-14T23:00:00+00:00", "direction": "out", "chat_id": 1,
         "text": "child final answer", "task_id": "swarm-child",
@@ -44,20 +46,16 @@ def _seed_orphan_swarm(data_dir: pathlib.Path) -> None:
         "ts": "2026-08-14T22:00:00+00:00", "direction": "in", "chat_id": 1,
         "user_id": 1, "text": "start the swarm", "task_id": "",
     }
-    (logs / "chat.jsonl").write_text(
-        json.dumps(owner) + "\n" + json.dumps(child) + "\n", encoding="utf-8"
-    )
+    dialogue_store.append(data_dir, "chat", owner)
+    dialogue_store.append(data_dir, "chat", child)
     # Floor carriers only: no task_id, so replay mints no card for them —
     # a task_id here would mint an unfinished card with no durable result,
     # which by owner decision (Q3=A) honestly keeps the pill lit.
-    stale_progress = [
-        json.dumps({
+    for i in range(3):
+        dialogue_store.append(data_dir, "progress", {
             "ts": f"2026-08-13T10:00:{i:02d}+00:00", "chat_id": 1,
             "content": f"old telemetry {i}",
         })
-        for i in range(3)
-    ]
-    (logs / "progress.jsonl").write_text("\n".join(stale_progress) + "\n", encoding="utf-8")
     results = data_dir / "task_results"
     results.mkdir(parents=True, exist_ok=True)
     seed_result(data_dir, "swarm-root", {
@@ -72,15 +70,19 @@ def _seed_orphan_swarm(data_dir: pathlib.Path) -> None:
 @pytest.mark.ui_browser
 def test_ui_smoke_orphan_swarm_card_converges_to_online(direct_server_with_data):  # noqa: F811
     """L1: reload with an orphaned swarm parent in durable history -> the pill
-    ends Online and the minted card is finished by durable truth. Stub-free:
-    real /api/chat/history, real /api/state, real /api/tasks/<id>."""
+    ends Online. A parent card comes only from the parent's own evidence, never
+    from a child's parent_task_id (#1872, docs/CLIENT_CONTRACT.md): the window
+    holds none of the parent's rows, so its child stands as its own card,
+    finished by its final row, and no Working shell is minted for the parent.
+    Stub-free: real /api/chat/history, real /api/state, real /api/tasks/<id>."""
     pytest.importorskip("playwright.sync_api", reason="Playwright is not installed")
     from playwright.sync_api import Error as PlaywrightError
     from playwright.sync_api import sync_playwright
 
     url = direct_server_with_data["url"]
     _seed_orphan_swarm(direct_server_with_data["data_dir"])
-    card = '.chat-live-card[data-task-id="swarm-root"]'
+    card = '.chat-live-card[data-task-id="swarm-child"]'
+    parent = '.chat-live-card[data-task-id="swarm-root"]'
     with sync_playwright() as pw:
         try:
             browser, page = _launch(pw)
@@ -88,18 +90,19 @@ def test_ui_smoke_orphan_swarm_card_converges_to_online(direct_server_with_data)
             pytest.skip(f"Playwright browser unavailable: {exc}")
         try:
             page.goto(url, wait_until="domcontentloaded", timeout=30_000)
-            # The lineage-adopted parent card IS minted from replay (server
-            # honestly kept the stale-floor lineage) ...
+            # The child of the parent with no rows in the window is its own
+            # card (the server honestly kept the stale-floor lineage) ...
             page.wait_for_selector(card, timeout=30_000)
-            # ... and the card-set reconcile closes it from the durable
-            # task result, returning the pill to Online. Before the fix
-            # this stayed "Working" across every reload and restart.
+            # ... closed by its own final row, so nothing holds the pill:
+            # it returns to Online. Before the fix this stayed "Working"
+            # across every reload and restart.
             page.wait_for_function(
                 """(sel) => document.querySelector(sel)?.dataset.finished === '1'""",
                 arg=card,
                 timeout=30_000,
             )
             _wait_status(page, "Online", timeout=15_000)
+            assert page.locator(parent).count() == 0, "no parent shell comes from the child's lineage"
             shots = producer_evidence_dir(direct_server_with_data["data_dir"].parent, "liveness",
                                           env="OUROBOROS_UI_SMOKE_SHOT_DIR")
             page.screenshot(path=str(shots / "liveness_L1_online.png"))
