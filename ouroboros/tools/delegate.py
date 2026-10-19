@@ -43,12 +43,12 @@ from ouroboros import delegate_progress as progress
 from ouroboros.delegate_custody import RunCustody as _RunCustody
 from ouroboros.configured_subagents import SESSION_ACCESS_PROFILES, SESSION_ACCESS_LOWERING
 from ouroboros.tool_capabilities import tool_result_limit
-from ouroboros.skill_catalogue import session_skill_index
 from ouroboros.tools.registry import ToolContext, ToolEntry
 from ouroboros.tools.tool_result import ToolResult, _replace_tool_result
 from ouroboros.subagent_work_order import (  # noqa: F401 - compatibility re-export
     assignment_instructions as _assignment_instructions,
     session_design_navigation,
+    session_host_references,
 )
 from ouroboros.delegate_source_coverage import (
     add_terminal_source_verification,  # noqa: F401  (leaf reads it through _delegate() at call time)
@@ -558,7 +558,8 @@ def _delegate_start(ctx: ToolContext, prompt: str, max_seconds: Optional[int] = 
             execution_root = (root if directory_options.get("isolation") == "live" else "") if directory_options else delegated_execution_workspace_root(gateway, authority, root)
             scope_root = (readonly_root or target_root) if execution_root or directory_options else root
             if snapshot is not None:
-                binding_fingerprint = execution_binding_fingerprint(execution_root or root, target_root)
+                binding_fingerprint = execution_binding_fingerprint(
+                    execution_root or root, target_root)
                 instructions = apply_execution_binding(
                     instructions, execution_root or root, target_root, binding_fingerprint)
             elif directory_options and directory_options.get("isolation") == "envelope":
@@ -571,8 +572,7 @@ def _delegate_start(ctx: ToolContext, prompt: str, max_seconds: Optional[int] = 
             if authority.access == "full":
                 gateway.ensure_full_access(scope_root)
             seconds = bound.seconds
-            instructions += session_design_navigation(ctx, target_root=record_auth["target_root"], source_root=root)
-            instructions += session_skill_index(ctx)
+            instructions += session_host_references(ctx, target_root=record_auth["target_root"], source_root=root)
             request_body = _start_request(ctx, route, authority, scope_root, continuation.prompt or text,
                                           seconds, instructions, execution_root, continuation=continuation.request, ephemeral=ephemeral,
                                           **({"directory_options": directory_options} if directory_options else {}))
