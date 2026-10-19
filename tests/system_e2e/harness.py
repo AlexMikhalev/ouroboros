@@ -1238,6 +1238,9 @@ def keyless_settings(stub: ScriptedStubModel, **overrides) -> dict:
         "OPENAI_COMPATIBLE_BASE_URL": stub.base_url,
         "OPENAI_COMPATIBLE_API_KEY": "stub-key-not-a-credential",
         "OUROBOROS_SUBAGENTS": keyless_review_catalog(),
+        # A fresh root with a ready provider would clone the skill hub from GitHub at boot
+        # (#1995); no scenario is about the starter, so the lane stays off the network.
+        "OUROBOROS_STARTER_SKILLS": "[]",
     })
     for slot in ("OUROBOROS_MODEL", "OUROBOROS_MODEL_LIGHT"):
         cfg[slot] = MOCK_SLUG
