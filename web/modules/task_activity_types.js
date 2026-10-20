@@ -63,6 +63,12 @@
  * @property {string=} detail  // the producer's sentence for a timeout or a bytes_equal comparison
  */
 /**
+ * @typedef {Object} TaskPauseRequest
+ * @property {string} request_id
+ * @property {('owner'|'ouroboros')=} actor
+ * @property {string=} reason
+ */
+/**
  * @typedef {Object} TaskPauseResponse
  * @property {boolean=} ok
  * @property {string=} task_id

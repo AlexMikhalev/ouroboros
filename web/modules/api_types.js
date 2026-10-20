@@ -1372,12 +1372,7 @@
  * @typedef {Object} ScheduleDeleteResponse
  * @property {boolean} ok
  */
-/**
- * @typedef {Object} TaskPauseRequest
- * @property {string} request_id
- * @property {('owner'|'ouroboros')=} actor
- * @property {string=} reason
- */
+/** @typedef {import('./task_activity_types.js').TaskPauseRequest} TaskPauseRequest */
 /** @typedef {import('./task_activity_types.js').TaskPauseResponse} TaskPauseResponse */
 /**
  * @typedef {Object} TaskContinueRequest
