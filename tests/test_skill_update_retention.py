@@ -391,7 +391,7 @@ def test_registry_landing_failure_restores_with_landing_reason(registry_release,
             result.provenance["install_specs"]["auto"] = [{"kind": "pip", "package": "demo"}]
             return result
         monkeypatch.setattr(storage, "adapt_openclaw_skill", with_deps)
-        monkeypatch.setattr(storage, "install_isolated_dependencies", fail)
+        monkeypatch.setattr("ouroboros.marketplace.isolated_deps.install_isolated_dependencies", fail)
     elif failure == "record":
         from ouroboros.skill_install_record import write_install_record
         def write(drive, name, record):
@@ -410,7 +410,7 @@ def test_registry_landing_failure_restores_with_landing_reason(registry_release,
 def test_dependency_failure_after_review_restores_with_landing_reason(release, monkeypatch):  # noqa: F811
     drive, _folder, _row, _item = release
     previous, _ = _pending(release)
-    monkeypatch.setattr("ouroboros.skill_review_runner._reconcile_deps_after_pass_review",
+    monkeypatch.setattr("ouroboros.skill_dependencies.ensure_skill_dependencies",
                         lambda *a, **kw: ("failed", "injected dependency failure"))
     result = _review(drive, "clean")
     assert result["deps_status"] == "failed"

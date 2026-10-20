@@ -228,7 +228,7 @@ def test_timeout_history_is_immutable_and_current_lifecycle_keeps_postconditions
     h.release.set()
     assert h.settled.wait(10)
     assert h.history.read_bytes() == original
-    monkeypatch.setattr(runner, "_reconcile_deps_after_pass_review",
+    monkeypatch.setattr("ouroboros.skill_dependencies.ensure_skill_dependencies",
                         lambda *a, **kw: postconditions.append("deps") or ("not_required", ""))
     _handle_review_skill(h.ctx(), skill="late")
     assert load_review_state(h.root, "late").status == "clean"

@@ -76,7 +76,7 @@ export async function fetchJson(url, init = {}, options = {}) {
 export function jsonPost(url, payload = {}, options = {}) {
     return fetchJson(url, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...options.headers },
         body: JSON.stringify(payload),
     }, options);
 }
@@ -505,10 +505,11 @@ export const apiClient = {
     deleteSkill: (skill, payloadRoot, expectedContentHash = '') => jsonPost(`/api/skills/${encodeURIComponent(skill)}/delete`, {
         payload_root: payloadRoot,
         ...(expectedContentHash ? { expected_content_hash: expectedContentHash } : {}),
-    }),
-    skillGrants: (skill, items, expectedContentHash = '') => jsonPost(`/api/skills/${encodeURIComponent(skill)}/grants`, {
+    }, { headers: { Prefer: 'respond-async' } }),
+    skillGrants: (skill, items, expectedContentHash = '', enableAfterGrant = false) => jsonPost(`/api/skills/${encodeURIComponent(skill)}/grants`, {
         items, ...(expectedContentHash ? { expected_content_hash: expectedContentHash } : {}),
-    }),
+        ...(enableAfterGrant ? { enable_after_grant: true } : {}),
+    }, { headers: { Prefer: 'respond-async' } }),
     /**
      * @param {string} skill
      * @param {import('./api_types.js').OwnerSkillPresenceRuntimeRequest} payload

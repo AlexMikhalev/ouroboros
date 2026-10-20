@@ -599,6 +599,10 @@ def ensure_native_telegram_live(
         if (isinstance(code, int) and code >= 400) or err:
             status["error"] = f"grant failed: {err or f'HTTP {code}'}"
             return status
+        if isinstance(payload, dict) and (payload.get("pending") or payload.get("setup_error")):
+            status.update(pending=bool(payload.get("pending")), job_id=payload.get("job_id", ""),
+                          error=payload.get("setup_error", ""), warning=payload.get("message", "Skill setup is still running."))
+            return status
         status["steps"].append("granted")
 
     # 4. Enable through the canonical lifecycle endpoint.
@@ -610,6 +614,9 @@ def ensure_native_telegram_live(
     err = str((payload or {}).get("error") or "") if isinstance(payload, dict) else ""
     if (isinstance(code, int) and code >= 400) or err:
         status["error"] = f"enable failed: {err or f'HTTP {code}'}"
+        return status
+    if isinstance(payload, dict) and payload.get("pending"):
+        status.update(pending=True, job_id=payload.get("job_id", ""), warning=payload.get("message", "Skill setup is still running."))
         return status
     status["steps"].append("enabled")
 

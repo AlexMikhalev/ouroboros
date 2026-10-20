@@ -102,6 +102,7 @@ export function mergeLifecycleEvents(skills, events) {
             if (existing) {
                 existing.lifecycle_status = event.status;
                 existing.lifecycle_kind = event.kind || existing.lifecycle_kind || '';
+                existing.lifecycle_message = event.message || '';
                 existing.lifecycle_pending = event.status !== 'failed';
                 if (event.status === 'failed' && event.error) existing.lifecycle_error = event.error;
             }
@@ -255,7 +256,7 @@ export function buildHealPrompt(skill) {
 async function postWithFeedback(url, body) {
     const resp = await apiFetch(url, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', Prefer: 'respond-async' },
         body: JSON.stringify(body || {}),
     });
     const payload = await resp.json().catch(() => ({}));
@@ -495,7 +496,7 @@ export function initSkills(ctx = {}) {
         return skill;
     }
 
-    async function requestMissingKeyGrants(name, items, expectedContentHash = '') {
+    async function requestMissingKeyGrants(name, items, expectedContentHash = '', enableAfterGrant = false) {
         const cleanItems = (items || []).map((k) => String(k || '').trim()).filter(Boolean);
         if (!cleanItems.length) return null;
         const revision = expectedContentHash || (await currentSkill(name)).content_hash;
@@ -507,30 +508,48 @@ export function initSkills(ctx = {}) {
         });
         if (!ok) throw Object.assign(new Error('Skill grant cancelled.'), { cancelled: true });
         // The desktop shell asks once more in a native dialog it owns.
-        const bridge = window.pywebview?.api?.request_skill_key_grant;
-        const result = bridge ? await bridge(name, cleanItems) : await apiClient.skillGrants(name, cleanItems, revision);
+        const nativeApi = window.pywebview?.api;
+        // A named bridge capability opts in; older UI calling the old method still gets a terminal result.
+        const result = nativeApi?.request_skill_key_grant_with_job
+            ? await nativeApi.request_skill_key_grant_with_job(name, cleanItems, enableAfterGrant)
+            : nativeApi?.request_skill_key_grant
+                ? await nativeApi.request_skill_key_grant(name, cleanItems)
+                : await apiClient.skillGrants(name, cleanItems, revision, enableAfterGrant);
         if (!result?.ok) throw new Error(result?.error || 'Skill grant was cancelled.');
         return result;
     }
 
+    // A slow owner action answers its running job: the toast is the job's own message, the card follows the queue.
+    function stillWorking(name, result) {
+        if (!result?.pending) return false;
+        showToast(`${name}: ${result.message || 'still working…'} It finishes in the background; you can leave this page.`, 'muted');
+        readInstalled({ quiet: true });
+        return true;
+    }
+
+    const missingGrantItems = (grants) => [...(grants.missing_keys || grants.requested_keys || []), ...(grants.missing_permissions || grants.requested_permissions || [])];
+
     async function toggleSkillEnabled(name, wantsEnabled) {
         const result = await postWithFeedback(`/api/skills/${encodeURIComponent(name)}/toggle`, { enabled: wantsEnabled });
-        showToast(`${name} ${wantsEnabled ? 'is on' : 'is off'}${result.extension_action === 'extension_load_error' ? ' — it couldn’t start' : ''}`,
-            result.extension_action === 'extension_load_error' ? 'warn' : 'ok');
+        if (stillWorking(name, result)) return result;
+        const failed = result.extension_action === 'extension_load_error';
+        showToast(`${name} ${wantsEnabled ? 'is on' : 'is off'}${failed ? ' — it couldn’t start' : ''}`, failed ? 'warn' : 'ok');
         emitSkillLifecycle(wantsEnabled ? 'enable' : 'disable', name, result);
         return result;
     }
 
+    // The server's typed refusal says why a skill cannot turn on; nothing is pre-judged here.
     async function turnOn(name) {
         const skill = await currentSkill(name);
-        if ((skill.review_status === 'blockers' && !reviewReady(skill)) || (skill.load_error && grantReady(skill))) {
-            throw new Error('Ask Ouroboros to fix it before turning it on.');
-        }
-        if (!reviewReady(skill)) throw new Error('It turns on after a review passes. Review it, or skip the review.');
         if (!grantReady(skill)) {
-            const grants = skill.grants || {};
-            await requestMissingKeyGrants(name, [...(grants.missing_keys || grants.requested_keys || []),
-                ...(grants.missing_permissions || grants.requested_permissions || [])], skill.content_hash);
+            const granted = await requestMissingKeyGrants(name, missingGrantItems(skill.grants || {}), skill.content_hash, true);
+            if (stillWorking(name, granted)) return granted;  // its single job also owns the requested Enable
+            if (granted?.setup_error) throw new Error(`Access granted, but ${granted.setup_error}`);
+            if (granted?.enabled === true) {
+                showToast(`${name} is on`, 'ok');
+                emitSkillLifecycle('enable', name, granted);
+                return granted;
+            }
         }
         return toggleSkillEnabled(name, true);
     }
@@ -565,6 +584,7 @@ export function initSkills(ctx = {}) {
         if (ok !== true) return false;
         // Skip review skips only the model review: the deterministic file check still runs server-side.
         const result = await postWithFeedback(`/api/owner/skills/${encodeURIComponent(name)}/attest-review`, { expected_content_hash: skill.content_hash });
+        if (stillWorking(name, result)) return true;
         showToast(`${name}: ${blocked ? 'turned on anyway' : 'review skipped'}. Your choice is recorded.`, 'warn');
         emitSkillLifecycle('attest_review', name, result);
         return true;
@@ -654,6 +674,7 @@ export function initSkills(ctx = {}) {
         });
         if (!ok) return false;
         const result = await apiClient.deleteSkill(name, payloadRoot || skill.payload_root, skill.content_hash);
+        if (stillWorking(name, result)) return true;
         showToast(result.ok ? `${name} deleted` : `${name}: delete failed — ${result.error}`, result.ok ? 'ok' : 'danger');
         if (result.ok) emitSkillLifecycle('delete', name, result);
         return true;
@@ -751,13 +772,12 @@ export function initSkills(ctx = {}) {
         if (action === 'turn_on') return turnOn(name);
         if (action === 'grant') {
             const skill = await currentSkill(name);
-            const grants = skill.grants || {};
             const keys = String(options.keys || '').split(',').map((k) => k.trim()).filter(Boolean);
-            const missing = keys.length ? keys : [...(grants.missing_keys || grants.requested_keys || []), ...(grants.missing_permissions || grants.requested_permissions || [])];
-            const result = await requestMissingKeyGrants(name, missing, skill.content_hash);
-            if (result) {
+            const result = await requestMissingKeyGrants(name, keys.length ? keys : missingGrantItems(skill.grants || {}), skill.content_hash);
+            if (result && !stillWorking(name, result)) {
                 const loaded = result.extension_action === 'extension_loaded';
-                showToast(`${name}: access granted${loaded ? ' and it started' : ''}${result.load_error ? `, but it couldn’t start: ${result.load_error}` : ''}`, result.load_error ? 'warn' : 'ok');
+                const problem = result.setup_error || result.load_error;
+                showToast(`${name}: access granted${loaded ? ' and it started' : ''}${problem ? `, but it couldn’t start: ${problem}` : ''}`, problem ? 'warn' : 'ok');
                 emitSkillLifecycle('grant', name, result);
             }
             return true;
