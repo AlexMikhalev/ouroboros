@@ -159,8 +159,8 @@ def review_finishing(blocker: Any) -> bool:
             and blocker.get("kind") in {"delegated_run", "model_handoff"})
 
 
-def request_owner_pause(task_id: str, *, request_id: str) -> Dict[str, Any]:
-    """Accept the owner's Pause of ``task_id``'s tree (see module docstring)."""
+def request_owner_pause(task_id: str, *, request_id: str, by: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Accept the owner's Pause of ``task_id``'s tree (see module docstring); ``by``: the press's declared author."""
     from ouroboros.owner_pause import (
         OwnerPauseRefused, fence_closed, install_fence, launch_lock, read_fence,
     )
@@ -205,7 +205,7 @@ def request_owner_pause(task_id: str, *, request_id: str) -> Dict[str, Any]:
 
     try:
         fence, created = install_fence(root_drive, root_id, request_id=request_id,
-                                      late_work=late_review, actor_id=task_id)
+                                      late_work=late_review, actor_id=task_id, by=by)
     except OwnerPauseRefused as exc:
         return {"ok": False, "error": str(exc) or "pause_refused"}
     except Exception as exc:
