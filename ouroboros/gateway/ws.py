@@ -330,9 +330,13 @@ async def _accept_chat_after(websocket: WebSocket, previous: asyncio.Task | None
         await asyncio.wait((previous,))  # its failure was its own notice
     try:
         await run_sync_to_completion(accept)
-    except Exception:
+    except Exception as exc:
+        from ouroboros.store import StoreBusy
+
+        busy = isinstance(exc, StoreBusy) or isinstance(exc.__cause__, StoreBusy)
+        reason = "⚠️ Your message was not saved: the dialogue store is busy. Please send it again." if busy else ""
         try:
-            await websocket.send_text(_initialization_notice(client_message_id, chat_id))
+            await websocket.send_text(_initialization_notice(client_message_id, chat_id, reason=reason))
         except Exception:
             log.debug("WebSocket closed before its chat failure notice", exc_info=True)
 
