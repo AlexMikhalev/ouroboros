@@ -11,10 +11,11 @@
  * Only the owner's own scroll is a step. It is read from where the newest row stands below the feed's visible
  * bottom, and only between two reads of the same content: older history paged in or let go, a message or a newer
  * page arriving, a row growing and the composer's own reserve change the feed's content height, so the read that
- * sees them starts again from there and neither folds the row nor brings it back by itself. While the room still
- * follows its newest row (`following`, chat_reading_position.js: only the owner's own gesture on the feed ends it)
- * no scroll is the owner reading back: a swipe begun in a card's frame takes its touches away from the feed, and a
- * fold then would resize the composer and lay the still-following feed out at its newest row again.
+ * sees them starts again from there and neither folds the row nor brings it back by itself. Only while the owner's
+ * own gesture has taken the room off its newest row (`readingBack`, chat_reading_position.js) is a scroll the owner
+ * reading back: a swipe begun in a card's frame takes its touches away from the feed (a fold then would resize the
+ * composer and lay the still-following feed out at its newest row again), and the app's own navigation (the waiting
+ * pill's jump to a question) would fold the very pill the owner steps with.
  * style.css draws the fold from two facts on the composer: the row's measured height (`--fold-row-h`, so the line
  * collapses from what it was) and how far ☰ goes down to the field's middle (`--fold-menu-dy`: past a reply staged
  * between them, read at every fold, and again whenever the folded field's height changes, as a draft of several lines
@@ -32,7 +33,7 @@ export const FOLD = Object.freeze({
 
 export function createComposerFold({ feed, wrap, row, win = globalThis.window, doc = globalThis.document,
     isStack = () => isStackLayout(), onLayout = (sync) => onLayoutChange(() => sync(), { w: win }),
-    following = () => false } = {}) {
+    readingBack = () => true } = {}) {
     if (!feed || !wrap || !row) return { destroy() {}, folded: () => false };
     let destroyed = false;
     let folded = false;
@@ -125,7 +126,7 @@ export function createComposerFold({ feed, wrap, row, win = globalThis.window, d
         const prev = now.height === last.height ? last.away : null;
         last = now;
         if (!isStack?.() || busy()) { run = 0; unfold(); return; }
-        if (atLatest() || following()) { run = 0; unfold(); return; }
+        if (atLatest() || !readingBack()) { run = 0; unfold(); return; }
         if (now.away === null || prev === null) return;
         const step = now.away - prev;  // > 0: the newest row went further down, the owner reads back
         if (!step) return;

@@ -56,6 +56,9 @@ export function createChatReadingPosition({ visible, alive, ready, feed, anchors
     const state = {
         top: 0,
         stick: true,
+        // Whether the owner's own gesture moved the feed last, not the app's navigation (a waiting pill's jump to a
+        // question, ↓, a quote): the phone composer folds only for the owner's own reading (composer_fold.js).
+        ownMove: false,
         get generation() { return generation; },
         // The unread opening still owed (`claim(true)`): its claim's generation, else null.
         get arriving() { return arriving === generation ? arriving : null; },
@@ -133,6 +136,7 @@ export function createChatReadingPosition({ visible, alive, ready, feed, anchors
          * reader's own later gesture supersedes it, even one a bounded box absorbs. */
         claim(arrive = false) {
             state.cancel();
+            state.ownMove = false;
             const token = claimed = generation;
             arriving = arrive ? token : null;
             return () => token === generation;
@@ -164,7 +168,7 @@ export function createChatReadingPosition({ visible, alive, ready, feed, anchors
                 }
                 if (event.type === 'pointerdown') {
                     pressed = feed.contains(event.target) ? event.target : null;
-                    if (event.target === feed) { state.cancel(); state.stick = false; }
+                    if (event.target === feed) { state.cancel(); state.stick = false; state.ownMove = true; }
                     dragging = event.target === feed ? 'held' : '';
                     return; // a scrollbar drag owns position, not archive traversal
                 }
@@ -201,7 +205,7 @@ export function createChatReadingPosition({ visible, alive, ready, feed, anchors
                     absorb();
                     return;
                 }
-                state.cancel(); state.stick = false;
+                state.cancel(); state.stick = false; state.ownMove = true;
                 const token = generation, own = ++gestures, since = event.timeStamp;
                 requestAnimationFrame(() => {
                     if (!alive() || !visible() || token !== generation || own !== gestures) return;

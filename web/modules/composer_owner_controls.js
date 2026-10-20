@@ -912,9 +912,9 @@ function createContextModeControl({ el, row, saveContextMode, showToast, refresh
  * @param {(force?: boolean) => Promise<void>|void} deps.refreshState  a forced `/api/state` re-read
  * @param {() => void} [deps.onLayout]  a strip opened or closed on its own line
  * @param {HTMLElement} [deps.box]  independently sized page the composer docks inside
- * @param {() => boolean} [deps.following]  the room still follows its newest row (composer_fold.js)
+ * @param {() => boolean} [deps.readingBack]  the owner's own gesture took the room off its newest row (composer_fold.js)
  */
-export function createComposerOwnerControls({ row, byId, apiFetch, saveEffortRange, showToast, refreshState, onLayout, projectId = '', box = null, win = globalThis.window, doc = globalThis.document, following }) {
+export function createComposerOwnerControls({ row, byId, apiFetch, saveEffortRange, showToast, refreshState, onLayout, projectId = '', box = null, win = globalThis.window, doc = globalThis.document, readingBack }) {
     let destroyed = false;
     const scoped = body => projectId ? { ...body, project_id: projectId } : body;
     const readback = reply => {
@@ -991,7 +991,7 @@ export function createComposerOwnerControls({ row, byId, apiFetch, saveEffortRan
     textObserver?.observe(row, { childList: true, characterData: true, subtree: true });
     // On a phone the row folds away while the owner reads back through the room's history (composer_fold.js).
     const fold = box ? createComposerFold({ feed: box.querySelector('#chat-messages, .chat-messages'),
-        wrap: row?.closest?.('.chat-input-wrap'), row, win, doc, following }) : null;
+        wrap: row?.closest?.('.chat-input-wrap'), row, win, doc, readingBack }) : null;
 
     return {
         context,
