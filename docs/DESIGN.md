@@ -1151,7 +1151,7 @@ card) takes its shape from its census phase through one table pinned to the
 server's `mark_of`, and the owner's move only from proved facts (`can_resume`,
 `requires_owner_action`, its own question). The room says its busiest work:
 working, then queued, waiting, paused, and its mark is the server's status mark
-(Status marks): moving dots while work runs, still dots while it queues or waits on
+(Status marks): moving dots while anything in it runs (a paused work's finishing review too), still dots while it queues or waits on
 something that ends by itself, two bars while paused, a faint ring when
 unconfirmed. While something waits for the owner the amber dot replaces that shape
 beside the room's word; a Pause is not the owner's turn. At rest `Online` keeps its
