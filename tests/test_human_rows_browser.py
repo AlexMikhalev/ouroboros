@@ -165,16 +165,17 @@ def test_reworded_host_rows_live_and_after_reload(subscription_ui, tmp_path, mon
         write_task_result(tmp_path, tid, STATUS_RUNNING, chat_id=1, result="working")
         message_bus.send_with_budget(1, f"Working on {tid}.", is_progress=True, task_id=tid, narration=True)
 
-    # 1. Delegated custody: the owner's card row lists only what holds something.
+    # 1. Delegated custody: the owner's card row lists only what holds something. The delivery reads the task's
+    # current custody (the pipeline's disclosure, handed over as custody_audit), not a stored copy.
+    custody = {"audit_status": "ok", "open_run_ids": [], "pending_invocation_ids": [],
+               "undisposed_patch_run_ids": [], "terminal_runs": [
+                   {"run_id": "run-7c1", "state": "failed", "model": "leaf-model"}]}
     write_task_result(tmp_path, "t-custody", "completed", chat_id=1, result="Report done.",
-                      delegate_terminal_reconciliation={
-                          "audit_status": "ok", "open_run_ids": [], "pending_invocation_ids": [],
-                          "undisposed_patch_run_ids": [], "terminal_runs": [
-                              {"run_id": "run-7c1", "state": "failed", "model": "leaf-model"}]})
+                      delegate_terminal_reconciliation=custody)
     event = prepare_terminal_send_event(
         tmp_path, {"id": "t-custody", "chat_id": 1}, "Report done.", {"terminal_origin": "model_final"},
         {"type": "send_message", "task_id": "t-custody", "chat_id": 1, "text": "Report done.",
-         "progress_meta": {"task_terminal_status": "completed"}}, presence=False)
+         "progress_meta": {"task_terminal_status": "completed"}}, presence=False, custody_audit=custody)
     events_chat_delivery._handle_send_message(event, sender)
     # 2. A cancellation receipt without a saved message promises nothing below.
     write_task_result(tmp_path, "t-cancel", "cancelled", chat_id=1, result="stopped")
