@@ -194,7 +194,8 @@ def test_the_index_is_refused_by_any_name_that_reaches_it(tmp_path, monkeypatch)
         assert _reset_refused(database)
 
 
-def test_a_spelling_the_volume_keeps_apart_from_the_index_is_the_user_s_file(tmp_path, monkeypatch):
+@pytest.mark.parametrize("ending", [b"\n", b"\r\n"], ids=["LF", "CRLF"])
+def test_a_spelling_the_volume_keeps_apart_from_the_index_is_the_user_s_file(tmp_path, monkeypatch, ending):
     """``x.db-SHM`` is an index only where the volume resolves it to ``x.db-shm``'s own file: on a
     case-sensitive volume it is the user's file, read, copied and listed as one (folding its name made
     it an index by name alone, so every reader refused it and every copy left it out). A host volume that
@@ -208,15 +209,16 @@ def test_a_spelling_the_volume_keeps_apart_from_the_index_is_the_user_s_file(tmp
     with contextlib.closing(sqlite3.connect(folder / "x.db")) as conn:
         conn.execute("CREATE TABLE t(v)")
     notes = folder / "x.db-SHM"
-    notes.write_text("the user's notes\n", encoding="utf-8")
+    payload = b"the user's notes" + ending
+    notes.write_bytes(payload)
     if (folder / "x.db-shm").exists():  # the host volume folds case: emulate one that does not
         same = os.path.samefile
         monkeypatch.setattr(os.path, "samefile", lambda a, b: same(a, b) and all(
             pathlib.Path(p).name in os.listdir(pathlib.Path(p).parent) for p in (a, b)))
     assert store.is_wal_index(notes) is False
-    assert store.read_file_bytes(notes) == b"the user's notes\n"
+    assert store.read_file_bytes(notes) == payload
     files._copy_path(folder, tmp_path / "copy")
-    assert (tmp_path / "copy" / "x.db-SHM").read_text(encoding="utf-8") == "the user's notes\n"
+    assert (tmp_path / "copy" / "x.db-SHM").read_bytes() == payload
     assert sorted(task_custody._listed(folder)) == ["x.db", "x.db-SHM"]
 
 
@@ -427,7 +429,8 @@ def test_a_directory_artifact_leaves_the_index_out_as_an_excluded_member(tmp_pat
     assert ledger["excluded"] == [{"path": "current.sqlite-shm", "reason": "SQLite WAL index"}]
 
 
-def test_a_base_linked_back_to_its_own_index_name_is_no_index_and_never_recurses(tmp_path):
+@pytest.mark.parametrize("ending", [b"\n", b"\r\n"], ids=["LF", "CRLF"])
+def test_a_base_linked_back_to_its_own_index_name_is_no_index_and_never_recurses(tmp_path, ending):
     """A regular ``b-shm`` and a link ``b`` naming it: probing ``b-shm`` led to ``b``, whose real name
     is ``b-shm`` again, without end (a RecursionError out of every reader: the panel answered 500, the
     capture failed, a snapshot was refused). A base whose real name ends in ``-shm`` is never probed."""
@@ -441,21 +444,24 @@ def test_a_base_linked_back_to_its_own_index_name_is_no_index_and_never_recurses
                             "commit", "--allow-empty", "-m", "base"]):
         subprocess.run(["git", *args], cwd=repo, check=True, capture_output=True)
     (repo / "fix.py").write_text("def fixed():\n    return 1\n", encoding="utf-8")
+    payload = b"notes" + ending
     for place in (folder, repo):
-        (place / "b-shm").write_text("notes\n", encoding="utf-8")
+        (place / "b-shm").write_bytes(payload)
         try:
             (place / "b").symlink_to("b-shm")
         except OSError:
             pytest.skip("symbolic links need a privilege here")
     assert store.is_wal_index(folder / "b-shm") is False and store.is_wal_index(folder / "b") is False
-    assert store.read_file_bytes(folder / "b-shm") == b"notes\n"
+    assert store.read_file_bytes(folder / "b-shm") == payload
     files._copy_path(folder, tmp_path / "odd-copy")
     assert sorted(path.name for path in (tmp_path / "odd-copy").iterdir()) == ["b", "b-shm"]
+    assert (tmp_path / "odd-copy" / "b-shm").read_bytes() == payload
     _, manifest = capture.write_workspace_patch_artifacts(repo, tmp_path / "capture", task={})
     assert manifest["status"] == "ready_with_changes", manifest["errors"]
 
 
-def test_a_file_named_like_the_index_of_a_link_to_a_database_is_an_ordinary_file(tmp_path):
+@pytest.mark.parametrize("ending", [b"\n", b"\r\n"], ids=["LF", "CRLF"])
+def test_a_file_named_like_the_index_of_a_link_to_a_database_is_an_ordinary_file(tmp_path, ending):
     """SQLite names an index after its database's real path, so it sits beside the real file, never
     beside a link to it: a ``report-shm`` next to a link ``report -> actual.sqlite`` is the user's own
     file (actual.sqlite's index would be actual.sqlite-shm). It reads, copies and is listed for the
@@ -471,11 +477,12 @@ def test_a_file_named_like_the_index_of_a_link_to_a_database_is_an_ordinary_file
         (folder / "report").symlink_to("actual.sqlite")
     except OSError:
         pytest.skip("symbolic links need a privilege here")
-    (folder / "report-shm").write_text("the user's report\n", encoding="utf-8")
+    payload = b"the user's report" + ending
+    (folder / "report-shm").write_bytes(payload)
     assert store.is_wal_index(folder / "report-shm") is False and store.is_wal_index(folder / "report") is False
-    assert store.read_file_bytes(folder / "report-shm") == b"the user's report\n"
+    assert store.read_file_bytes(folder / "report-shm") == payload
     files._copy_path(folder, tmp_path / "copy")
-    assert (tmp_path / "copy" / "report-shm").read_text(encoding="utf-8") == "the user's report\n"
+    assert (tmp_path / "copy" / "report-shm").read_bytes() == payload
     assert sorted(task_custody._listed(folder)) == ["actual.sqlite", "report-shm"]
 
 

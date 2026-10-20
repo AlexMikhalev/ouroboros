@@ -207,7 +207,10 @@ def test_question_read_is_readonly(tmp_path):
 
 
 @pytest.mark.parametrize("room,chat_id", [("main", 1), ("agent-to-agent", -1001)])
-def test_mains_own_unanswered_questions_are_named_by_identity_and_other_rooms_stay_out(tmp_path, room, chat_id):
+@pytest.mark.parametrize("second,order", [(1, ("waited", "calm")), (0, ("calm", "waited"))],
+                         ids=["distinct-times", "tied-times"])
+def test_mains_own_unanswered_questions_are_named_by_identity_and_other_rooms_stay_out(
+        tmp_path, monkeypatch, room, chat_id, second, order):
     """Main's waiting count reaches Main's own unanswered questions, whose cards are already its native
     history: the census names each by identity and never builds a copy. Another known room that is
     neither Main nor a Project stays out of Main, without a gap."""
@@ -215,8 +218,12 @@ def test_mains_own_unanswered_questions_are_named_by_identity_and_other_rooms_st
     from ouroboros.owner_wait import set_owner_wait
 
     write_task_result(tmp_path, "author", "running", chat_id=chat_id)
-    asked = [record_asked(tmp_path, "author", quiz_id=quiz_id, question=f"{quiz_id}?", options=["Yes", "No"],
-                          wait_for_answer=quiz_id == "waited", chat_id=chat_id) for quiz_id in ("waited", "calm")]
+    asked = []
+    # Coarse clocks can give both questions the same timestamp; identity breaks that tie.
+    for quiz_id, tick in (("waited", 0), ("calm", second)):
+        monkeypatch.setattr("ouroboros.owner_quiz.utc_now_iso", lambda tick=tick: f"2026-01-01T00:00:0{tick}+00:00")
+        asked.append(record_asked(tmp_path, "author", quiz_id=quiz_id, question=f"{quiz_id}?", options=["Yes", "No"],
+                                  wait_for_answer=quiz_id == "waited", chat_id=chat_id))
     for block in asked:
         record_publication(tmp_path, "author", block["quiz_id"], chat_id)
     set_owner_wait(tmp_path, "author", {"quiz_id": "waited", "wait_id": "w", "state": "waiting"})
@@ -226,16 +233,17 @@ def test_mains_own_unanswered_questions_are_named_by_identity_and_other_rooms_st
         assert snapshot["current_questions"] == []
         return
     waited, calm = asked
-    assert snapshot["current_questions"] == [
-        {"task_id": "author", "quiz_id": "waited", "chat_id": 1, "native": True, "quiz_state": "open",
+    expected = {
+        "waited": {"task_id": "author", "quiz_id": "waited", "chat_id": 1, "native": True, "quiz_state": "open",
          "ts": waited["asked_at"], "owner_wait_state": "waiting"},
-        {"task_id": "author", "quiz_id": "calm", "chat_id": 1, "native": True, "quiz_state": "open",
-         "ts": calm["asked_at"]}]
+        "calm": {"task_id": "author", "quiz_id": "calm", "chat_id": 1, "native": True, "quiz_state": "open",
+         "ts": calm["asked_at"]}}
+    assert snapshot["current_questions"] == [expected[quiz_id] for quiz_id in order]
     # Unanswered stays current after its author finishes; an answered one leaves once delivered.
     reconcile_terminal(tmp_path, "author")
     rows = main_decisions_snapshot(tmp_path, [], {})["current_questions"]
     assert [(row["quiz_id"], row["quiz_state"], row["native"]) for row in rows] == [
-        ("waited", "expired_terminal", True), ("calm", "expired_terminal", True)]
+        (quiz_id, "expired_terminal", True) for quiz_id in order]
     record_answered(tmp_path, "author", quiz_id="calm", option_index=0, request_id="owner", allow_expired=True)
     mark_discharged(tmp_path, "author", "calm")
     assert [row["quiz_id"] for row in main_decisions_snapshot(tmp_path, [], {})["current_questions"]] == ["waited"]

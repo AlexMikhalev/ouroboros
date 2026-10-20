@@ -932,8 +932,10 @@ export function createComposerOwnerControls({ row, byId, apiFetch, saveEffortRan
     const capsules = [];
     // Measure the settled, closed row synchronously: keep names while it fits, else rings and
     // values. If long translated values still wrap, cap the widest with an ellipsis; accessible
-    // names and open strips keep full words. The closed names never flicker between fits.
-    const shownKids = () => Array.from(row.children || []).filter((kid) => widthOf(kid) > 0);
+    // names and open strips keep full words. The closed names never flicker between fits. Contributed chips take
+    // only the room the capsules leave (composer_chips.js), so their slot is never part of the fit.
+    const shownKids = () => Array.from(row.children || [])
+        .filter((kid) => widthOf(kid) > 0 && !kid.hasAttribute?.('data-composer-chips'));
     // A phone's ☰ leads the line and never wraps, so it is not what the line is read by: while the row folds it goes
     // down beside the field (composer_fold.js) and the line it left still holds the capsules.
     function wraps() {

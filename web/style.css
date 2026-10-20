@@ -3823,7 +3823,8 @@ html[data-layout="stack"] .chat-page-note {
     align-items: center;
     justify-content: flex-start;
     flex-wrap: wrap;
-    gap: var(--space-2);
+    --composer-row-gap: var(--space-2);
+    gap: var(--composer-row-gap);
     min-width: 0;
     padding: 0 var(--space-2);
     /* Size containment: the row's width never depends on what it holds, so the open effort
@@ -3984,8 +3985,13 @@ html[data-layout="stack"] .chat-page-note {
     gap: 6px;
     min-width: 0;
     max-width: max-content;
+    /* The room before the first chip is the slot's own (an empty first item and the gap after it): it gives the row's
+       gap back, so a line the capsules fill keeps the slot on it at no width ("roomless") instead of wrapping it onto
+       a second line, and the capsules' fit never counts it (composer_owner_controls.js). */
+    margin-inline-start: calc(-1 * var(--composer-row-gap));
     overflow: hidden;
 }
+.chat-composer-chips::before { content: ''; flex: none; width: calc(var(--composer-row-gap) - 6px); }
 .chat-composer-chips > * { flex: 0 0 auto; }
 /* Where the engine can clip one axis, the slot clips only sideways, so the chips keep their rest shadow below them.
    Folded, it takes all the room the capsules leave, and "+N" lists the chips that do not fit (composer_chips.js). */
@@ -7000,12 +7006,12 @@ html[data-layout="stack"] .chat-input-wrap {
 }
 
 html[data-layout="stack"] .chat-toolbar-row {
+    --composer-row-gap: 6px;
     position: static;
     right: auto;
     bottom: auto;
     z-index: auto;
     justify-content: flex-start;
-    gap: 6px;
     padding: 0 6px;
 }
 

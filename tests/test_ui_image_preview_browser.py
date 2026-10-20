@@ -705,8 +705,11 @@ def test_owner_files_and_photos_read_in_place_with_a_head_that_wraps(direct_serv
                 touch.goto(url, wait_until="domcontentloaded")
                 item = touch.locator(f'{feed} .chat-gallery-item:has(img[alt="{TINY}"])')
                 item.wait_for(state="visible", timeout=30_000)
-                # The room lands at its newest message once its history is read; the place is taken after that.
+                # The room lands at its newest message once its history is read, and lands there again as each of its
+                # photos loads (chat.js reflows on an image's load while the room follows its newest message): the
+                # place is taken after that, or a photo that loads late moves the ••• under its open menu, which closes.
                 touch.wait_for_selector(f'{feed}[data-history-hydrated="true"]', state="attached")
+                touch.wait_for_function("feed => [...document.querySelectorAll(feed + ' img')].every((img) => img.complete)", arg=feed)
                 _feed_scroll(touch)
                 item.evaluate("el => el.scrollIntoView({ block: 'center' })")
                 item.locator("img").evaluate("img => img.decode()")

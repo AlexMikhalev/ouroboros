@@ -473,3 +473,33 @@ test('what moves with the drawer (the room card, its veil) follows its number an
     assert.equal(card.styleProps.has('--drawer-p'), false);
     w.dispose();
 });
+
+test('a finger that rested longer than the sample window before it lifted has no speed: where it stopped decides', () => {
+    // Quickly to 30% open, then still: under half, it springs back closed (no fling read from moves long gone).
+    let w = world();
+    open(w, { from: 100, to: 100 + 12 + 96, steps: 4, dt: 16, up: false });  // 24px per 16ms, p = 0.3
+    w.touch('touchend', { x: 208, y: 300, dt: DRAG.sampleWindow + 300 });
+    assert.deepEqual(w.state.set, [], 'rested under half: springs back');
+    w.dispose();
+    // The open drawer quickly 12% of the way closed, then still: less than 30% gone, it stays open.
+    w = world({ open: true });
+    w.scrim.hidden = false;
+    w.touch('touchstart', { x: 300, y: 300, target: w.sidebar });
+    w.touch('touchmove', { x: 288, y: 300 });
+    w.touch('touchmove', { x: 268, y: 300 });
+    w.touch('touchmove', { x: 250, y: 300 });
+    w.touch('touchend', { x: 250, y: 300, dt: DRAG.sampleWindow + 300 });
+    assert.deepEqual(w.state.set, [], 'rested open: stays open');
+    w.dispose();
+    // The system taking a rested finger reads its place too.
+    w = world();
+    open(w, { from: 100, to: 100 + 12 + 96, steps: 4, dt: 16, up: false });
+    w.touch('touchcancel', { x: 208, y: 300, dt: DRAG.sampleWindow + 300 });
+    assert.deepEqual(w.state.set, [], 'taken after a rest under half: back closed');
+    w.dispose();
+    // Lifted while still moving (within the window), the same drag keeps the finger's speed: a fling.
+    w = world();
+    open(w, { from: 100, to: 100 + 12 + 96, steps: 4, dt: 16 });
+    assert.deepEqual(w.state.set, [true], 'lifted moving: a fling opens');
+    w.dispose();
+});

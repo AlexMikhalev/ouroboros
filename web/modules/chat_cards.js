@@ -9,7 +9,7 @@
 //                the Widgets page, so leaving that page disposes nothing here: the feed disposes it with its row;
 //   app        → card_frames.js, an opaque frame that cannot fetch or load; its submit fills the owner's draft.
 // Frames mount lazily near the viewport, at most three live at once; a far one becomes a static face with Open.
-import { apiClient, fetchJson } from './api_client.js';
+import { apiClient, apiFetch, fetchJson } from './api_client.js';
 import { createCardPresses, mountCardComponents, setCardPinned } from './card_components.js';
 import { createInlineFit, mountCardApp } from './card_frames.js';
 import { escapeHtmlText as escapeHtml } from './utils.js';
@@ -45,7 +45,7 @@ export function readCardBody(cardId, revision = 0, read = (url) => fetchJson(url
 
 function readAppText(url, sha256) {
     if (!appTexts.has(sha256)) {
-        appTexts.set(sha256, fetch(url, { cache: 'no-store' }).then((response) => {
+        appTexts.set(sha256, apiFetch(url, { cache: 'no-store' }).then((response) => {
             if (!response.ok) throw new Error(`HTTP ${response.status}`);
             return response.text();
         }).catch((error) => { appTexts.delete(sha256); throw error; }));

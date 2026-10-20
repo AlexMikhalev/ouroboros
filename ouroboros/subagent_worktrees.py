@@ -1364,10 +1364,8 @@ def find_execution_snapshot(snapshot_id: str, data_dir: Optional[Any] = None) ->
     snap = str(snapshot_id or "").strip()
     if not snap:
         return None
-    for entry in _load_registry(data_dir, strict=True, op="find_execution_snapshot"):
-        if entry.get("kind") == _KIND_DELEGATED_EXEC and entry.get("snapshot_id") == snap:
-            return entry
-    return None
+    return next((entry for entry in _load_registry(data_dir, strict=True, op="find_execution_snapshot")
+                 if entry.get("kind") == _KIND_DELEGATED_EXEC and entry.get("snapshot_id") == snap), None)
 
 
 def remove_execution_snapshot(
@@ -1481,10 +1479,7 @@ def remove_worktree(
     for entry in entries:
         if entry.get("kind") in (_KIND_DELEGATED_EXEC, _KIND_BODY_CANDIDATE):
             continue
-        if task_id and entry.get("task_id") == str(task_id):
-            match = entry
-            break
-        if want_path and entry.get("path") == want_path:
+        if (task_id and entry.get("task_id") == str(task_id)) or (want_path and entry.get("path") == want_path):
             match = entry
             break
     root = _resolve_root(worktree_root)

@@ -91,15 +91,16 @@ def _run(label: str, argv: list[str], cwd: pathlib.Path) -> int:
     from ouroboros.process_containment import ProcessContainer
     from ouroboros.test_parallelism import NESTED_WORKERS_ENV, bounded_test_command
 
-    print(f"\n=== {label}: {shlex.join(argv[2:] if argv[0] == sys.executable else argv)}", flush=True)
     started = time.monotonic()
     env = node_environment(os.environ)
     env["PYTEST_XDIST_AUTO_NUM_WORKERS"] = str(_workers())
     env[NESTED_WORKERS_ENV] = env["PYTEST_XDIST_AUTO_NUM_WORKERS"]
+    argv = bounded_test_command(argv, env)
+    print(f"\n=== {label}: {shlex.join(argv[2:] if argv[0] == sys.executable else argv)}", flush=True)
     container = ProcessContainer(lifeline=True, overload=True)
     proc = None
     try:
-        proc = container.spawn(bounded_test_command(argv, env), cwd=str(cwd), env=env)
+        proc = container.spawn(argv, cwd=str(cwd), env=env)
         code = proc.wait()
     except KeyboardInterrupt:
         code = 130

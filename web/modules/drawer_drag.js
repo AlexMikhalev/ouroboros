@@ -28,7 +28,7 @@ export const DRAG = Object.freeze({
     flingVelocity: 0.3,  // px/ms
     openPast: 0.5,       // a slow release opens past this progress
     closePast: 0.3,      // a slow release closes once this much of the drawer has gone
-    sampleWindow: 100,   // ms of velocity samples
+    sampleWindow: 100,   // ms of velocity samples; a finger that rests longer before it lifts has no speed
     clickGuard: 400,     // ms after a drag during which the click that ends it is not a tap
     // The settle (style.css's curve starts at 2.25× its average speed): a fling keeps the finger's speed, a slow
     // release moves at least `settleSpeed`, within `settleMin`…`settleMax` (Ionic's iOS menu takes 400 ms).
@@ -226,17 +226,19 @@ export function bindDrawerDrag({
     function onEnd(event) {
         if (!g) return;
         const touch = touchIn(event.changedTouches, g.id);
-        if (touch) release(touch.clientX, true);
+        if (touch) release(touch.clientX, true, event.timeStamp);
     }
 
-    /** The finger left at `x` (an end, or the system taking the touch): settle at the nearest state the finger's
-     * speed points to, never stranded halfway. */
-    function release(x, byFinger = false) {
+    /** The finger left at `x` at time `at` (an end, or the system taking the touch): settle at the nearest state the
+     * finger's speed points to, never stranded halfway. A finger that rested longer than the sample window before it
+     * left has no speed: where it stopped decides. */
+    function release(x, byFinger = false, at = now()) {
         const gg = end();
         if (!gg || gg.mode !== 'drag') return;  // a tap, not a drag
         const first = gg.samples[0];
         const last = gg.samples[gg.samples.length - 1];
-        const velocity = first && last && last[0] > first[0] ? (last[1] - first[1]) / (last[0] - first[0]) : 0;
+        const moving = Boolean(last) && at - last[0] <= DRAG.sampleWindow;
+        const velocity = moving && last[0] > first[0] ? (last[1] - first[1]) / (last[0] - first[0]) : 0;
         const travel = Math.abs((Number.isFinite(x) ? x : gg.lastX ?? gg.x0) - gg.x0);
         let open;
         if (Math.abs(velocity) >= DRAG.flingVelocity && travel >= DRAG.minTravel) open = velocity > 0;
@@ -256,7 +258,7 @@ export function bindDrawerDrag({
     function onCancel(event) {
         if (!g) return;
         const touch = touchIn(event.changedTouches, g.id);
-        if (touch) release(touch.clientX ?? g.lastX);
+        if (touch) release(touch.clientX ?? g.lastX, false, event.timeStamp);
     }
 
     /** A second finger or a new width: back to the start, no history change. */

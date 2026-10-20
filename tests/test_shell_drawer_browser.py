@@ -301,16 +301,19 @@ def test_the_drawer_and_its_scrim_settle_smoothly_and_a_drifting_thumb_keeps_it(
         facts['fling_state'] = page.evaluate(DRAWER)
         page.evaluate('window.__ouroLayers.pop()')
         page.wait_for_timeout(500)
-        # A thumb that drifts down 120px over the second half of the drag.
+        # A thumb that drifts down 120px over the second half of the drag. The drawer follows from where the axis
+        # locked (Chromium drops the first move inside its touch slop), so the drag ends well past half open and the
+        # release opens it as a slow one too: a CI runner sends these steps ~50 ms apart, too slow for a fling.
         top = page.evaluate(FEED_TOP, '#chat-messages')
         cdp = page.context.new_cdp_session(page)
         try:
-            path = [(40 + 12 * i, y + (0 if i < 8 else 15 * (i - 8))) for i in range(17)]
+            path = [(40 + 14 * i, y + (0 if i < 8 else 15 * (i - 8))) for i in range(17)]
             for i, (px, py) in enumerate(path):
                 cdp.send('Input.dispatchTouchEvent', {'type': 'touchStart' if i == 0 else 'touchMove',
                                                       'touchPoints': [{'x': px, 'y': py, 'id': 1}]})
                 page.wait_for_timeout(16)
             facts['drift_mid'] = page.evaluate(DRAWER)
+            facts['drift_held'] = page.evaluate(PULLED)
             cdp.send('Input.dispatchTouchEvent', {'type': 'touchEnd', 'touchPoints': []})
         finally:
             cdp.detach()
@@ -337,6 +340,8 @@ def test_the_drawer_and_its_scrim_settle_smoothly_and_a_drifting_thumb_keeps_it(
     settles = {f['settle'] for f in facts['fling'] if f['settle']}
     assert settles and all(s.endswith('ms') for s in settles), ('a fling settles at the finger\'s speed', facts['fling'])
     assert facts['fling_state']['open'] is True, facts
+    assert facts['drift_held']['dragging'] and facts['drift_held']['p'] > 0.5, (
+        'at the end of the drift the drawer is still under the finger, past half open', facts)
     assert facts['drift_mid']['open'] is False and facts['drift']['open'] is True, ('the drifting thumb keeps the drawer', facts)
     assert facts['feed_top'][0] == facts['feed_top'][1], ('the feed under the dragged drawer did not scroll', facts)
 
@@ -375,6 +380,10 @@ def test_a_pull_past_fully_open_shows_the_drawer_at_the_edge_not_the_room(chromi
             cdp.send('Input.dispatchTouchEvent', {'type': 'touchMove', 'touchPoints': [{'x': width - 110, 'y': y, 'id': 1}]})
             page.wait_for_timeout(32)
             facts['back'] = page.evaluate(PULLED)
+            # Then the finger rests and lets go: a release, not a fling back (drawer_drag.js reads no speed from a
+            # finger that stopped longer than DRAG.sampleWindow, 100 ms, before it lifted). Lifted at once, the 100 px
+            # stroke back is a fling whose speed depends on how long the 1x1 screenshot above took.
+            page.wait_for_timeout(150)
             cdp.send('Input.dispatchTouchEvent', {'type': 'touchEnd', 'touchPoints': []})
         finally:
             cdp.detach()

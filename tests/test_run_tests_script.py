@@ -74,7 +74,7 @@ def test_default_mode_is_one_run_over_both_lanes(run_tests, monkeypatch, standal
     assert all(flag in command for flag in untouched)
 
 
-def test_the_worker_override_steers_xdist_like_the_gate(run_tests, monkeypatch, standalone_budget):
+def test_the_worker_override_steers_xdist_like_the_gate(run_tests, monkeypatch, standalone_budget, capsys):
     from ouroboros import process_containment
 
     seen = {}
@@ -96,7 +96,9 @@ def test_the_worker_override_steers_xdist_like_the_gate(run_tests, monkeypatch, 
             seen["closed"] = True
 
     monkeypatch.setattr(process_containment, "ProcessContainer", Owner)
-    assert run_tests._run("x", [run_tests.sys.executable, "-m", "pytest"], run_tests.REPO) == 0
+    assert run_tests._run("x", [run_tests.sys.executable, "-m", "pytest", "-n", "8"], run_tests.REPO) == 0
+    assert seen["argv"][-2:] == ["-n", "3"]
+    assert "=== x: pytest -n 3\n" in capsys.readouterr().out
     assert seen["env"]["PYTEST_XDIST_AUTO_NUM_WORKERS"] == "3"
     assert seen["env"]["OURO_TEST_WORKER_BUDGET"] == "3"
     assert seen["options"] == {"lifeline": True, "overload": True}

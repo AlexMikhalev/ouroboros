@@ -1,5 +1,6 @@
 """Persistent SQLite connections: cost, lifetime, durability and old-body compatibility."""
 import contextlib
+import json
 import multiprocessing
 import os
 import sqlite3
@@ -7,6 +8,7 @@ import subprocess
 import sys
 import threading
 import time
+import types
 
 import pytest
 
@@ -196,12 +198,49 @@ def test_a_first_wal_open_waits_out_another_writer_within_its_budget(tmp_path, m
         writer.close()
 
 
+def _trace_wal_waits(monkeypatch, budget):
+    """Observe the helper's clock and the timeout SQLite actually receives, without replacing waits."""
+    trace = {"clock": [], "sleeps": [], "attempts": []}
+
+    def clock():
+        sample = time.monotonic()
+        trace["clock"].append(sample)
+        return sample
+
+    def remaining():
+        return trace["clock"][0] + budget - trace["clock"][-1]
+
+    def sleep(seconds):
+        before = time.monotonic()
+        left = remaining()
+        time.sleep(seconds)
+        trace["sleeps"].append({"remaining": left, "granted": seconds,
+                                "elapsed": time.monotonic() - before})
+
+    class Connection(store._StoreConnection):
+        def execute(self, sql, *args, **kwargs):
+            if not sql.startswith("PRAGMA journal_mode = "):
+                return super().execute(sql, *args, **kwargs)
+            attempt = {"remaining": remaining(), "started": time.monotonic(),
+                       "timeout_ms": super().execute("PRAGMA busy_timeout").fetchone()[0]}
+            try:
+                return super().execute(sql, *args, **kwargs)
+            finally:
+                attempt["elapsed"] = time.monotonic() - attempt["started"]
+                trace["attempts"].append(attempt)
+
+    monkeypatch.setattr(store, "time", types.SimpleNamespace(monotonic=clock, sleep=sleep))
+    monkeypatch.setattr(store, "_StoreConnection", Connection)
+    return trace
+
+
 def test_a_first_wal_open_never_waits_past_its_budget(tmp_path, monkeypatch):
     """The waits of a first WAL open add up to its budget, not more: retries that a writer refuses at
     once, then an attempt that a remaining reader holds in SQLite's busy handler, which may wait only
     for what is left (the connection's own busy timeout would allow the whole budget again). The writer
-    lets go halfway, so the bounded open fails near 4 s and the unbounded one near 6 s; the 5 s line
-    leaves a second each way for a slow runner and a coarse timer."""
+    lets go halfway. Check waits granted against the helper's sampled deadline: under macOS CPU
+    contention SQLite's busy handler can take much longer than the timeout it was given. Setup
+    and native scheduling time are diagnostics, not additional waits granted by the helper."""
     monkeypatch.setattr(store, "_journal_mode", lambda *_: "PERSIST")
     path = publish(tmp_path)
     store.close_connections()
@@ -214,14 +253,23 @@ def test_a_first_wal_open_never_waits_past_its_budget(tmp_path, monkeypatch):
     released_at = []
     released = threading.Timer(2.0, lambda: (writer.execute("ROLLBACK"), released_at.append(time.monotonic())))
     released.start()
-    budget, started = 4.0, time.monotonic()
+    budget = 4.0
+    trace = _trace_wal_waits(monkeypatch, budget)
+    started = time.monotonic()
     try:
         with pytest.raises(sqlite3.OperationalError, match="locked"):
             store.connect(path, store.TIER_ENFORCED, wait_sec=budget)
         finished = time.monotonic()
+        phases = json.dumps({"setup_sec": trace["clock"][0] - started,
+                             "total_sec": finished - started, "released_at": released_at, **trace})
         # Only a writer that let go before the open ended put the reader's wait to the test.
-        assert released_at and released_at[0] < finished, "the writer was still holding when the open ended"
-        assert finished - started < budget + 1.0, "the open waited past its budget"
+        assert released_at and released_at[0] < finished, phases
+        assert len(trace["attempts"]) > 1 and trace["sleeps"], phases
+        assert all(0 < wait["granted"] <= wait["remaining"] for wait in trace["sleeps"]), phases
+        # SQLite's timeout is an integer millisecond; a final sub-ms remainder may grant 1 ms.
+        assert all(0 <= attempt["timeout_ms"] <= attempt["remaining"] * 1000 + 1
+                   for attempt in trace["attempts"]), phases
+        assert trace["attempts"][-1]["timeout_ms"] < budget * 1000, phases
     finally:
         released.join(10)
         writer.close()
