@@ -6,7 +6,7 @@ answer as ``boot``), the boot coordinator that runs the lifespan's post-serve st
 own thread, and the supervisor generation's wedge detection: the two silent-wedge
 predicates (a stalled supervisor loop, a heartbeat-silent in-process chat turn), the owner
 alert one of them raises, the measurements the loop publishes about itself (its stall facts
-and the per-minute ``supervisor_load`` row), and the dedicated watchdog thread that
+and the ``supervisor_load`` row per busy minute), and the dedicated watchdog thread that
 evaluates both outside the loop it watches.
 """
 
@@ -591,7 +591,7 @@ class BootDocument:
     ``dialogue_ready``: an owner message is accepted durably (the chat bridge is published).
     ``tasks_ready``: pooled task starts are admitted (the supervisor's readiness latch, read
     from the caller at snapshot time so one latch serves the API and this document).
-    ``supervisor_load``: the latest per-minute load row's ``ts`` and ``max_event_lag_sec``
+    ``supervisor_load``: the latest load row's ``ts`` and ``max_event_lag_sec``
     (None before this generation's first row). ``steps``: every named boot step in the order
     it started, with its outcome. A failed
     fail-soft step (an extension that did not load) is reported as such and does not fail the
