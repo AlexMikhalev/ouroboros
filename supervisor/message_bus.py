@@ -6,6 +6,7 @@ Chat, media, typing and log frames never carry A2A synthetic chats to the browse
 from __future__ import annotations
 
 import base64
+import contextlib
 import logging
 import queue
 import threading
@@ -1283,16 +1284,14 @@ def send_with_budget(chat_id: int, text: str, log_text: Optional[str] = None,
     Narration True means model speech, False host speech; absent legacy rows keep
     their old reading. Normalize new host sends once so startup/restart/evolution,
     command replies and provider incidents do not become model card titles (#1011).
-    Explicit narration (argument or progress_meta) wins. Required writes use the
-    existing outbox; named finals also require a positive transport receipt, while
-    ordinary required notices retain their history-only acknowledgement contract.
+    Explicit narration (argument or progress_meta) wins. A named delivery is owed
+    in the existing outbox and also requires a positive transport receipt. A
+    required notice without one has one owner, its producer, which retries or
+    records a failed write: it keeps the caller's wait and raises when unwritten.
     """
-    if require_write and DATA_DIR and not (progress_meta or {}).get("delivery_id"):
-        from supervisor.events_chat_delivery import send_required_message
-        return send_required_message(DATA_DIR, dict(chat_id=chat_id, text=text, log_text=log_text,
-            format=fmt, is_progress=is_progress, task_id=task_id, progress_meta=progress_meta or {},
-            ts=ts or utc_now_iso(), role=role, system_type=system_type, narration=narration))
-    with acquisition_budget(0 if is_progress and not require_write else ACQUISITION_SLICE_SEC):
+    producer_owned = require_write and not (progress_meta or {}).get("delivery_id")
+    with (contextlib.nullcontext() if producer_owned
+          else acquisition_budget(0 if is_progress and not require_write else ACQUISITION_SLICE_SEC)):
         st = load_state()
         owner_id = int(st.get("owner_id") or 0)
         _text = str(text or "")

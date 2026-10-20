@@ -178,21 +178,38 @@ def test_queued_original_is_skipped_by_direct_continuation(tmp_path, monkeypatch
 
 
 @pytest.mark.parametrize("role,kind,narration", [("system", "reminder", False), ("assistant", "", True)])
-def test_write_required_notice_without_an_id_uses_the_same_outbox(tmp_path, monkeypatch, sender, role, kind, narration):
+def test_write_required_notice_without_an_id_stays_with_its_producer(tmp_path, monkeypatch, sender, role, kind, narration):
     seed(tmp_path, monkeypatch)
     _ctx, frames, bus = sender
-    with pinned(tmp_path):
-        with pytest.raises(RuntimeError, match="delivery remains owed"):
-            message_bus.send_with_budget(1, "Required notice", ts="notice", require_write=True,
-                                         role=role, system_type=kind, narration=narration)
-    row, = td.pending_deliveries(tmp_path)
-    assert row["delivery_id"].startswith("required:") and row["delivery_deferred"]
-    assert dialogue_retry.snapshot()["rows"] == 0
-    assert td.replay_pending_deliveries(tmp_path, event_queue=bus) == [row["delivery_id"]]
+
+    def send():
+        message_bus.send_with_budget(1, "Required notice", ts="notice", require_write=True,
+                                     role=role, system_type=kind, narration=narration)
+
+    with pinned(tmp_path), store.acquisition_budget(0.2), pytest.raises(RuntimeError, match="could not be persisted"):
+        send()  # the producer learns the row is unwritten and keeps its own retry
+    assert td.pending_deliveries(tmp_path) == [] and dialogue_retry.snapshot()["rows"] == 0
+    assert td.replay_pending_deliveries(tmp_path, event_queue=bus) == [] and not frames
+    held = threading.Event()
+    reader = threading.Thread(target=_hold_reader, args=(tmp_path, held, 0.6))
+    reader.start()
+    try:
+        assert held.wait(5)
+        send()  # its retry keeps the caller's own wait: a reader longer than the slice is waited out
+    finally:
+        reader.join()
     assert len(frames) == 1 and len(chat_rows(tmp_path)) == 2 and bus.empty()
     assert frames[0]["role"] == role and frames[0].get("system_type", "") == kind
     assert frames[0]["narration"] is narration
     assert chat_rows(tmp_path)[-1]["direction"] == ("system" if role == "system" else "out")
+
+
+def _hold_reader(root, held, seconds):
+    from ouroboros import dialogue_store
+
+    with dialogue_store.transaction(root, write=False):  # the store's own reader, on either lock tier
+        held.set()
+        time.sleep(seconds)
 
 
 @pytest.mark.parametrize("failed_receipt", [(False, "offline"), None])

@@ -325,13 +325,8 @@ def log_chat(direction: str, chat_id: int, user_id: int, text: str, *, feed: boo
     if record is None:
         return None
     try:
-        from ouroboros.store import acquisition_budget
-        from ouroboros._usage_wait import ACQUISITION_SLICE_SEC
-
-        with acquisition_budget(ACQUISITION_SLICE_SEC):
-            receipt = (dialogue_store.append(root, "chat", record, feed=feed,
-                                            idempotent=direction != "in") if require_write else
-                       dialogue_store.append_quietly(root, "chat", record, feed=feed))
+        receipt = (dialogue_store.append(root, "chat", record, feed=feed, idempotent=direction != "in")
+                   if require_write else dialogue_store.append_quietly(root, "chat", record, feed=feed))
     except (StoreError, OSError, ValueError) as exc:
         if require_write:
             raise RuntimeError("canonical message acceptance could not be persisted") from exc
@@ -341,8 +336,7 @@ def log_chat(direction: str, chat_id: int, user_id: int, text: str, *, feed: boo
         return None
     if not receipt.duplicate:
         from ouroboros.notice_receipts import record as record_notice_receipt
-        with acquisition_budget(ACQUISITION_SLICE_SEC):
-            record_notice_receipt(root, record)
+        record_notice_receipt(root, record)
     return receipt.row
 
 

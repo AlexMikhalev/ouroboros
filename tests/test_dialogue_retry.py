@@ -159,7 +159,8 @@ def test_ordinary_outbound_retries_but_required_and_inbound_fail_loudly(tmp_path
         bus.send_with_budget(1, "ordinary", ts="ordinary")
         assert len(frames) == 1 and retry.snapshot()["rows"] == 1
         started = time.monotonic()
-        with pytest.raises(RuntimeError, match="could not be persisted"):
+        # A required notice keeps its producer's wait (here a short one) and fails loudly to that producer.
+        with store.acquisition_budget(0.25), pytest.raises(RuntimeError, match="could not be persisted"):
             bus.send_with_budget(1, "required", ts="required", require_write=True)
         assert .2 <= time.monotonic() - started < .6
         assert len(frames) == 1 and retry.snapshot()["rows"] == 1

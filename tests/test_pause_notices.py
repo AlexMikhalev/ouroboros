@@ -16,7 +16,8 @@ from ouroboros import obligations, pause_notices
 from ouroboros.budget_pause import set_budget_pause
 from ouroboros.startup_migrations import prepare_startup_state
 from ouroboros.task_results import load_task_result, write_task_result
-from supervisor import message_bus
+from supervisor import message_bus, terminal_delivery as td
+from supervisor.event_observation import ObservedEventQueue
 
 pytestmark = pytest.mark.serial
 
@@ -125,10 +126,11 @@ def test_failed_required_append_remains_owed_and_retries(notices, monkeypatch):
     monkeypatch.setattr(message_bus, "log_chat", lambda *a, **k: (_ for _ in ()).throw(OSError("disk full")))
     pause_notices.reconcile_pause_notices(root)
     assert not sent and not _rows(root) and load_task_result(root, "task")["pause_notices"]
-    assert _owing(root) == {"task"}
+    assert _owing(root) == {"task"} and td.pending_deliveries(root) == []  # one owner: this duty
     monkeypatch.setattr(message_bus, "log_chat", original)
     pause_notices.reconcile_pause_notices(root)
-    assert len(sent) == 1 and "pause_notices" not in load_task_result(root, "task")
+    td.replay_pending_deliveries(root, event_queue=ObservedEventQueue())  # nothing else owes the episode
+    assert len(sent) == len(_rows(root)) == 1 and "pause_notices" not in load_task_result(root, "task")
 
 
 def test_owner_members_do_not_announce_tree_confirmation(notices):

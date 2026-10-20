@@ -9,6 +9,7 @@ the live queue and the buffered return.
 
 from __future__ import annotations
 
+import functools
 import logging
 import pathlib
 import threading
@@ -38,6 +39,15 @@ from ouroboros.subagent_messages import delegated_activity_meta, executor_observ
 
 
 HOST_NARRATION = "host_narration"
+
+
+def _on_consumer(handler):
+    """A consumer handler writes under the acquisition slice; the shared writers keep callers' waits."""
+    @functools.wraps(handler)
+    def run(evt: Dict[str, Any], ctx: Any) -> Any:
+        with acquisition_budget(ACQUISITION_SLICE_SEC):
+            return handler(evt, ctx)
+    return run
 
 
 def _handle_typing_start(evt: Dict[str, Any], ctx: Any) -> None:
@@ -131,26 +141,6 @@ _DEFERRED_DELIVERIES: set = set()  # wake hints only; payload authority remains 
 
 def _delivery_key(root: Any, event: dict) -> tuple:
     return str(pathlib.Path(root).resolve()) if root else "", str(event.get("delivery_id") or "")
-
-
-def send_required_message(root: Any, event: dict) -> None:
-    """Give write-required host notices the same durable retry owner as final answers.
-
-    Their original contract requires the history row, not a transport receipt.
-    A timestamped content identity keeps retries exact; the caller still learns
-    that the inline write failed, while the existing outbox keeps the message owed.
-    """
-    from ouroboros.chat_chain import source_row_id
-    from ouroboros.utils import append_jsonl
-    from supervisor import message_bus, terminal_delivery as td
-
-    event = {**event, "type": "send_message", "delivery_id": "required:" + source_row_id(event),
-             "delivery_write_only": True}
-    td.register_pending_delivery(root, event)
-    ctx = SimpleNamespace(DRIVE_ROOT=root, RUNNING={}, send_with_budget=message_bus.send_with_budget,
-                          append_jsonl=append_jsonl)
-    if not _handle_send_message(event, ctx):
-        raise RuntimeError("canonical message acceptance could not be persisted; delivery remains owed")
 
 
 def _defer_delivery(ctx: Any, event: dict) -> None:
@@ -564,6 +554,7 @@ def _log_error(ctx: Any, event_type: str, **fields: Any) -> None:
     )
 
 
+@_on_consumer
 def _handle_send_photo(evt: Dict[str, Any], ctx: Any) -> None:
     """Send a photo to the owner's chat."""
     import base64 as b64mod
@@ -588,6 +579,7 @@ def _handle_send_photo(evt: Dict[str, Any], ctx: Any) -> None:
         _log_error(ctx, "send_photo_event_error", error=repr(e))
 
 
+@_on_consumer
 def _handle_send_video(evt: Dict[str, Any], ctx: Any) -> None:
     """Send a video to the owner's chat."""
     import base64 as b64mod
@@ -609,6 +601,7 @@ def _handle_send_video(evt: Dict[str, Any], ctx: Any) -> None:
         _log_error(ctx, "send_video_event_error", error=repr(e))
 
 
+@_on_consumer
 def _handle_send_document(evt: Dict[str, Any], ctx: Any) -> None:
     """Send an arbitrary document/file to the owner's chat."""
     import base64 as b64mod
@@ -635,6 +628,7 @@ def _handle_send_document(evt: Dict[str, Any], ctx: Any) -> None:
         _log_error(ctx, "send_document_event_error", error=repr(e))
 
 
+@_on_consumer
 def _handle_send_links(evt: Dict[str, Any], ctx: Any) -> None:
     """Send structured HTTP(S) actions to the owner's chat."""
     try:
@@ -654,6 +648,7 @@ def _handle_send_links(evt: Dict[str, Any], ctx: Any) -> None:
         _log_error(ctx, "send_links_event_error", error=repr(e))
 
 
+@_on_consumer
 def _handle_send_card(evt: Dict[str, Any], ctx: Any) -> None:
     """Publish a stored card: its chat row, or a ``card_state`` update for a replaced body."""
     from ouroboros.card_store import load_card, record_publication
@@ -676,6 +671,7 @@ def _handle_send_card(evt: Dict[str, Any], ctx: Any) -> None:
         _log_error(ctx, "send_card_event_error", error=repr(e))
 
 
+@_on_consumer
 def _handle_send_quiz(evt: Dict[str, Any], ctx: Any) -> None:
     """Attempt the canonical publication debt with its persisted retry clock."""
     from ouroboros.owner_quiz import claim_quiz_delivery, quiz_states, record_quiz_delivery_failure
@@ -724,6 +720,7 @@ def _handle_send_quiz(evt: Dict[str, Any], ctx: Any) -> None:
         _log_error(ctx, "send_quiz_event_error", error=repr(exc))
 
 
+@_on_consumer
 def _handle_send_quiz_state(evt: Dict[str, Any], ctx: Any) -> None:
     """An explicit closure discharges only after its reason reaches durable history."""
     from ouroboros.gateway.task_decision import _late_answer_destination

@@ -18,8 +18,7 @@ import re
 from typing import Any, Dict, List, Optional
 
 from ouroboros.observability import without_finalization_timing
-from ouroboros.store import acquisition_budget
-from ouroboros._usage_wait import ACQUISITION_SLICE_SEC
+from ouroboros.store import bounded_wait
 from ouroboros.utils import update_json_locked, utc_now_iso
 from ouroboros.task_store import patch_document
 from ouroboros.task_finalization import (
@@ -244,7 +243,6 @@ def _delivered_rows(current: Dict[str, Any], *, strict: bool = False) -> List[st
     return []
 
 
-@acquisition_budget(ACQUISITION_SLICE_SEC)
 def register_delivery(drive_root: Any, delivery_id: str, *, emitted: Optional[Dict[str, Any]] = None,
                       strict: bool = False) -> bool:
     """After send, retain exact bytes/ack and atomically retire the owed row.
@@ -292,7 +290,7 @@ def register_delivery(drive_root: Any, delivery_id: str, *, emitted: Optional[Di
 
     try:
         update_json_locked(_registry_path(drive_root), _mutate, strict_existing_dict=True,
-                           timeout_sec=ACQUISITION_SLICE_SEC)
+                           timeout_sec=bounded_wait(4.0))
     except ValueError:
         _log_registry_corrupt(drive_root, did, op="register_delivery")
         if strict:
@@ -326,7 +324,6 @@ def _log_registry_corrupt(drive_root: Any, delivery_id: str, *, op: str) -> None
         log.debug("registry-corrupt event append failed", exc_info=True)
 
 
-@acquisition_budget(ACQUISITION_SLICE_SEC)
 def register_pending_delivery(drive_root: Any, event: Dict[str, Any]) -> bool:
     """Owe exact bytes before enqueue; retire only after confirmed send/receipt.
 
@@ -375,7 +372,7 @@ def register_pending_delivery(drive_root: Any, event: Dict[str, Any]) -> bool:
             if not main_delivery_current(drive_root, str(event.get("task_id") or ""), token):
                 return True  # an older send cannot replace the current publication's debt
         update_json_locked(_registry_path(drive_root), _mutate, strict_existing_dict=True,
-                           timeout_sec=ACQUISITION_SLICE_SEC)
+                           timeout_sec=bounded_wait(4.0))
     except ValueError:
         _log_registry_corrupt(drive_root, did, op="register_pending_delivery")
         _log_unregistered_delivery(drive_root, event, did)
@@ -523,7 +520,7 @@ def _bump_replay_attempts(drive_root: Any, ids: List[str]) -> None:
         return _registry_document(current, rows, pending)
 
     try:
-        update_json_locked(_registry_path(drive_root), _mutate, strict_existing_dict=True, timeout_sec=ACQUISITION_SLICE_SEC)
+        update_json_locked(_registry_path(drive_root), _mutate, strict_existing_dict=True, timeout_sec=bounded_wait(4.0))
     except ValueError:
         _log_registry_corrupt(drive_root, ",".join(ids), op="bump_replay_attempts")
     except Exception:
@@ -704,10 +701,9 @@ def _disclose_exhausted_delivery(
 def replay_pending_deliveries(drive_root: Any, *, event_queue: Any = None) -> List[str]:
     """Continue deferred writes/sends/receipts off-consumer; replay lost queued sends.
 
-    Deferred work uses the same outbox and exact id; queued originals keep bus
-    membership. Ordinary lost sends retain the existing age/backoff/attempt cap.
-    A successful strict receipt retires debt atomically. Corruption is disclosed,
-    never interpreted as proof that no debt remains. Returns continued/replayed ids.
+    Deferred work uses the same outbox and exact id; queued originals keep bus membership.
+    Lost sends keep the age/backoff/attempt cap; a strict receipt retires debt atomically.
+    Corruption is disclosed, never proof that no debt remains. Returns continued/replayed ids.
     """
     rows = pending_deliveries(drive_root, disclose_corruption=True)
     from supervisor.events_chat_delivery import replay_deferred_deliveries
@@ -715,8 +711,12 @@ def replay_pending_deliveries(drive_root: Any, *, event_queue: Any = None) -> Li
     rows = [row for row in rows if not row.get("delivery_deferred")]
     # Cached Main debt goes through its settlement (supervisor queue): the canonical claim is its one retry clock.
     from ouroboros.terminal_projection import settle_terminal_projection
+    from ouroboros.install_identity import StoreForeign
     for task_id in sorted({str(r.get("task_id") or "") for r in rows if r.get("terminal_projection_token")} - {""}):
-        settle_terminal_projection(drive_root, task_id, event_queue=event_queue)
+        try:
+            settle_terminal_projection(drive_root, task_id, event_queue=event_queue)
+        except StoreForeign as exc:  # another install's copied debt never stops this install's replay
+            log.warning("Main delivery of %s retained: %s", task_id, exc)
     owed = [row for row in rows if not row.get("terminal_projection_token") and _replay_due(row)]
     if not owed:
         return continued
