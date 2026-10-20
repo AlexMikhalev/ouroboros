@@ -66,7 +66,8 @@ def live_works_present(root, *, exclude=""):
     from ouroboros.peer_roster import unlisted_live_work
 
     other = unlisted_live_work(pathlib.Path(root), {row["task_id"] for row in roster["roots"]})
-    return {"works": works, "last_line_source": "model_authored_focus", "incomplete": roster["incomplete"],
+    return {"works": works, "last_line_source": "model_authored_focus",
+            "incomplete": roster["incomplete"] or any(row.get("unavailable") for row in other),
             **({"other_live_work": other} if other else {}), "note": _HYGIENE_NOTE,
             **{key: roster[key] for key in ("queue_snapshot", "direct_roots")}}
 

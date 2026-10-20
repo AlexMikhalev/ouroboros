@@ -418,13 +418,15 @@ def unlisted_live_work(drive_root: pathlib.Path, listed: set) -> List[Dict[str, 
     for root_id, counts in sorted(groups.items()):
         from ouroboros.task_results import load_task_result
 
+        unavailable = {}
         try:
-            stored = load_task_result(root, root_id) or {}
-        except Exception:
-            stored = {}
+            stored = load_task_result(root, root_id, strict=True) or {}
+        except Exception as exc:
+            stored, unavailable = {}, {"task_result": type(exc).__name__}
         rows.append({"work_id": root_id, "title": str(stored.get("suggested_name") or stored.get("title") or ""),
                      "room": {"chat_id": stored.get("chat_id"), "project_id": str(stored.get("project_id") or "")},
-                     "root_status": str(stored.get("status") or "unknown"), **counts})
+                     "root_status": str(stored.get("status") or "unknown"), **counts,
+                     **({"unavailable": unavailable} if unavailable else {})})
     return rows
 
 
