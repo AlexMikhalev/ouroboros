@@ -240,6 +240,14 @@ def _wait_for_transitions(page, selector: str) -> None:
         .every(animation => !animation.pending && animation.playState !== 'running')""", arg=selector, timeout=5_000)
 
 
+def _morph_settled(page) -> None:
+    # A capsule's morph ends with its glass: the controls that stepped aside leave the line then.
+    page.wait_for_function("""() => { const row = document.querySelector('#page-chat .chat-toolbar-row');
+        return !('ownerLeaving' in row.dataset) && row.getAnimations({subtree: true})
+            .filter(animation => animation.effect?.getComputedTiming().endTime !== Infinity)
+            .every(animation => !animation.pending && animation.playState !== 'running'); }""", timeout=10_000)
+
+
 def _record(tmp_path, name: str, facts) -> None:
     (_evidence_dir(tmp_path) / f"{name}.json").write_text(json.dumps(facts, indent=1), encoding="utf-8")
 
@@ -337,6 +345,7 @@ def test_one_capsule_open_at_a_time_and_a_narrow_switch_keeps_both_reachable(dir
                 press(heads[first])
                 _until(page, f"r.{short[first]}.open === 'true'")
                 page.wait_for_timeout(450)
+                _morph_settled(page)  # a slow WebKit runner is still mid-morph after the 450 ms
                 one = _row(page)
                 if one[short[first]]["fit"] == "solo":
                     # Alone on the line: the room's ☰, the pills and the other capsule step aside; an
@@ -353,6 +362,7 @@ def test_one_capsule_open_at_a_time_and_a_narrow_switch_keeps_both_reachable(dir
                 press(heads[second])
                 _until(page, f"r.{short[second]}.open === 'true' && r.{short[first]}.open === 'false'")
                 page.wait_for_timeout(450)
+                _morph_settled(page)
                 two = _row(page)
                 assert two[short[second]]["shown"] and two["solo"] in ("", second), two
                 assert two["oneLine"] and two[short[second]]["right"] <= two["rowRight"] + 1 and not two["docScroll"], two
