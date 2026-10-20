@@ -72,17 +72,17 @@ def ingress_reply(root, metadata: dict) -> dict:
 
 
 def origin_reply(root, task_id: str, metadata=None) -> dict:
-    """The answer's host reference to the owner message that began its turn."""
+    """The answer's host reference to the owner message that began its turn.
+
+    Best-effort enrichment: a busy or unreadable store omits the reference, never the message."""
     if not task_id or not root:
         return {}
     from ouroboros.task_status import load_effective_task_result
     from ouroboros.project_dialogue import resolve_owner_message_source
-    task = metadata or load_effective_task_result(root, task_id, materialize_artifacts=False) or {}
-    ref = task.get("origin_message_ref") or (task.get("metadata") or {}).get("origin_message_ref")
-    if not ref:
-        return {}
     try:
-        row = resolve_owner_message_source(root, ref)
+        task = metadata or load_effective_task_result(root, task_id, materialize_artifacts=False) or {}
+        ref = task.get("origin_message_ref") or (task.get("metadata") or {}).get("origin_message_ref")
+        row = resolve_owner_message_source(root, ref) if ref else None
     except StoreError:
         return {}
     return reference_from_row(row) if row else {}

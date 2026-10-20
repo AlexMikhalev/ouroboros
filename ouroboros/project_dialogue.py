@@ -914,10 +914,18 @@ def completion_status_label(result: Dict[str, Any], event: Dict[str, Any]) -> st
 
 
 def append_canonical_task_summary(drive_root: Any, row: Dict[str, Any]) -> bool:
-    """Append one task-summary row to the dialogue store (the one chat writer seam)."""
+    """Append one task-summary row (the one chat writer seam). Its one retry owner is the terminal
+    projection: a busy store answers False and the same row is appended again (content dedup)."""
+    from ouroboros._usage_wait import ACQUISITION_SLICE_SEC
+    from ouroboros.store import StoreError, acquisition_budget
+
     if not str(row.get("summary_id") or "").strip():
         return False
-    return dialogue_store.append_quietly(pathlib.Path(drive_root), "chat", dict(row)) is not None
+    try:
+        with acquisition_budget(ACQUISITION_SLICE_SEC):
+            return dialogue_store.append(pathlib.Path(drive_root), "chat", dict(row), idempotent=True) is not None
+    except (StoreError, OSError, ValueError):
+        return False
 
 
 def canonical_task_summary_receipt(result: Dict[str, Any]) -> Dict[str, Any]:

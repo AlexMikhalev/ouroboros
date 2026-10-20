@@ -540,11 +540,23 @@ def worker_main(wid: int, in_q: Any, out_q: Any, repo_dir: str, drive_root: str,
                         log.exception("Terminal file preparation failed for %s", task.get("id"))
                     e2["_files_prepared_attempt"] = int(task.get("_attempt") or 1)
                 task_queue.put(stamp_finalization_enqueue(e2))
+            _drain_dialogue_retry()
             if task_drive_root != str(drive_root):
                 _release_drive_stores(task_drive_root)
         except Exception as _e:
             _log_worker_crash(wid, _drive, "handle_task", _e, _tb.format_exc())
             return
+
+
+def _drain_dialogue_retry() -> None:
+    """The reusable worker's task boundary: best-effort rows it retained land before the next task
+    (a retired worker is killed without finalizers, so its exit drain never runs)."""
+    try:
+        from ouroboros import dialogue_retry
+
+        dialogue_retry.drain()
+    except Exception:
+        log.debug("Dialogue retry drain at the task boundary failed", exc_info=True)
 
 
 def _release_drive_stores(drive: Any) -> None:

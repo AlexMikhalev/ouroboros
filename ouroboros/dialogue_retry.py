@@ -61,15 +61,16 @@ def retain(root, stream, row, *, feed=False) -> None:
         _counts["appended"] += 1
         removed = 0
         while len(_rows) > MAX_ROWS or _bytes > MAX_BYTES:
-            _, old = _rows.popitem(last=False)
-            _bytes -= len(old)
+            # Progress narration goes first; chat rows (the owner's own words among them) wait longest.
+            victim = next((name for name in _rows if name[1] == "progress"), None) or next(iter(_rows))
+            _bytes -= len(_rows.pop(victim))
             removed += 1
         if removed:
             _counts["evicted"] += removed
             announce = not _eviction_burst
             _eviction_burst = True
     if announce:
-        log.info("Dialogue retry capacity exceeded; oldest rows evicted (counts in dialogue_retry.snapshot)")
+        log.info("Dialogue retry capacity exceeded; oldest rows evicted, progress first (counts in dialogue_retry.snapshot)")
     request_drain()
 
 

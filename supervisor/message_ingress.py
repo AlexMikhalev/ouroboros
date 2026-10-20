@@ -334,9 +334,8 @@ def log_chat(direction: str, chat_id: int, user_id: int, text: str, *, feed: boo
         return None
     if receipt is None:
         return None
-    if not receipt.duplicate:
-        from ouroboros.notice_receipts import record as record_notice_receipt
-        record_notice_receipt(root, record)
+    from ouroboros.notice_receipts import record as record_notice_receipt
+    record_notice_receipt(root, record)  # idempotent: a duplicate also repairs a receipt its first write lost
     return receipt.row
 
 
