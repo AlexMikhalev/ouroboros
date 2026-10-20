@@ -267,7 +267,8 @@ def test_a_consumed_grant_is_never_re_armed_by_a_later_revocation(tmp_path, monk
     assert revoke_exact_budget_resume(task, "money_vanished") is False
     assert "_budget_pause_resume" not in task
     assert "_budget_pause" not in task  # NOT re-minted over a task that is running on
-    assert task["_budget_pause_consumed"]["grant_id"] == grant_id
+    assert "_budget_pause_consumed" not in task
+    assert budget_hold_fact(task)["grant_id"] == grant_id
     assert budget_hold_fact(task)["reason"] == HOLD_GRANT_CONSUMED_STALE_ROW
     after = budget_pause.budget_pause_row(tmp_path, "loop-4")
     assert after["state"] == budget_pause.STATE_RESUMED and after["grant"]["consumed_at"]

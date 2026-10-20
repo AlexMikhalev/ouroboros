@@ -82,11 +82,17 @@ def _path(drive_root: Any, task_id: str) -> pathlib.Path:
     return pathlib.Path(drive_root) / "state" / "delegate_recovery" / f"{task_id}.json"
 
 
-def _read(drive_root: Any, task_id: str) -> dict[str, Any]:
+def _read(drive_root: Any, task_id: str, *, strict: bool = False) -> dict[str, Any]:
     try:
         data = json.loads(_path(drive_root, task_id).read_text(encoding="utf-8"))
+        if not isinstance(data, dict) and strict:
+            raise ValueError("delegate handoff is not an object")
         return data if isinstance(data, dict) else {}
+    except FileNotFoundError:
+        return {}
     except (OSError, ValueError):
+        if strict:
+            raise
         return {}
 
 
@@ -985,6 +991,15 @@ def pre_adopt_planned_handoffs(
     return adopted
 
 
+def planned_handoff_matches(row: Mapping[str, Any], task: Mapping[str, Any]) -> bool:
+    """Exact successor custody; transaction and physical adoption still gate dispatch."""
+    return bool(task.get("id") and row.get("task_id") == task["id"]
+                and row.get("cause") == CAUSE_PLANNED_SELF_RESTART
+                and row.get("status") in {"reserved", "pre_adopted"}
+                and int(row.get("new_attempt") or 0) == int(task.get("_attempt") or 1)
+                and not _successor_binding_mismatch(row, task))
+
+
 def planned_handoff_resume_allowed(drive_root: Any, task: Mapping[str, Any]) -> bool:
     """Release no-dispatch custody only for this exact, pre-adopted continuation.
 
@@ -994,10 +1009,7 @@ def planned_handoff_resume_allowed(drive_root: Any, task: Mapping[str, Any]) -> 
     try:
         task_id = str(task.get("id") or "")
         row = _read(drive_root, task_id)
-        if (not task_id or row.get("task_id") != task_id
-                or row.get("cause") != CAUSE_PLANNED_SELF_RESTART or row.get("status") != "pre_adopted"
-                or int(row.get("new_attempt") or 0) != int(task.get("_attempt") or 1)
-                or _successor_binding_mismatch(row, task)):
+        if row.get("status") != "pre_adopted" or not planned_handoff_matches(row, task):
             return False
         if any((pathlib.Path(drive_root) / "state" / name).exists()
                for name in ("owner_restart_no_resume.flag", "panic_stop.flag")):

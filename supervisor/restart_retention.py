@@ -487,7 +487,17 @@ def retained_pending(task: Dict[str, Any], *, sleep_hold_reason: str = "") -> bo
         from supervisor import queue as q
 
         hold_after_stop(task, q.DRIVE_ROOT, sleep_hold_reason)
-    return saved or isinstance(pause, dict) or hold is not None
+    if saved or isinstance(pause, dict) or hold is not None:
+        return True
+    if task.get("_working_recovery") or task.get("_owner_wait_resume"):
+        return False  # this stop's return transaction still decides saved work/waits
+    from supervisor.budget_resume import newer_continuation_basis
+    from supervisor import queue as q
+
+    try:
+        return newer_continuation_basis(task, q.DRIVE_ROOT)
+    except (OSError, ValueError, TypeError, RuntimeError):
+        return True  # boot/tick must re-read unknown custody before deciding
 
 
 
@@ -884,8 +894,9 @@ def recover_saved_running(rows: Iterable[Dict[str, Any]], drive_root: Any, *,
             break
         refused.update((str(item[0]["id"]), "parent_interrupted") for item in orphaned)
         candidates = [item for item in candidates if item not in orphaned]
+    promised = returning | set((transaction or {}).get("task_ids") or [])
     _record_refused_returns(drive_root, {tid: why for tid, why in refused.items()
-                                         if why and tid in returning}, cause)
+                                         if why and tid in promised}, cause)
     recovered: List[Dict[str, Any]] = []
     for task, attempt, root, auto in candidates:
         task_id = str(task["id"])

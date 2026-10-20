@@ -250,6 +250,10 @@ def test_failed_source_conversion_releases_lease_but_remains_explicitly_held(tmp
     assert "saved" not in system.workers.RUNNING
     [held] = system.workers.PENDING
     assert held["id"] == "saved" and budget_hold_fact(held)
+    from supervisor.budget_resume import newer_continuation_basis, resume_hold_requires_fence
+    assert newer_continuation_basis(held, tmp_path)
+    assert not resume_hold_requires_fence(held, tmp_path)
+    assert budget_hold_fact(held)["reason"] == "saved_work_hold"  # admission still owns the failed source
     assert not running_project_ids(system.workers.RUNNING.values())
     system.workers.assign_tasks()
     assert all(commands.empty() for commands in system.launches)
