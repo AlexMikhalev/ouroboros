@@ -315,7 +315,7 @@ def _record_task_facts(env: Any, task: Dict[str, Any], usage: Dict[str, Any],
         canonical = result_root.resolve(strict=False) == canonical_root.resolve(strict=False)
         files_rescued = rescued_files_fact(task_id, artifact_store_roots(
             canonical_root, task_id, task=task, child_root=None if canonical else result_root))
-        append_canonical_task_summary(canonical_root, {
+        append_canonical_task_summary(canonical_root, retained=True, row={
             "ts": utc_now_iso(), "direction": "system", "type": "task_summary",
             "summary_kind": "host_task_facts", "summary_id": f"task-facts:{task_id}",
             "task_id": task_id, "parent_task_id": str(task.get("parent_task_id") or ""), "root_task_id": str(task.get("root_task_id") or task_id),

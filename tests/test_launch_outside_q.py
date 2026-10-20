@@ -214,9 +214,50 @@ def test_uncertain_marks_commit_is_inspected_by_token_and_never_resent(env, monk
     assert len(outcomes) == 1  # the marks were never rewritten
 
 
-def test_a_generation_closed_after_the_marks_puts_nothing(env, monkeypatch):
+def occupy_lane(generation):
+    entered, release = threading.Event(), threading.Event()
+
+    def occupy():
+        entered.set()
+        assert release.wait(_WAIT_SEC)
+
+    assert generation.submit(occupy, prep.ADMISSION_LANE) and entered.wait(_WAIT_SEC)
+    return release
+
+
+def test_a_generation_closed_before_the_marks_leaves_the_row_never_started(env, monkeypatch):
+    """The stop arrives while the launch waits on the lane: nothing durable is written, so after the
+    restart the row is plainly never-started (not "may already have reached a worker")."""
+    import copy
+    import json
+
+    from supervisor.queue_snapshot import _retain_snapshot_pending
+    from supervisor.restart_retention import never_started
+
+    monkeypatch.setattr(queue, "QUEUE_SNAPSHOT_PATH", env.data / "state" / "queue_snapshot.json")
     worker, delivered = install_worker(env, monkeypatch)
     row = scheduled_child(env)
+    release = occupy_lane(env.gen)
+    workers.assign_tasks()  # the claim is taken; the job waits behind the occupying one
+    assert row.get("_launch_claim") and worker.busy_task_id == "launch-child"
+    prep.close_generation(env.gen)  # Restart, Update or Quit while the job waits
+    release.set()
+    assert env.gen.wait_idle(_WAIT_SEC)
+    assert delivered == [] and "launch-child" not in queue.RUNNING and worker.busy_task_id is None
+    assert env.row("launch-child").get("admitted_dispatch") != "possible" and worker_assignment._unsent(row) is None
+    snapshot = queue.QUEUE_SNAPSHOT_PATH
+    saved = (next(r["task"] for r in json.loads(snapshot.read_text(encoding="utf-8"))["pending"]
+                  if r["task"]["id"] == "launch-child") if snapshot.exists() else dict(row))
+    worker_assignment._COMMITTED_UNSENT.clear()  # the next process has no memory witness
+    retained, _unseen, consumed, _roots = _retain_snapshot_pending([copy.deepcopy(saved)], [], stale=False)
+    assert consumed == [] and len(retained) == 1 and never_started(retained[0])
+
+
+def test_marks_committed_while_the_generation_was_open_finish_their_handoff(env, monkeypatch):
+    """A launch whose marks landed before the stop is handed to its worker, as at base: refusing it
+    then would leave the proof of a non-put only in this process's memory."""
+    worker, delivered = install_worker(env, monkeypatch)
+    scheduled_child(env)
     committed, proceed = threading.Event(), threading.Event()
     original = worker_assignment._commit_launch
 
@@ -233,8 +274,8 @@ def test_a_generation_closed_after_the_marks_puts_nothing(env, monkeypatch):
     prep.close_generation(env.gen)  # the server stops between the durable marks and the put
     proceed.set()
     assert env.gen.wait_idle(_WAIT_SEC)
-    assert delivered == [] and "launch-child" not in queue.RUNNING and worker.busy_task_id is None
-    assert worker_assignment._unsent(row) is not None  # committed, never put: a later generation finishes it once
+    assert [task["id"] for task in delivered if "id" in task] == ["launch-child"]
+    assert "launch-child" in queue.RUNNING and worker.busy_task_id == "launch-child"
 
 
 def test_a_launch_on_the_lane_counts_against_its_roots_cap_in_the_same_pass(env, monkeypatch):

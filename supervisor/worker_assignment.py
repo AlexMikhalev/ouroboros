@@ -357,7 +357,7 @@ def _claim_worker_launch(queue, candidate, worker, *, deferred: Optional[set] = 
     snapshot, ONE marks write, ``drive_started``, the RUNNING mirror: ``_launch_attempt``) run on
     the preparation generation's admission lane with its acquisition gate, never behind a copy;
     the lane then re-takes Q, revalidates memory only (the claim, the worker, fences, holds,
-    deadline, its generation still open) and puts. None: reserved, the lane finishes it; False: refused, released; True: a
+    deadline; a closed generation refused before the marks) and puts. None: reserved, the lane finishes it; False: refused, released; True: a
     host without a generation (the historical inline path) launched synchronously under Q with
     zero-wait acquisitions, contention joining ``deferred`` as residual demand. A refusal after
     the marks committed keeps ``_COMMITTED_UNSENT``'s witness: the same row, attempt and marks
@@ -397,19 +397,19 @@ def _claim_worker_launch(queue, candidate, worker, *, deferred: Optional[set] = 
     token = uuid.uuid4().hex
     candidate[_LAUNCH_CLAIM] = {"token": token, "wid": worker.wid}
     worker.busy_task_id = str(candidate.get("id") or "")
-    if not generation.submit(functools.partial(_launch_job, queue, candidate, worker, token),
+    if not generation.submit(functools.partial(_launch_job, queue, candidate, worker, token, generation),
                              workspace_preparation.ADMISSION_LANE):
         _release_launch(queue, candidate, worker, token)
         return False
     return None
 
 
-def _launch_job(queue, candidate, worker, token: str) -> None:
-    """The admission-lane job: one attempt per acquisition slice until it put or was refused."""
+def _launch_job(queue, candidate, worker, token: str, generation) -> None:
+    """The admission-lane job of the reserving GENERATION: one attempt per acquisition slice until it
+    put or was refused."""
     from supervisor import workspace_preparation
     from supervisor.schedule_occurrence import contention
 
-    generation = workspace_preparation.current_generation()
     outcome = False
     try:
         outcome = generation.wait_store(
@@ -463,8 +463,8 @@ def _launch_attempt(queue, candidate, worker, token: str, *, lane: bool, generat
     contention, an unresolved commit or an unwritten row mark (None: still demand, this process
     retries it) ends the attempt with the same unsent row (the lane retries after a slice; the
     inline path defers to the next pass); False is a refusal. On the lane the put follows a
-    memory-only revalidation under Q, which a closed reserving generation refuses (its committed
-    witness then finishes once later). Once the put is entered the worker
+    memory-only revalidation under Q. A closed reserving generation refuses before the marks; marks
+    it committed while open finish their put. Once the put is entered the worker
     owns the task, even if the put raised: it is bound RUNNING/busy, so Stop, completion and
     worker health settle it before reuse.
     """
@@ -502,6 +502,8 @@ def _launch_attempt(queue, candidate, worker, token: str, *, lane: bool, generat
                 root_resume=resume if not latch or selected_child else None, wait=False):
             unsubmitted = None if witness is None else witness["unsubmitted"]
             with queue._queue_lock:
+                if generation is not None and generation.closed():
+                    return False  # a stopping generation writes no marks: the row stays never-started
                 if unsubmitted is not None and _deadline_refuses_launch(queue, candidate, unsubmitted=unsubmitted):
                     return False  # a committed, never-put launch expires on its own pre-commit claim
                 claim_source = (witness is None and queue._task_deadline_ts(candidate)
@@ -527,8 +529,8 @@ def _launch_attempt(queue, candidate, worker, token: str, *, lane: bool, generat
                                  and not _candidate_ineligible(queue, candidate, float("inf"),
                                                                list(_pool().RUNNING.values()), own_claim=token)):
                     return False
-                if generation is not None and generation.closed():
-                    return False  # a stopping generation starts nothing more, even after its marks
+                # Marks written while the generation was open complete their handoff, as at base: a
+                # refusal here would leave only a memory witness, and restore would hold the row.
                 if _deadline_refuses_launch(queue, candidate, unsubmitted=unsubmitted):  # positively before any put
                     return False
                 if not _mark_launch_row(candidate, projections):

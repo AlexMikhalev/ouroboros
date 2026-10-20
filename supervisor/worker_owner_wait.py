@@ -268,16 +268,16 @@ def _grant_resume(
         finally:
             _release_resume(task_id, meta, token)
     if generation.closed() or not generation.submit(
-            functools.partial(_resume_job, task_id, meta, worker, token, replacement),
+            functools.partial(_resume_job, task_id, meta, worker, token, replacement, generation),
             workspace_preparation.ADMISSION_LANE):
         _release_resume(task_id, meta, token)
     return False
 
 
-def _resume_job(task_id: str, meta: dict, worker: Any, token: str, replacement: Any) -> None:
+def _resume_job(task_id: str, meta: dict, worker: Any, token: str, replacement: Any, generation: Any) -> None:
+    """The reserving GENERATION's lane job: write the grant, then put it, unless that generation closed."""
     from supervisor import workspace_preparation
 
-    generation = workspace_preparation.current_generation()
     try:
         generation.wait_store(functools.partial(_resume_attempt, task_id, meta, worker, token, replacement, generation),
                               controls=lambda: ({"detail": "generation closed"} if generation.closed() else None))
@@ -330,6 +330,8 @@ def _resume_attempt(task_id: str, meta: dict, worker: Any, token: str, replaceme
         prior_paused = float(meta.get("budget_paused_sec") or 0.0)
     if not _resume_authority_allowed(task_id, meta):
         return False
+    if generation is not None and generation.closed():
+        return False  # a stopping generation writes no grant: the park stands as it is
     paused = prior_paused + (max(0.0, _pool().time.time() - float(parked_at))
                              if isinstance(parked_at, (int, float)) else 0.0)
     try:

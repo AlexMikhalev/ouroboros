@@ -87,7 +87,7 @@ LEAVES: dict[str, tuple[str, str, frozenset[str]]] = {
         "_stage_promoted_initial_attachments",
     })),
     "supervisor/worker_owner_wait.py": ("supervisor/workers.py", "_pool", frozenset({
-        "DRIVE_ROOT", "RUNNING", "WORKERS", "repo_writer_task_allowed", "time",
+        "DRIVE_ROOT", "MAX_WORKERS", "RUNNING", "WORKERS", "repo_writer_task_allowed", "time",
     })),
     # F2.2 lane rows (4fffefb1), pinned here by the ADOPTION truth wave: the four
     # queue/worker leaves the F2.2 cancel-organ train landed proof-green but never

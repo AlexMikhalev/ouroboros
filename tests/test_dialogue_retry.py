@@ -215,3 +215,39 @@ def test_worker_checkpoint_publishes_once_during_contention_then_drains(tmp_path
     assert bus.empty() and not progress_rows(tmp_path) and retry.snapshot()["rows"] == 1
     retry.drain()
     assert progress_rows(tmp_path) == [frame["data"]] and bus.empty()
+
+
+def test_a_summary_row_without_a_projection_owner_waits_in_the_buffer(tmp_path, monkeypatch):
+    """Host task facts have no retry owner but the buffer; a projection-owned row is retried by its owner."""
+    from ouroboros.project_dialogue import append_canonical_task_summary
+
+    seed(tmp_path, monkeypatch)
+    facts = {"ts": "facts", "chat_id": 1, "direction": "system", "type": "task_summary", "text": "",
+             "summary_kind": "host_task_facts", "summary_id": "task-facts:t1", "task_id": "t1"}
+    owned = {**facts, "ts": "owned", "summary_kind": "task_terminal", "summary_id": "task-terminal:t1"}
+    with pinned(tmp_path):
+        assert append_canonical_task_summary(tmp_path, facts, retained=True) is False
+        assert append_canonical_task_summary(tmp_path, owned) is False  # the projection appends it again
+        assert retry.snapshot()["rows"] == 1
+    assert retry.drain() == 1
+    assert [row["summary_id"] for row in chat_rows(tmp_path) if row.get("summary_id")] == ["task-facts:t1"]
+    assert append_canonical_task_summary(tmp_path, owned) is True
+
+
+def test_a_childs_terminal_row_waits_in_the_buffer_and_lands_once(tmp_path, monkeypatch):
+    """A child mints no readiness, so nothing settles it again: its terminal row is retained, not dropped."""
+    from ouroboros.project_dialogue import append_terminal_task_projection
+    from ouroboros.task_results import STATUS_COMPLETED, write_task_result
+
+    seed(tmp_path, monkeypatch)
+    stored = write_task_result(tmp_path, "child-1", STATUS_COMPLETED, parent_task_id="root-1",
+                               root_task_id="root-1", delegation_role="subagent")
+    child = {"id": "child-1", "parent_task_id": "root-1", "root_task_id": "root-1",
+             "delegation_role": "subagent", "chat_id": 41}
+    done = {"chat_id": 41, "status": "completed", "outcome_axes": {"execution": {"status": "ok"}}}
+    with pinned(tmp_path):
+        assert not append_terminal_task_projection(tmp_path, "child-1", child, stored, done)
+        assert retry.snapshot()["rows"] == 1
+    assert retry.drain() == 1
+    rows = [row for row in chat_rows(tmp_path) if row.get("task_id") == "child-1" and row.get("type") == "task_summary"]
+    assert len(rows) == 1

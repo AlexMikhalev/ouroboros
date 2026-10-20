@@ -329,7 +329,8 @@ def _append_project(root: Any, tid: str, task: dict, event: dict, *,
     if existing_row:
         row = existing_row  # append/receipt crash: retain actual publication time
     else:
-        appended = dialogue.append_canonical_task_summary(root, row)
+        # A child mints no readiness, so nothing settles it again: its row waits in the retry buffer.
+        appended = dialogue.append_canonical_task_summary(root, row, **({} if is_root else {"retained": True}))
         if not appended:
             return False
 

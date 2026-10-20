@@ -239,3 +239,27 @@ def test_a_change_between_the_grant_and_the_put_rolls_the_wait_back(pool, genera
     assert pool.meta["owner_wait"]["state"] == "waiting" and "_resume_claim" not in pool.meta
     assert load_task_result(pool.root, "owner")["owner_wait"]["state"] == "waiting"  # rolled back outside Q
     assert pool.meta.get("owner_wait_resume_requested")
+
+
+def test_a_generation_closed_before_the_grant_writes_nothing(pool, generation, monkeypatch):
+    """The stop arrives while the Resume waits on the lane: no durable grant, the park stands as it was."""
+    request_resume(pool)
+    entered, release = threading.Event(), threading.Event()
+
+    def occupy():
+        entered.set()
+        assert release.wait(_WAIT_SEC)
+
+    assert generation.submit(occupy, prep.ADMISSION_LANE) and entered.wait(_WAIT_SEC)
+    writes = []
+    original = worker_owner_wait.set_owner_wait
+    monkeypatch.setattr(worker_owner_wait, "set_owner_wait",
+                        lambda root, task_id, wait, **kwargs: writes.append(wait.get("state"))
+                        or original(root, task_id, wait, **kwargs))
+    maintain_capacity()  # reserves the grant; its job waits behind the occupying one
+    prep.close_generation(generation)
+    release.set()
+    assert generation.wait_idle(_WAIT_SEC)
+    assert "resumed" not in writes and pool.original.in_q.empty()
+    assert load_task_result(pool.root, "owner")["owner_wait"]["state"] == "waiting"
+    assert pool.meta.get("owner_wait_resume_requested")

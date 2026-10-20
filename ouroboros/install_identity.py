@@ -160,6 +160,8 @@ def _ownership(path: Any, *, initialize: bool = True) -> tuple[pathlib.Path, pat
     current = canonical_root()
     if initialize and current not in _INITIALIZED:
         initialize_install()
+    if str(pathlib.Path(path)) == str(current):
+        return current, None  # this install's own root, spelled canonically: no stat, no walk
     record = _read(current)
     # The root separates creation-free reads of copies that still share an id.
     key = (str(path), current, (record or {}).get("id"))
