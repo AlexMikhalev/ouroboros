@@ -191,8 +191,8 @@
     --voice-ouroboros-card: #5c172a;
     --tone-crimson: #d32d43;
     --tone-crimson-hover: #c32a3f;
-    /* The crimson tone's ink: white on the solid crimson. Its hover deepens rather than lightens, so the white
-       keeps 4.5:1 at rest, on hover and pressed from hover. */
+    /* The crimson tone's ink: white on the solid crimson. Its hover deepens rather than lightens, and so does its
+       press (--press-solid), so the white keeps 4.5:1 at rest, on hover and pressed. */
     --tone-crimson-ink: #ffffff;
     /* The soft crimson: a chosen option or card (a filter, a segment, a switched-on capsule, the current step of
        setup), Material 3's tonal step below the filled crimson of the primary action, the chosen place and a count. */
@@ -213,6 +213,8 @@
     --tone-quiet-hover: rgba(var(--neutral-rgb), 0.08);
     /* A state changes colour, never height: hover and press deepen a capsule's own fill (a press lightens on dark). */
     --press: brightness(1.12);
+    /* A press on a solid fill under white ink (the primary action, the chosen tab) deepens instead. */
+    --press-solid: brightness(0.9);
     --motion-tone: background 0.12s ease, box-shadow 0.12s ease, color 0.12s ease, filter 0.12s ease;
     --widget-fault-status-max-width: min(240px, 35vw);
     /* App shell: persistent desktop sidebar + optional project detail pane. */
@@ -359,6 +361,7 @@
     --tone-amber-hover: rgba(245, 158, 11, 0.26);
     --tone-quiet-hover: rgba(28, 33, 51, 0.06);
     --press: brightness(0.95);
+    --press-solid: var(--press);
     /* The light theme's own values of tokens the dark seed in :root sets differently (hues, status triples, the
        System voice, the owner's quote tint, the Project's tints). */
     --user-bubble-from: rgba(80, 120, 190, 0.14);
@@ -853,6 +856,7 @@ textarea.ui-control { resize: vertical; }
 :root[data-theme]:where(.ouro-ui) .btn-danger:not(:disabled):hover { border-color: transparent; background: var(--tone-red-hover); }
 :root[data-theme]:where(.ouro-ui) .btn:hover { transform: none; }
 :root[data-theme]:where(.ouro-ui) :is(.btn, .theme-choice):not(:disabled):active { transform: none; filter: var(--press); }
+:root[data-theme]:where(.ouro-ui) .btn-primary { --press: var(--press-solid); }
 :root[data-theme]:where(.ouro-ui) .btn-ghost:not(:disabled):active { box-shadow: none; }
 :root[data-theme]:where(.ouro-ui) .btn:disabled { box-shadow: none; }
 /* The Appearance choice is one control in both documents (the SPA and the served setup page load only this sheet

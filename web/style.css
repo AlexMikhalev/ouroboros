@@ -9713,6 +9713,8 @@ body.keyboard-open .project-panel {
 :root[data-theme] .chat-capsule:not([data-open="true"]):active {
     filter: var(--press);
 }
+/* The solid crimson under white ink deepens when pressed (--press-solid), so its words keep 4.5:1. */
+:root[data-theme] :is(.chat-send-inline, .chat-quiz-send, .app-tab.active, .app-tab.is-active) { --press: var(--press-solid); }
 /* What cannot be pressed now has no body. */
 :root[data-theme] :is(.chat-header-btn, .chat-budget-pill, .project-panel-close, .mobile-nav-toggle, .chat-swarm, .chat-send-inline,
     .app-tab, .chat-load-older-btn, .chat-scroll-bottom-btn, .rw-back, .rw-row .rw-pill):disabled {

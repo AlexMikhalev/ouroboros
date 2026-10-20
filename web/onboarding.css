@@ -1422,6 +1422,8 @@ textarea:not(.ui-control):not(.ui-checkbox):focus {
   box-shadow: var(--elev-rest);
 }
 :root[data-theme] :is(.wizard-choice, .selection-pill):active { transform: none; filter: var(--press); }
+/* A mark inside a chosen card wears the card's ink (a chosen state's ink is its tone's, DESIGN.md principle 4). */
+:root[data-theme] .wizard-choice.active .skills-mark { color: inherit; }
 
 /* ---- Starter skills (board B13): one Summary row that opens in place into ONE vertical scroll of categorized
    cards — two columns, one on a phone; a ticked card takes the wizard's chosen tone. Under the list stay the two

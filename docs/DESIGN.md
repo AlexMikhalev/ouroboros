@@ -80,9 +80,9 @@ gradient behind content or on an object, and no glows, textures, outlines or neu
    primary ink; a setting's name or an unchosen option the secondary ink; a setting's
    value the meta ink, never the darkest; a chosen state its tone's ink, on the fill or, for a
    control that stays bodiless when chosen (Read aloud while it speaks, a mark), as a word on
-   its own (`--tone-crimson-word`); a chosen row in a menu or a list keeps a faint crimson wash
-   of the accent ladder under the crimson word. A status chip lies flat: standing on a shadow
-   means pressable.
+   its own (`--tone-crimson-word`); a chosen choice in a menu (a model, a voice) keeps a faint
+   crimson wash of the accent ladder under the crimson word, and a selected file keeps its own
+   ink on that wash. A status chip lies flat: standing on a shadow means pressable.
 5. **Air is spacing, never paleness.** Text keeps reading contrast; lightness comes
    from room between and inside objects and from the absence of lines. Nothing is
    faded to say "not yet known"; it says so in words or with an unlit mark.
@@ -110,7 +110,7 @@ gradient behind content or on an object, and no glows, textures, outlines or neu
 | Green, red, amber fills (hover) | the hue at 14/22, 10/16, 18/26 % | white 16/20 % (green), 9/13.5 % (red, amber), each with its hue's ink (red `#ff8882`, a step lighter than the crimson word) |
 | Rest shadow | `0 1px 2px rgb(28 33 51 / .05), 0 6px 18px rgb(28 33 51 / .06)` | `0 1px 2px rgb(0 0 0 / .4), 0 6px 20px rgb(0 0 0 / .28)` |
 | Float shadow | `0 2px 6px rgb(28 33 51 / .06), 0 18px 44px rgb(28 33 51 / .11)` | `0 2px 8px rgb(0 0 0 / .45), 0 18px 44px rgb(0 0 0 / .5)` |
-| Press | `brightness(.95)` | `brightness(1.12)` |
+| Press · on a solid fill under white | `brightness(.95)` · the same | `brightness(1.12)` · `brightness(.9)` |
 
 - Radii by role, both themes: capsule `999px` (every one-line control and chip) · object `18px`
   (bubbles, cards, groups, menus, answer cards) · inner `12px` (trays and rows inside an object) ·
@@ -125,7 +125,7 @@ gradient behind content or on an object, and no glows, textures, outlines or neu
   `:root[data-theme="light"]` (`--elev-*`, `--radius-object` / `-inner` / `-sheet`,
   `--surface-object` / `-capsule` / `-float` / `-tray` / `-side`, `--glass`, `--voice-*`,
   `--tone-*` with `--tone-crimson-ink`, `--tone-crimson-soft` / `-soft-ink` and `--tone-crimson-word`,
-  `--place-mark`, `--status-warn-word` / `-error-word`, `--press`); the light
+  `--place-mark`, `--status-warn-word` / `-error-word`, `--press` / `--press-solid`); the light
   block restates its own values of the hues and tints the dark seed sets differently; the recipes are ui.css "One
   control, three tones" and
   style.css "Airy dopamine", written once for both themes. A page maps its own
@@ -272,8 +272,8 @@ listed in the seed table).
 A new alpha is a rung added to the ladder, never an `rgba()` literal in a rule:
 the ladder is what makes "make the accent calmer" a one-line change instead of
 a grep in the light theme. The dark theme's crimson roles (the tones, the crimson word, the
-focus colours) are opaque values of their own in its seed, so a new accent rewrites those few
-tokens there too.
+focus border and ring) are values of its own seed rather than rungs of the ladder, so a new
+accent rewrites those few tokens there too.
 
 The app and first-run wizard consume the same palette source. A shared accent
 change updates its named roles and alpha ladder there; neither page shadows
