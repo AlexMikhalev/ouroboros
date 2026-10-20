@@ -1142,7 +1142,7 @@ def _forward_to_worker(
     from ouroboros.peer_roster import (
         durable_descendant_of, independent_message_target, peer_contribution_admission,
     )
-    from ouroboros.task_results import STATUS_RUNNING, STATUS_SCHEDULED, validate_task_id
+    from ouroboros.task_results import STATUS_REQUESTED, STATUS_RUNNING, STATUS_SCHEDULED, validate_task_id
     from ouroboros.task_status import FINAL_STATUSES, load_effective_task_result
 
     try:
@@ -1162,7 +1162,9 @@ def _forward_to_worker(
         return _publish_tool_result(ctx, ToolResult(status="unavailable", code="LEGACY_UNAVAILABLE", text=(f"⚠️ TASK_NOT_FOUND: task {tid} is not registered.")))
     if status in FINAL_STATUSES:
         return _publish_tool_result(ctx, ToolResult(status="blocked", code="LEGACY_BLOCKED", text=(f"⚠️ TASK_NOT_ACTIVE: task {tid} is already {status}.")))
-    if status not in (STATUS_RUNNING, STATUS_SCHEDULED):
+    # A requested child's mailbox exists in its recorded drive from the request on: its words are
+    # read when it starts, or stay in its result as unread mail, the same receipt a queued one gives.
+    if status not in (STATUS_RUNNING, STATUS_SCHEDULED, STATUS_REQUESTED):
         return _publish_tool_result(ctx, ToolResult(status="blocked", code="LEGACY_BLOCKED", text=(f"⚠️ TASK_NOT_ACTIVE: task {tid} is {status or 'unknown'}, neither running nor queued.")))
     # AR2-6: no NEW steering writes while a cancellation is pending. The
     # effective status honestly stays ``running`` (cancel_state=pending rides
