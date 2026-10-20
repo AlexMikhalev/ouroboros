@@ -291,7 +291,7 @@ def _compact_root(task_id: str, task: Dict[str, Any], *, status: str, direct: bo
     if canonical_root is not None:
         try:
             from ouroboros.task_results import load_task_result
-            loaded = load_task_result(pathlib.Path(canonical_root), task_id)
+            loaded = load_task_result(pathlib.Path(canonical_root), task_id, strict=True)
             stored = loaded if isinstance(loaded, dict) else {}
             if stored.get("status"):
                 if str(stored.get("status")) in SETTLED_STATUSES:
@@ -305,9 +305,8 @@ def _compact_root(task_id: str, task: Dict[str, Any], *, status: str, direct: bo
                     stored_focus = compact_focus(stored.get("focus"))
                     if stored_focus is not None and stored_focus.get("author_task_id") == task_id:
                         focus = stored_focus
-        except Exception:
-            # The roster already reports projection freshness; an unreadable
-            # result must not turn into a fabricated empty focus.
+        except Exception as exc:
+            row["unavailable"] = {"task_result": type(exc).__name__}
             stored = {}
     if focus is not None and focus.get("author_task_id") == task_id:
         row["focus"] = focus
@@ -328,7 +327,10 @@ def _compact_root(task_id: str, task: Dict[str, Any], *, status: str, direct: bo
     # A settled root waits on nothing, whatever a lagging snapshot still lists.
     settled = str(stored.get("status") or "") in SETTLED_STATUSES
     from ouroboros.live_works import root_present_fields
-    row.update(root_present_fields(canonical_root, task_id, task, stored, settled=settled))
+    present = root_present_fields(canonical_root, task_id, task, stored, settled=settled)
+    if "unavailable" in present:
+        row.setdefault("unavailable", {}).update(present.pop("unavailable"))
+    row.update(present)
     waiting = [] if settled else _waiting_facts(stored, queue_row.get("attempt") or task.get("_attempt"))
     if not settled:
         waiting += _queue_hold_facts(task, stored, waiting)
@@ -378,7 +380,7 @@ def independent_roots(drive_root: pathlib.Path) -> Dict[str, Any]:
     return {
         "roots": rows,
         "incomplete": bool(fragment.get("incomplete")) or not bool(observation.get("fresh"))
-        or not bool(direct_observation.get("fresh")),
+        or not bool(direct_observation.get("fresh")) or any(row.get("unavailable") for row in rows),
         "queue_snapshot": observation,
         "direct_roots": direct_observation,
     }
