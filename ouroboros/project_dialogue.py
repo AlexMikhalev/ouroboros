@@ -1256,7 +1256,9 @@ def _completion_verdict(result: Dict[str, Any], event: Dict[str, Any], *, includ
                                       or (review_cause == "author_finish" and author_closed and review.get("status") != "fail")):
         review_cause = ""
     held = phase == "error" and str(objective.get("source") or "").startswith("plan_review_")
-    if raw_reason == REASON_OWNER_REQUESTED_FINALIZATION:
+    if reason == "foreign_install_root" and (result.get("reason_detail") or event.get("reason_detail")):
+        clause = str(result.get("reason_detail") or event["reason_detail"])
+    elif raw_reason == REASON_OWNER_REQUESTED_FINALIZATION:
         clause = review_cause = ""  # an owner-requested stop carries its own marker
     elif phase == "cancelled" and isinstance(origin, dict) and origin:
         # The recorded cause and the relation the record PROVES (#1061).
