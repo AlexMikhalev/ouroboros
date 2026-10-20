@@ -20,6 +20,7 @@ import {
     setInertCardPresentation,
     setLiveCardPhase,
     syncParkedPhase,
+    taskActivityPresentation,
 } from '../modules/task_phase_chip.js';
 import { ElementStub, TextStub } from './chat_dom_fixture.js';
 
@@ -656,8 +657,8 @@ test('a census pause says its word alone whatever its cause, and follows current
     assert.equal(record.phaseEl.dataset.chipTone, 'neutral', 'submitted work settles without the live word');
     const late = desiredLiveCardPhase({ finalizingHold: true, observedOutcome: 'error',
         parkedPhase: 'budget_paused', pauseCause: 'restart', finishingReviews: true });
-    assert.deepEqual([late.text, late.secondary], ['Failed', 'Paused · Review work finishing'],
-        'the outcome owns the chip; the pause and what it lets finish stand beside it');
+    assert.deepEqual([late.text, late.secondary], ['Failed', 'Paused · Held after a restart · Review work finishing'],
+        'the outcome owns the chip; the pause, what holds it and what it lets finish stand beside it');
 });
 
 test('the card of a work\'s current episode says the work\'s word and line; Stop and a closed socket still win', () => {
@@ -677,4 +678,22 @@ test('the card of a work\'s current episode says the work\'s word and line; Stop
     record.workView = null;
     syncParkedPhase(record, 'budget_paused', { pause_cause: 'owner' });
     assert.equal(record.phaseEl.textContent, 'Paused', 'without its work the card keeps its own census words');
+});
+
+test('a census pause says its word alone and what holds it on its line, never who', () => {
+    const view = (pauseCause, phase = 'budget_paused') => taskActivityPresentation({ phase, pauseCause });
+    for (const [cause, word, line] of [
+        ['budget', 'Paused', 'Spending limit reached'],
+        ['restart', 'Paused', 'Held after a restart'],
+        ['authority', 'Paused', 'Paused after a technical problem'],
+        ['sleep', 'Waiting', 'Sleeping until it is woken'],
+    ]) {
+        assert.deepEqual([view(cause).text, view(cause).secondary], [word, line], cause);
+    }
+    // The census's owner cause cannot tell the owner's Pause from Ouroboros's: the word alone, no line.
+    assert.deepEqual([view('owner').text, view('owner').secondary], ['Paused', undefined]);
+    assert.equal(view('owner', 'budget_pausing').text, 'Pausing…');
+    for (const cause of ['budget', 'restart', 'authority', 'sleep', 'owner']) {
+        assert.doesNotMatch(view(cause).text, / · /, `${cause}: the chip never carries a reason`);
+    }
 });

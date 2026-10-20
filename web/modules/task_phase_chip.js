@@ -49,6 +49,15 @@ export function pausePhaseLabel(phase, cause = '') {
 // words. The census names tasks and model sends alike, so it names no count.
 const reviewsFinishing = () => tr('work.because.review_work_finishing', 'Review work finishing');
 
+// What a census pause cause says on the card's line, in the work's own sentences (gateway/work_status.py REASON_TEXT).
+// The census's `owner` cause cannot tell the owner's Pause from Ouroboros's, so it says nothing there.
+const CAUSE_SENTENCES = {
+    budget: () => tr('work.because.spending_limit', 'Spending limit reached'),
+    restart: () => tr('work.because.after_restart', 'Held after a restart'),
+    authority: () => tr('work.because.technical_pause', 'Paused after a technical problem'),
+    sleep: () => tr('work.because.sleeping', 'Sleeping until it is woken'),
+};
+
 export function activityWaitPhase(activity = {}) {
     const question = activity.owner_wait ?? activity.required_question;
     if (question?.owner_wait_state === 'resumed' || question?.wait_ended_at
@@ -151,8 +160,10 @@ export function taskActivityPresentation({ phase = 'working', outcome = '', ende
         // The exact call still explains the work's word in the card's details where both say the same word.
         ...(modelPhase?.detail && modelPhase.text === workView.text ? { detail: modelPhase.detail } : {}) };
     else if (['budget_paused', 'budget_pausing'].includes(phase)) {
-        // The chip says the word; a hold and the reviews a settled Pause lets finish are its quieter second fact.
-        const beside = [hold, phase === 'budget_paused' && finishingReviews ? reviewsFinishing() : ''].filter(Boolean);
+        // The chip says the word; what holds it, a hold and the reviews a settled Pause lets finish are its quieter
+        // second fact.
+        const beside = [CAUSE_SENTENCES[pauseCause]?.() || '', hold,
+            phase === 'budget_paused' && finishingReviews ? reviewsFinishing() : ''].filter(Boolean);
         // A cold sleep wakes by itself: it waits, it is not paused.
         const mark = phase === 'budget_paused' && pauseCause === 'sleep' ? 'still' : CENSUS_MARKS[phase];
         current = withOwner(phaseView(phase === 'budget_paused' ? 'paused' : 'working', pausePhaseLabel(phase, pauseCause),
