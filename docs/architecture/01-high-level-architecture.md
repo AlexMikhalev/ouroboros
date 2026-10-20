@@ -48,7 +48,7 @@ supervisor/ — background thread inside server.py (§5)
   worker_assignment.py, worker_chat_lane.py, direct_pause.py, worker_health.py, worker_pool_lifecycle.py, worker_process.py, worker_promotion.py — pool leaves, one concern each as named (§5; §6 Owner routing verbs)
   worker_owner_wait.py — a required owner wait lends its active slot; the task stays RUNNING, custodied (§5)
   state.py, state_initialization.py — `state/state.json` updates with typed read quality; init witness
-  queue.py — task queue (PENDING/RUNNING) with activity-based timeouts; the one task-state authority (§5)
+  queue.py — task queue (PENDING/RUNNING) with activity-based timeouts; the one task-state authority (§5); loop_load.py measures it
   queue_schedules.py, schedule_lifecycle.py, queue_snapshot.py, queue_timeouts.py — leaves re-exported through `supervisor.queue` (§5)
   followup_policy.py — related/independent relationship admission (`followup_relation`) (§5)
   cognitive_operations.py — in-memory operation leases and typed wait marks for idle enforcement and reply preparation; no durable ledger (§6)
