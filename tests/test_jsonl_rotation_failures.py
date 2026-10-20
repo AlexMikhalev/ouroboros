@@ -314,7 +314,7 @@ def test_rotation_oserror_keeps_real_supervisor_dispatching(
         phases.append("events")
         return False
 
-    def intake(_bridge, offset, _ctx):
+    def intake(_bridge, offset, _ctx, **_kw):
         phases.append("intake")
         return offset + 1
 
