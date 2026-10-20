@@ -309,14 +309,14 @@ def test_explicit_account_override_keeps_role_and_auto_semantics(setup, monkeypa
     assert usage["claudexor"]["model_role"] == role
 
 
-def test_lost_create_reply_never_repeats_an_uncertain_create(setup):
+def test_lost_create_reply_rejoins_without_second_physical_attempt(setup):
     root, gateway, client = setup
     gateway.lose_create = True
-    with pytest.raises(transport.ClaudexorModelError) as unknown:
-        client.chat([{"role": "user", "content": "hi"}], MODEL)
-    assert unknown.value.code == "model_outcome_unknown"
-    assert len(gateway.creates) == len(gateway.accepted_operations) == 1
-    assert [row["state"] for row in ledger(root)] == ["unresolved"]
+    answer, usage = client.chat([{"role": "user", "content": "hi"}], MODEL)
+    assert answer["content"] == "Ответ 🐍"
+    assert len(gateway.creates) == 2 and gateway.creates[0] == gateway.creates[1]
+    assert len(gateway.accepted_operations) == 1 and len(usage["ledger_attempt_ids"]) == 1
+    assert [row["state"] for row in ledger(root)] == ["settled"]
 
 
 @pytest.mark.parametrize("fault", ["stall_then_ready", "deadline", "forbidden"])

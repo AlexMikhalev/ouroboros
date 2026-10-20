@@ -562,9 +562,6 @@ class _ModelInvocation:
                     # non-dispatch authority for an earlier accepted request.
                     raise self.error({"code": error.code, "message": str(error),
                                       "context": {"httpStatus": error.status_code}}) from None
-                if not self.operation_id:
-                    raise self.error({"code": error.code, "message": str(error)}, detail,
-                                     unknown=True, rejoinable=True) from None
                 self.observe_operation(phase="rejoining")
                 # A failed read after creation is never a provider connect failure.
                 # Drop its causal HTTP chain at this boundary: even ConnectError
