@@ -37,7 +37,7 @@ def test_all_queue_hold_writers_have_snapshot_surviving_exits(tmp_path, monkeypa
     reasons = {value for name, value in vars(eb).items() if name.startswith("HOLD_") and isinstance(value, str)}
     # A new literal writer or constant cannot quietly evade the table.
     for path in (Path(__file__).resolve().parents[1] / "supervisor").glob("*.py"):
-        for node in ast.walk(ast.parse(path.read_text())):
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
             if isinstance(node, ast.Assign) and any(isinstance(t, ast.Name) and t.id.startswith("HOLD_") for t in node.targets):
                 if isinstance(node.value, ast.Constant) and isinstance(node.value.value, str):
                     reasons.add(node.value.value)
