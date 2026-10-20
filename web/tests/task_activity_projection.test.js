@@ -28,7 +28,7 @@ const flattened = view => [view.text, view.secondary].filter(Boolean).join(' · 
 
 // The approved chips (status marks): the live word crimson with moving dots; what goes on by itself neutral with
 // still dots; a settled Pause its bars; unconfirmed work a ring; the owner's question amber with the amber dot. The
-// chip says its word alone; a fact beside it (the reviews a settled Pause lets finish) is its quieter line.
+// chip says its word alone; what holds it and the reviews a settled Pause lets finish are its quieter line.
 for (const [patch, text, mark, tone, waiting, secondary = ''] of [
     [{ phase: 'preparing' }, 'Preparing', 'moving/ink', 'live', false],
     [{ phase: 'working' }, 'Working', 'moving/ink', 'live', false],
@@ -36,11 +36,13 @@ for (const [patch, text, mark, tone, waiting, secondary = ''] of [
     [{ phase: 'queued' }, 'Queued', 'still/ink', 'neutral', false],
     // The census `owner` cause also covers Ouroboros's own Pause: only the work projection says who paused.
     [{ phase: 'budget_paused', pause_cause: 'owner' }, 'Paused', 'pause/ink', 'neutral', true],
-    [{ phase: 'budget_paused', pause_cause: 'authority' }, 'Paused', 'pause/ink', 'neutral', true],
+    [{ phase: 'budget_paused', pause_cause: 'authority' }, 'Paused', 'pause/ink', 'neutral', true,
+        'Paused after a technical problem'],
     [{ phase: 'budget_paused', pause_cause: 'owner', finishing_reviews: true }, 'Paused', 'pause/ink', 'neutral', true,
         'Review work finishing'],
     // A cold sleep wakes by itself: it waits, it is not paused.
-    [{ phase: 'budget_paused', pause_cause: 'sleep' }, 'Waiting', 'still/ink', 'neutral', true],
+    [{ phase: 'budget_paused', pause_cause: 'sleep' }, 'Waiting', 'still/ink', 'neutral', true,
+        'Sleeping until it is woken'],
     [{ phase: 'budget_pausing', pause_cause: 'owner', finishing_reviews: true }, 'Pausing…', 'moving/ink', 'neutral', true],
     [{ phase: 'budget_pausing' }, 'Pausing…', 'moving/ink', 'neutral', true],
     [{ phase: 'unknown' }, 'Activity unconfirmed', 'ring/ink', 'neutral', false],
