@@ -862,6 +862,8 @@ def persist_never_admitted_refusal(
     from supervisor import queue
     from ouroboros.routing_wait import is_own_admission_stub
 
+    # The transition id of this admission's own SCHEDULED receipt whose put was refused (inline path).
+    put_refused = str(fields.pop("_admission_receipt", "") or "")
     receipt = str(fields.get("_admission_refusal_token") or "") if admission_token else ""
     receipt = receipt or uuid.uuid4().hex
     with queue._queue_lock:
@@ -875,11 +877,19 @@ def persist_never_admitted_refusal(
         own_claim = bool(admission_token and isinstance(claim, dict) and claim.get("token") == admission_token
                          and (own_requested_child(current, admission_token, reservation)
                               or own_unput_receipt(current, admission_token)))
+        unput = (current.get("delegation_admission") or {}).get("transition_id") if put_refused else None
         return (not current or own_claim or bool(admission_token and is_own_admission_stub(current, admission_token))
-                or not admission_token and current.get("status") == STATUS_REQUESTED)
+                or not admission_token and current.get("status") == STATUS_REQUESTED
+                or bool(put_refused and current.get("status") == STATUS_SCHEDULED and unput == put_refused))
 
     def project(current: Dict[str, Any], incoming: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-        return incoming if own(current) else None
+        if not own(current):
+            return None
+        admission = current.get("delegation_admission")
+        if isinstance(admission, dict) and admission.get("status") == "accepted":
+            # Its receipt said accepted before the put; a child never admitted is no direct child.
+            incoming = {**incoming, "delegation_admission": {**admission, "status": "never_admitted"}}
+        return incoming
 
     with acquisition_budget(0):
         current = load_task_result(pathlib.Path(drive_root), task_id, strict=True) or {}
@@ -1016,8 +1026,10 @@ def scheduled_admission_rejection(
     return {
         "detail": detail,
         "reason_code": reason,
-        "extra_fields": {**extra, **({"admission_outcome": "never_admitted"}
-                                    if admitted.get("_admission_never_admitted") else {})},
+        # A never-admitted refusal names its own unput receipt, which only that refusal writer consumes.
+        "extra_fields": {**extra, **({"admission_outcome": "never_admitted",
+                                      "_admission_receipt": str(admitted.get("_admission_receipt") or "")}
+                                     if admitted.get("_admission_never_admitted") else {})},
         "persist_result": reason not in {"task_id_lookup_failed", "duplicate_task_id",
                                          "admission_reservation_owned", "admission_reservation_lost"},
     }
@@ -1282,7 +1294,7 @@ def enqueue_subagent_with_scheduled_result(
                         "Subagent not scheduled: the exact task-result authority became "
                         "unreadable during admission and was preserved.", False,
                     )
-                return "blocked", admitted
+                return "blocked", {**admitted, "_admission_receipt": transition_id}
             if uncertain:
                 admitted["_admission_uncertain"] = uncertain
             ctx.persist_queue_snapshot(reason="schedule_subagent_admitted")

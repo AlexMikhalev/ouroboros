@@ -240,3 +240,38 @@ def test_registered_schedule_subagent_reaches_one_worker_after_real_receipt_cont
     assert env.gen.wait_idle(_WAIT_SEC)
     assert [task["id"] for task in delivered] == [tid]
     assert worker.busy_task_id == tid and env.pending_ids() == []
+
+
+def test_a_child_refused_after_its_receipt_is_no_direct_child(env, monkeypatch):
+    """An owner Pause between the SCHEDULED receipt and the put settles the child never admitted,
+    and its receipt's accepted admission settles with it: the parent's durable direct-child count
+    stays where it was, so a single-child parent can still spawn its one child."""
+    from ouroboros.task_results import STATUS_SCHEDULED
+    from ouroboros.tools.control_delegation import check_delegation_admission, durable_direct_child_count
+    from supervisor.events_budget import _set_root_budget_pause_locked
+
+    event = request(env, False)
+    install_worker(env, monkeypatch)
+    landed, proceed = threading.Event(), threading.Event()
+    real = task_admission.write_task_result
+
+    def write(root, tid, status, **fields):
+        result = real(root, tid, status, **fields)
+        if tid == "receipt-child" and status == STATUS_SCHEDULED:
+            landed.set()  # the receipt is durable; the put has not been entered
+            assert proceed.wait(_WAIT_SEC)
+        return result
+
+    monkeypatch.setattr(task_admission, "write_task_result", write)
+    before = durable_direct_child_count(env.data, "root", exclude_task_id="next-child")
+    assert env.dispatch_returns(event) and landed.wait(_WAIT_SEC)
+    with queue._queue_lock:
+        _set_root_budget_pause_locked("root", {"cause": "owner_pause", "fence_id": "between-receipt-and-put"})
+    proceed.set()
+    assert env.gen.wait_idle(_WAIT_SEC)
+    row = env.row("receipt-child")
+    assert row["status"] == "failed" and row["admission_outcome"] == "never_admitted"
+    assert row["delegation_admission"]["status"] == "never_admitted"
+    after = durable_direct_child_count(env.data, "root", exclude_task_id="next-child")
+    assert before == after == 0
+    assert check_delegation_admission({"may_fan_out": False}, direct_child_count=after).ok
