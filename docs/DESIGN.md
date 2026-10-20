@@ -427,8 +427,9 @@ fade, and ☰, still the row's first control, waits beside the field. Scrolling
 toward the latest, reaching it, focusing the field or another layout brings the row
 back; while the owner writes or works a capsule, or the field holds the focus, it
 stays. Only the owner's own scroll decides, as with Safari's bars: older history
-paging in or let go, and rows that arrive or grow, move nothing
-(`web/modules/composer_fold.js`; owner 19.10).
+paging in or let go, and rows that arrive or grow, move nothing; nor does a swipe
+begun in a card's frame, which the feed never sees: the room still follows its
+newest row, so the row stays (`web/modules/composer_fold.js`; owner 19.10).
 
 **Hover is an accelerator; the press always works.** With a hovering fine pointer a
 capsule opens ~160 ms after arrival (not while the other is open) and closes a
