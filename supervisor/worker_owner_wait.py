@@ -286,7 +286,7 @@ def _resume_job(task_id: str, meta: dict, worker: Any, token: str, replacement: 
 
     generation = workspace_preparation.current_generation()
     try:
-        generation.wait_store(functools.partial(_resume_attempt, task_id, meta, worker, token, replacement),
+        generation.wait_store(functools.partial(_resume_attempt, task_id, meta, worker, token, replacement, generation),
                               controls=lambda: ({"detail": "generation closed"} if generation.closed() else None))
     except workspace_preparation.PreparationStopped:
         log.info("Owner wait resume of %s withdrawn: the supervisor generation is closing", task_id)
@@ -314,8 +314,17 @@ def _resume_claim_held(task_id: str, meta: dict, worker: Any, token: str) -> boo
             and _pool().WORKERS.get(worker.wid) is worker)
 
 
-def _resume_attempt(task_id: str, meta: dict, worker: Any, token: str, replacement: Any) -> bool:
-    """One grant attempt: authorities and the durable ``resumed`` wait outside Q, then the put under Q."""
+def _active_slots() -> int:
+    return sum(1 for slot in _pool().WORKERS.values() if getattr(slot, "active_capacity", True))
+
+
+def _resume_attempt(task_id: str, meta: dict, worker: Any, token: str, replacement: Any,
+                    generation: Any = None) -> bool:
+    """One grant attempt: authorities and the durable ``resumed`` wait outside Q, then the put under Q.
+
+    On the lane the put also needs its generation open and, without a replacement, a free active
+    slot: the reservation lent nothing, so a slot taken meanwhile leaves the park standing.
+    """
     from ouroboros.owner_wait import OwnerWaitSuperseded
     from supervisor import queue
 
@@ -344,6 +353,11 @@ def _resume_attempt(task_id: str, meta: dict, worker: Any, token: str, replaceme
                     replacement is not None and not _replacement_current(replacement)):
                 log.info("Owner wait resume of %s refused after its durable grant: the stack, its worker "
                          "or the replacement slot changed; the park stands", task_id)
+                return False
+            if generation is not None and (generation.closed() or (
+                    replacement is None and _active_slots() >= _pool().MAX_WORKERS)):
+                log.info("Owner wait resume of %s waits: its generation closed or no active slot is free; "
+                         "the park stands", task_id)
                 return False
             if replacement is not None:
                 replacement.active_capacity = False
@@ -449,11 +463,13 @@ def _resume_original_stacks(holds: dict) -> None:
                 continue
             holds[worker.wid] = task_id  # authorized this tick: owed its lent capacity back
             active = [w for w in pool.WORKERS.values() if getattr(w, "active_capacity", True)]
+            # A grant still on the lane counts as the slot it will take (its worker is not active yet).
+            granting = sum(1 for other in pool.RUNNING.values() if other is not meta and other.get(_RESUME_CLAIM))
             exhausted = next((w for w in active
                               if getattr(w, "readiness_exhausted", False)
                               and not w.proc.is_alive()), None)
             idle = [w for w in active if w.busy_task_id is None and worker_ready(w)]
-            if len(active) >= pool.MAX_WORKERS and exhausted is None:
+            if len(active) + granting >= pool.MAX_WORKERS and exhausted is None:
                 for slot in idle:
                     request_worker_quiescence(slot)
                 quiet = next((slot for slot in idle if slot.quiescence_confirmed), None)
@@ -465,7 +481,7 @@ def _resume_original_stacks(holds: dict) -> None:
                 elif held is not None:
                     holds[held.wid] = task_id
                 continue  # grant after the reaper confirms death, on a later tick
-        if len(active) < pool.MAX_WORKERS:
+        if len(active) + granting < pool.MAX_WORKERS:
             exhausted = None
         try:
             if _grant_resume(task_id, meta, worker, exhausted_replacement=exhausted):

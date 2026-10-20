@@ -212,3 +212,45 @@ def test_uncertain_marks_commit_is_inspected_by_token_and_never_resent(env, monk
     assert env.gen.wait_idle(_WAIT_SEC)
     assert [task["id"] for task in delivered] == ["launch-child"] and "launch-child" in queue.RUNNING
     assert len(outcomes) == 1  # the marks were never rewritten
+
+
+def test_a_generation_closed_after_the_marks_puts_nothing(env, monkeypatch):
+    worker, delivered = install_worker(env, monkeypatch)
+    row = scheduled_child(env)
+    committed, proceed = threading.Event(), threading.Event()
+    original = worker_assignment._commit_launch
+
+    def after_marks(queue_module, candidate, unsubmitted=None):
+        projections = original(queue_module, candidate, unsubmitted)
+        if candidate.get("id") == "launch-child" and projections:
+            committed.set()
+            assert proceed.wait(_WAIT_SEC)
+        return projections
+
+    monkeypatch.setattr(worker_assignment, "_commit_launch", after_marks)
+    workers.assign_tasks()
+    assert committed.wait(_WAIT_SEC)
+    prep.close_generation(env.gen)  # the server stops between the durable marks and the put
+    proceed.set()
+    assert env.gen.wait_idle(_WAIT_SEC)
+    assert delivered == [] and "launch-child" not in queue.RUNNING and worker.busy_task_id is None
+    assert worker_assignment._unsent(row) is not None  # committed, never put: a later generation finishes it once
+
+
+def test_a_launch_on_the_lane_counts_against_its_roots_cap_in_the_same_pass(env, monkeypatch):
+    worker, delivered = install_worker(env, monkeypatch)
+    second = affirm_ready(SimpleNamespace(wid=1, busy_task_id=None,
+                                          in_q=SimpleNamespace(put=lambda task: delivered.append(dict(task)))))
+    workers.WORKERS[1] = second
+    monkeypatch.setattr("ouroboros.config.get_max_active_subagents_per_root", lambda: 1)
+    first, other = scheduled_child(env), scheduled_child(env, "launch-second")
+    with contextlib.ExitStack() as stack:
+        held, _attempts, failures = hold_at_marks(env, monkeypatch, stack, write=False)
+        workers.assign_tasks()  # the first child's launch waits on the lane; the second sees it as started
+        wait_for(lambda: failures, "the first launch reached the held store")
+        assert first.get("_launch_claim") and not other.get("_launch_claim") and second.busy_task_id is None
+        held[0]()
+        assert env.gen.wait_idle(_WAIT_SEC)
+    launched = [task["id"] for task in delivered if "id" in task]  # worker commands carry no task id
+    assert launched == ["launch-child"] and env.pending_ids() == ["launch-second"]
+    assert env.row("launch-second").get("admitted_dispatch") != "possible"  # no durable marks for the excess

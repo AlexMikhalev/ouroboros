@@ -357,7 +357,7 @@ def _claim_worker_launch(queue, candidate, worker, *, deferred: Optional[set] = 
     snapshot, ONE marks write, ``drive_started``, the RUNNING mirror: ``_launch_attempt``) run on
     the preparation generation's admission lane with its acquisition gate, never behind a copy;
     the lane then re-takes Q, revalidates memory only (the claim, the worker, fences, holds,
-    deadline) and puts. None: reserved, the lane finishes it; False: refused, released; True: a
+    deadline, its generation still open) and puts. None: reserved, the lane finishes it; False: refused, released; True: a
     host without a generation (the historical inline path) launched synchronously under Q with
     zero-wait acquisitions, contention joining ``deferred`` as residual demand. A refusal after
     the marks committed keeps ``_COMMITTED_UNSENT``'s witness: the same row, attempt and marks
@@ -413,7 +413,7 @@ def _launch_job(queue, candidate, worker, token: str) -> None:
     outcome = False
     try:
         outcome = generation.wait_store(
-            functools.partial(_launch_attempt, queue, candidate, worker, token, lane=True),
+            functools.partial(_launch_attempt, queue, candidate, worker, token, lane=True, generation=generation),
             controls=lambda: ({"detail": "generation closed"} if generation.closed() else None), busy=contention)
         if outcome is None:
             log.info("Worker start of %s unresolved; the next assignment pass retries it", candidate.get("id"))
@@ -424,6 +424,12 @@ def _launch_job(queue, candidate, worker, token: str) -> None:
     finally:
         if outcome is not True:
             _release_launch(queue, candidate, worker, token)
+
+
+def _started_projection() -> list:
+    """Under Q: RUNNING plus launches reserved on the admission lane; caps and leases count both,
+    as when the inline launch bound RUNNING before the next choice."""
+    return list(_pool().RUNNING.values()) + [{"task": row} for row in _pool().PENDING if row.get(_LAUNCH_CLAIM)]
 
 
 def _release_launch(queue, candidate, worker, token: str) -> None:
@@ -446,7 +452,7 @@ def _launch_claim_held(queue, candidate, worker, token: str) -> bool:
             and worker_ready(worker) and getattr(worker, "active_capacity", True))
 
 
-def _launch_attempt(queue, candidate, worker, token: str, *, lane: bool) -> Optional[bool]:
+def _launch_attempt(queue, candidate, worker, token: str, *, lane: bool, generation=None) -> Optional[bool]:
     """One launch attempt: the schedule control, the durable steps under the root's launch lock,
     then the put under Q and the schedule's table hold.
 
@@ -455,7 +461,8 @@ def _launch_attempt(queue, candidate, worker, token: str, *, lane: bool) -> Opti
     contention, an unresolved commit or an unwritten row mark (None: still demand, this process
     retries it) ends the attempt with the same unsent row (the lane retries after a slice; the
     inline path defers to the next pass); False is a refusal. On the lane the put follows a
-    memory-only revalidation under Q. Once the put is entered the worker
+    memory-only revalidation under Q, which a closed reserving generation refuses (its committed
+    witness then finishes once later). Once the put is entered the worker
     owns the task, even if the put raised: it is bound RUNNING/busy, so Stop, completion and
     worker health settle it before reuse.
     """
@@ -518,6 +525,8 @@ def _launch_attempt(queue, candidate, worker, token: str, *, lane: bool) -> Opti
                                  and not _candidate_ineligible(queue, candidate, float("inf"),
                                                                list(_pool().RUNNING.values()), own_claim=token)):
                     return False
+                if generation is not None and generation.closed():
+                    return False  # a stopping generation starts nothing more, even after its marks
                 if _deadline_refuses_launch(queue, candidate, unsubmitted=unsubmitted):  # positively before any put
                     return False
                 if not _mark_launch_row(candidate, projections):
@@ -900,8 +909,7 @@ def assign_tasks() -> None:
             while (w.busy_task_id is None and worker_ready(w) and not getattr(w, "resume_hold", "")
                     and getattr(w, "active_capacity", True) and _pool().PENDING):
                 chosen_idx, blocked = _choose_candidate(
-                    queue, remaining, unresolved_invalid_id_set, refused_this_pass,
-                    list(_pool().RUNNING.values()), set())
+                    queue, remaining, unresolved_invalid_id_set, refused_this_pass, _started_projection(), set())
                 if blocked:
                     return
                 if chosen_idx is None:
@@ -920,7 +928,7 @@ def assign_tasks() -> None:
 
     # Recompute under lifecycle -> Q before spawning, without holding Q over start.
     def residual_demand():
-        running, selected = list(_pool().RUNNING.values()), set()
+        running, selected = _started_projection(), set()
         for _ in range(max(1, _pool().MAX_WORKERS)):
             idx, blocked = _choose_candidate(queue, remaining, unresolved_invalid_id_set,
                                              refused_this_pass - deferred_this_pass, running, selected)

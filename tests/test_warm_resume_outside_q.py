@@ -167,3 +167,75 @@ def test_refused_authority_writes_nothing(pool, generation, monkeypatch):
     assert generation.wait_idle(_WAIT_SEC)
     assert writes == [] and pool.original.in_q.empty() and not pool.original.active_capacity
     assert load_task_result(pool.root, "owner")["owner_wait"]["state"] == "waiting"
+
+
+def second_parked_stack(pool):
+    """A second warm park on its own lent slot, both asking to resume with MAX_WORKERS=1 and no slot active."""
+    from ouroboros.task_results import write_task_result
+    from tests.test_owner_wait_pool import InputQueue, Process
+    from tests.worker_pool_support import affirm_ready
+
+    second = workers.Worker(1, Process(43), InputQueue(), busy_task_id="owner-two")
+    affirm_ready(second)
+    workers.WORKERS[1] = second
+    meta = {"task": {**pool.meta["task"], "id": "owner-two"}, "worker_id": 1,
+            "attempt": 3, "started_at": pool.meta["started_at"], "last_heartbeat_at": 1}
+    workers.RUNNING["owner-two"] = meta
+    write_task_result(pool.root, "owner-two", "running", result="prepared", total_rounds=7)
+    event = {**pool.event, "task_id": "owner-two", "worker_id": 1, "pid": 43,
+             "wait_id": "wait-two", "checkpoint": {**pool.wait, "wait_id": "wait-two"}}
+    worker_owner_wait.handle_owner_wait(event, workers)
+    assert second.in_q.get_nowait()["phase"] == "parked"
+    worker_owner_wait.handle_owner_wait({**pool.event, "phase": "resume"}, workers)
+    worker_owner_wait.handle_owner_wait({**event, "phase": "resume"}, workers)
+    return second, meta
+
+
+@contextlib.contextmanager
+def busy_lane(generation):
+    entered, release = threading.Event(), threading.Event()
+
+    def occupy():
+        entered.set()
+        assert release.wait(_WAIT_SEC)
+
+    assert generation.submit(occupy, prep.ADMISSION_LANE) and entered.wait(_WAIT_SEC)
+    try:
+        yield
+    finally:
+        release.set()
+    assert generation.wait_idle(_WAIT_SEC)
+
+
+def test_a_grant_on_the_lane_counts_as_the_slot_it_will_take(pool, generation):
+    park(pool)
+    _, second_meta = second_parked_stack(pool)
+    with busy_lane(generation):
+        worker_owner_wait.maintain_owner_wait_capacity()  # both ask in one tick; one free slot
+        assert [bool(m.get("_resume_claim")) for m in (pool.meta, second_meta)].count(True) == 1
+    assert sum(bool(w.active_capacity) for w in workers.WORKERS.values()) == workers.MAX_WORKERS == 1
+    parked = [m for m in (pool.meta, second_meta) if m["owner_wait"]["state"] == "waiting"]
+    assert len(parked) == 1 and parked[0].get("owner_wait_resume_requested")  # still asked, not refused
+
+
+@pytest.mark.parametrize("change", ["generation_closed", "slot_taken"])
+def test_a_change_between_the_grant_and_the_put_rolls_the_wait_back(pool, generation, monkeypatch, change):
+    request_resume(pool)
+    original = worker_owner_wait.set_owner_wait
+
+    def resumed_write(root, task_id, wait, **kwargs):
+        result = original(root, task_id, wait, **kwargs)
+        if wait.get("state") == "resumed":  # durable grant written, put not yet entered
+            if change == "generation_closed":
+                prep.close_generation(generation)
+            else:
+                monkeypatch.setattr(workers, "MAX_WORKERS", 0)  # the owner shrank the pool meanwhile
+        return result
+
+    monkeypatch.setattr(worker_owner_wait, "set_owner_wait", resumed_write)
+    maintain_capacity()
+    assert generation.wait_idle(_WAIT_SEC)
+    assert pool.original.in_q.empty() and not pool.original.active_capacity
+    assert pool.meta["owner_wait"]["state"] == "waiting" and "_resume_claim" not in pool.meta
+    assert load_task_result(pool.root, "owner")["owner_wait"]["state"] == "waiting"  # rolled back outside Q
+    assert pool.meta.get("owner_wait_resume_requested")
