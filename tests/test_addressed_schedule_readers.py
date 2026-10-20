@@ -105,3 +105,31 @@ def test_row_edit_during_policy_read_is_never_overwritten(world, monkeypatch):
     assert world[2] == []
     current = schedules.load_schedule_store(world[1])["tasks"][0]
     assert current == {**copy.deepcopy(record), "enabled": False, "name": "Owner changed this during observation"}
+
+
+@pytest.mark.parametrize("control", ["none", "stop", "pause"])
+def test_reenabled_row_rechecks_controls_before_admission(world, control):
+    from ouroboros.owner_pause import install_fence
+    from supervisor import queue_schedules as schedules
+    from tests.test_g1_followup_policy import ORIGIN
+
+    registered = register(world)
+    root = world[1]
+    def set_enabled(enabled):
+        with schedules.schedule_transaction(root):
+            data = schedules.load_schedule_store(root)
+            row = next(row for row in data["tasks"] if row["id"] == registered["id"])
+            row["enabled"] = enabled
+            schedules._write_scheduled_tasks(data, root)
+    set_enabled(False)
+    if control == "stop":
+        stop(root)
+    elif control == "pause":
+        install_fence(root, ORIGIN, request_id="disabled-pause")
+    schedules.check_scheduled_tasks()
+    assert not world[2]
+    set_enabled(True)
+    schedules.check_scheduled_tasks()
+    assert len(world[2]) == (1 if control == "none" else 0)
+    current = schedules.load_schedule_store(root)["tasks"][0]
+    assert bool(current.get("followup_hold") or current.get("followup_wait")) == (control != "none")
