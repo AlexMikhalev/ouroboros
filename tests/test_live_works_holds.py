@@ -70,6 +70,22 @@ def test_live_work_without_a_listed_root_is_visible_but_never_addressable(tmp_pa
     assert "ordinary hygiene" in present["note"]
     # The address book is unchanged: the ended root is not a tell_task target.
     assert independent_roots(tmp_path)["roots"] == []
+    assert present["incomplete"] is False
+    from ouroboros import task_results
+    from ouroboros.store import StoreBusy
+    def busy(*_args, **_kwargs):
+        raise StoreBusy("ended root busy")
+    with monkeypatch.context() as patch:
+        patch.setattr(task_results, "load_task_result", busy)
+        partial = live_works_present(tmp_path)
+        assert partial["incomplete"] is True
+        [unreadable] = partial["other_live_work"]
+        assert unreadable["work_id"] == "p" and unreadable["helpers_running"] == 3
+        assert unreadable["unavailable"] == {"task_result": "StoreBusy"}
+        assert unreadable["root_status"] == "unknown"
+    recovered = live_works_present(tmp_path)
+    assert recovered["incomplete"] is False
+    assert recovered["other_live_work"] == present["other_live_work"] and recovered["works"] == present["works"]
 
 
 def test_runs_still_working_under_a_settled_root_are_its_typed_tails(tmp_path):

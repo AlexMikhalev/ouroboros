@@ -67,8 +67,8 @@ def _emit_checkpoint_event(
     event endpoint (``log_addressing.TurnEventQueue``) stamps lineage and chat
     by value onto the row before it is written, so the durable copy is
     attributed the way the live one is. A row that could not be written is
-    logged and the frame still goes out: the owner sees the fact, the file
-    does not.
+    retained by the bounded process retry buffer and the frame still goes out.
+    The next worker append/exit retries it without emitting another live frame.
     """
     from ouroboros import dialogue_store
     from ouroboros.utils import append_jsonl, utc_now_iso

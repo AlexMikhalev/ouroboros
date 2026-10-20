@@ -315,12 +315,12 @@ def test_kill_at_each_packer_step_leaves_readable_state_and_rerun_completes(root
         real_upsert(root_, pack_path, sidecar)
         raise KeyboardInterrupt("kill -9 after the index upsert")
 
-    monkeypatch.setattr(packs, "replace_atomic", replace)
-    if step == "indexed":
-        monkeypatch.setattr(packs, "index_upsert", upsert)
-    with pytest.raises(KeyboardInterrupt):
-        packs.pack_task(root, "task-a", keep_shas=set())
-    monkeypatch.undo()
+    with monkeypatch.context() as patch:
+        patch.setattr(packs, "replace_atomic", replace)
+        if step == "indexed":
+            patch.setattr(packs, "index_upsert", upsert)
+        with pytest.raises(KeyboardInterrupt):
+            packs.pack_task(root, "task-a", keep_shas=set())
     packs._READERS.clear()
     # loose files are still there (nothing unlinked before the verified index), every reader works
     assert all(_loose(ref) for ref in refs) and _handle_path(root, "task-a", handle).exists()

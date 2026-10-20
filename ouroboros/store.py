@@ -27,16 +27,16 @@ import weakref
 from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
 
 from ouroboros.utils import append_jsonl, machine_json, utc_now_iso  # one compact JSON text: key order kept, facts round-trip
-from ouroboros import store_hot_facts
+from ouroboros import store_hot_facts, store_task_cards, store_timing
 
 STORE_REL = pathlib.Path("state/current.sqlite")
 LOCK_NAME = "current.lock"  # the name-tier lock around every access
 IMPORT_LOCK_NAME = "current_import.lock"
 GENERATION = 8  # the lifecycle generation that owns the store
 GENERATION_KEY = "current_store_generation"  # in state/migrations.json
-SCHEMA_VERSION = 6  # 2: owner questions; 3: acceptance; 4: plans; 5: retention; 6: hot facts
+SCHEMA_VERSION = 7  # 2: owner questions; 3: acceptance; 4: plans; 5: retention; 6: hot facts; 7: task cards
 STORE_WAIT_SEC = 10.0
-JOURNAL_SIZE_LIMIT = 1 << 20  # retain at most 1 MiB of an idle rollback journal
+JOURNAL_SIZE_LIMIT = 64 << 20  # retain at most 64 MiB of an idle rollback journal (PERSISTENCE.md: what it bounds)
 TIER_ENFORCED, TIER_NAME = "enforced", "name"
 PUBLISHED, EXPORTING, RETIRED = "published", "exporting", "retired"
 # The header's application id names the lock protocol before the file is opened ('OUCE'/'OUCN').
@@ -89,7 +89,7 @@ CREATE INDEX custody_invocation ON custody_runs(invocation_id) WHERE invocation_
 CREATE TABLE custody_outbox (event_id TEXT PRIMARY KEY, run_id TEXT, task_id TEXT, event TEXT NOT NULL, created_at TEXT);
 CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 """ + REVIEW_COLLECTION_INDEX + PLAN_COLLECTION_INDEX + "".join(f"CREATE INDEX tasks_{column} ON tasks({column}) WHERE {column}=1;\n"
-              for column in FLAG_COLUMNS.values()) + store_hot_facts.SCHEMA
+              for column in FLAG_COLUMNS.values()) + store_task_cards.SCHEMA + store_hot_facts.SCHEMA
 
 
 class StoreError(RuntimeError):
@@ -129,6 +129,14 @@ def acquisition_budget(seconds: float):
         yield
     finally:
         _WAIT_BUDGET.reset(token)
+
+
+def bounded_wait(wait_sec: float) -> float:
+    """The wait one acquisition may spend: none under ``admission_acquisition``, else narrowed by ``acquisition_budget``."""
+    if _ADMISSION_NO_WAIT.get():
+        return 0.0
+    budget = _WAIT_BUDGET.get()
+    return wait_sec if budget is None else min(wait_sec, budget)
 
 
 @contextlib.contextmanager
@@ -592,6 +600,7 @@ def connect(path: pathlib.Path, tier: str, *, create: bool = False, wait_sec: fl
                            timeout=max(0.0, wait_sec) if tier == TIER_ENFORCED else 0.0,
                            check_same_thread=not shared, factory=_StoreConnection)
     conn.row_factory = sqlite3.Row
+    conn._store_kind = store_timing.kind_of(path)
     if os.name != "nt":  # counted before any statement can take a lock (see ``_borrow``)
         try:
             key = _identity_key(os.stat(path))
@@ -929,13 +938,15 @@ def transaction(conn: sqlite3.Connection, *, write: bool, commit_wait_sec: Optio
                 finish: Optional[Callable[[], None]] = None) -> Iterator[sqlite3.Connection]:
     """One transaction: a write takes the lock at ``BEGIN IMMEDIATE``, a read's only wait is
     here; any exception rolls back and propagates; ``finish`` (default ``commit``) runs at the
-    end; ``commit_wait_sec`` is the busy wait a COMMIT spends on readers draining."""
-    began = False
+    end; ``commit_wait_sec`` is the busy wait a COMMIT spends on readers draining. The lock's
+    hold is reported to ``store_timing`` either way."""
+    began, held = False, 0.0
     try:
         conn.execute("BEGIN IMMEDIATE" if write else "BEGIN")
         began = True
         if not write:  # take the read lock now
             conn.execute("SELECT 1 FROM meta LIMIT 1").fetchone()
+        held = time.monotonic()
         if commit_wait_sec is not None:
             conn.execute(f"PRAGMA busy_timeout = {int(commit_wait_sec * 1000)}")
         yield conn
@@ -948,8 +959,11 @@ def transaction(conn: sqlite3.Connection, *, write: bool, commit_wait_sec: Optio
                 exc.rollback_confirmed = not conn.in_transaction
             except sqlite3.Error:
                 exc.rollback_confirmed = False
+        if held:
+            store_timing.record(conn, write, held)
         raise
     (finish or (lambda: commit(conn)))()
+    store_timing.record(conn, write, held)
 
 
 def store_path(root: Any) -> pathlib.Path:
@@ -1164,10 +1178,9 @@ def open_store(root: Any, *, write: bool, wait_sec: float = STORE_WAIT_SEC, serv
     import owner thread's, ``service_thread``): their transactions pass both checks. A ``barrier``
     holds the write lock and the gate without writing (the evidence packer's phase gate) and ends
     in ROLLBACK, so its release never waits for readers to drain as a COMMIT would."""
-    if _ADMISSION_NO_WAIT.get():
-        wait_sec = 0.0
-    elif _WAIT_BUDGET.get() is not None:
-        wait_sec = min(wait_sec, _WAIT_BUDGET.get())
+    from ouroboros.install_identity import check_store_root
+    check_store_root(root, write=write)
+    wait_sec = bounded_wait(wait_sec)
     root = pathlib.Path(root)
     service = service or bool(getattr(_SERVICE, "active", False))
     if write and not service and _in_window(root):
@@ -1243,8 +1256,9 @@ def document_text(document: Dict[str, Any]) -> str:
 
 def encode_document(document: Dict[str, Any]) -> str:
     """The body text stored in ``task_bodies``: the document with each present row-backed field
-    emptied (the rows hold its content)."""
-    return document_text({key: ({} if key in ROW_BACKED_FIELDS else value) for key, value in document.items()})
+    emptied (the rows hold its content) and without the card values its ``task_cards`` row holds."""
+    return document_text({key: ({} if key in ROW_BACKED_FIELDS else value)
+                          for key, value in store_task_cards.strip(document).items()})
 
 
 def typed_columns(document: Dict[str, Any], *, pending_drive: Optional[bool] = None) -> Dict[str, Any]:
@@ -1294,6 +1308,14 @@ def project_handoffs(document: Dict[str, Any], rows: Dict[str, Dict[str, Any]]) 
     return document
 
 
+def materialize(task_id: str, body: Optional[str], records: list, card: Any) -> Optional[Dict[str, Any]]:
+    """The document from its stored parts (``Txn.raw``), decoded now: the body, its handoff rows put
+    back (``project_handoffs``), its card row over it (``store_task_cards.project``); ``None`` without a body."""
+    if body is None:
+        return None
+    return store_task_cards.project(project_handoffs(json.loads(body), decode_handoffs([task_id], records)[task_id]), card)
+
+
 class Txn:
     """One store transaction: documents, obligation rows, meta; riders of the cutover
     (handoffs, custody, outbox) share the same connection."""
@@ -1308,11 +1330,14 @@ class Txn:
         return None if record is None else json.loads(record["value"])
 
     def set_meta(self, key: str, value: Any) -> None:
-        # The import owner publishes schema versions here, in the same transaction
-        # as its DDL. Extend that gate without doing schema work on passive reads.
-        if key == "schema_version" and int(value) >= store_hot_facts.VERSION:
-            if int(self.meta(key) or 1) < store_hot_facts.VERSION:
+        # The import owner publishes schema versions here, in the same transaction as its DDL: each
+        # schema step's addition runs once, with the version, never on a passive read.
+        if key == "schema_version":
+            held = int(self.meta(key) or 1)
+            if int(value) >= store_hot_facts.VERSION > held:
                 store_hot_facts.upgrade(self)
+            if int(value) >= store_task_cards.VERSION > held:
+                store_task_cards.upgrade(self)
         self.conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)", (key, machine_json(value)))
         if (key == "phase" and value in (EXPORTING, RETIRED)) or key == "export_manifest":
             self._handoff = self._seam = True
@@ -1339,21 +1364,31 @@ class Txn:
         return None if record is None else record["body"]
 
     def load(self, task_id: str) -> Optional[Dict[str, Any]]:
-        """The document: its body with the row-backed fields projected from ``task_handoffs``."""
+        """The document: its body with the handoff rows and the card row projected in (``materialize``)."""
+        return materialize(task_id, *self.raw(task_id))
+
+    def raw(self, task_id: str) -> tuple:
+        """The document's stored parts, nothing decoded: ``(body text, handoff records, card row)``."""
         body = self.body_text(task_id)
-        return None if body is None else project_handoffs(json.loads(body), self.handoffs(task_id))
+        if body is None:
+            return None, [], None
+        return body, self.handoff_records([task_id]), store_task_cards.read(self, task_id)
 
     def store_task(self, document: Dict[str, Any], *, pending_drive: Optional[bool] = None) -> None:
-        """Upsert body, typed columns and handoffs; ``write_seq`` advances the memo signature."""
+        """Upsert body, typed columns, handoffs and card; ``write_seq`` advances the memo signature.
+        The body is updated in place and only when its bytes changed (a same-size body rewrites its
+        changed pages alone, an identical one nothing); ``tasks`` keeps REPLACE, which NULLs the columns
+        an older writer does not list ("not derived", the import's cue)."""
         task_id = str(document["task_id"])
         columns = typed_columns(document, pending_drive=pending_drive)
         columns["write_seq"] = (self.row(task_id, "write_seq") or 0) + 1
-        self.conn.execute("INSERT OR REPLACE INTO task_bodies (task_id, body) VALUES (?, ?)",
-                          (task_id, encode_document(document)))
+        self.conn.execute("INSERT INTO task_bodies (task_id, body) VALUES (?, ?) ON CONFLICT(task_id) DO UPDATE "
+                          "SET body=excluded.body WHERE task_bodies.body<>excluded.body", (task_id, encode_document(document)))
         names = ("task_id", *columns)
         self.conn.execute(f"INSERT OR REPLACE INTO tasks ({','.join(names)}) VALUES ({','.join('?' * len(names))})",
                           (task_id, *columns.values()))
         self.sync_handoffs(task_id, document)
+        store_task_cards.merge(self, task_id, document)  # the same monotonic rule: a stale document regresses no card
         self._note_terminal_write(columns["status"])
 
     def touch(self, task_id: str) -> None:
@@ -1380,6 +1415,7 @@ class Txn:
     def delete_task(self, task_id: str) -> None:
         for table in ("task_bodies", "tasks", "task_handoffs"):
             self.conn.execute(f"DELETE FROM {table} WHERE task_id=?", (task_id,))
+        store_task_cards.delete(self, task_id)
 
     def set_names(self) -> List[str]:
         return [record["set_name"] for record in
@@ -1429,12 +1465,9 @@ class Txn:
                 f"({','.join('?' * len(chunk))}) ORDER BY rowid", chunk).fetchall())
         return records
 
-    def handoffs_of(self, task_ids: List[str]) -> Dict[str, Dict[str, Dict[str, Any]]]:
-        """``{task_id: {kind: {op_id: facts}}}`` for the given tasks (one query), every kind present."""
-        return decode_handoffs(task_ids, self.handoff_records(task_ids))
-
     def handoffs(self, task_id: str) -> Dict[str, Dict[str, Any]]:
-        return self.handoffs_of([task_id]).get(task_id, {})
+        """``{kind: {op_id: facts}}`` of one task (one query), every kind present."""
+        return decode_handoffs([task_id], self.handoff_records([task_id]))[task_id]
 
     def handoff(self, task_id: str, op_id: str) -> Optional[Any]:
         record = self.conn.execute("SELECT facts FROM task_handoffs WHERE task_id=? AND op_id=?",
@@ -1516,13 +1549,15 @@ class Txn:
 def update_task(root: Any, task_id: str, mutator: Callable[[Dict[str, Any]], Optional[Dict[str, Any]]], *,
                 pending_drive: Any = None) -> Optional[Dict[str, Any]]:
     """Merge CURRENT under the published write gate; ``None`` commits without a write.
-    ``pending_drive`` is a value or ``(txn, current, updated) -> Optional[bool]``.
-    Schema preparation precedes the callback, including on a first-touched old child store."""
+    ``pending_drive`` is a value or ``(txn, current, updated) -> Optional[bool]``, ``current`` the
+    pristine document (the mutator works on its own copy, decoded from the same stored bytes, not
+    an encoded deep copy). Schema preparation precedes the callback, including on a first-touched
+    old child store."""
     while True:
         with open_store(root, write=True) as txn:
             if int(txn.meta("schema_version") or 1) >= SCHEMA_VERSION:
-                current = txn.load(task_id) or {}
-                updated = mutator(json.loads(json.dumps(current)))
+                raw = txn.raw(task_id)
+                current, updated = materialize(task_id, *raw) or {}, mutator(materialize(task_id, *raw) or {})
                 if updated is None:
                     return None
                 flag = pending_drive(txn, current, updated) if callable(pending_drive) else pending_drive

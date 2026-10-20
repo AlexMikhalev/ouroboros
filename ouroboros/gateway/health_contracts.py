@@ -33,6 +33,13 @@ class BootJob(TypedDict):
     total: Optional[int]
 
 
+class SupervisorLoadHeadline(TypedDict):
+    """The latest ``supervisor_load`` row's headline (``logs/supervisor.jsonl``)."""
+
+    ts: str
+    max_event_lag_sec: Optional[float]
+
+
 class BootDocument(TypedDict):
     """The ``boot`` object of ``GET /api/health`` and ``GET /api/state``: the generation's phase.
 
@@ -50,6 +57,7 @@ class BootDocument(TypedDict):
     steps: List[BootStep]
     jobs: Dict[str, BootJob]
     error: Optional[str]
+    supervisor_load: NotRequired[Optional[SupervisorLoadHeadline]]  # None before this generation's first row
 
 
 class HealthResponse(TypedDict):
@@ -63,4 +71,4 @@ class HealthResponse(TypedDict):
     boot: NotRequired[BootDocument]  # absent on cores older than the boot phases
 
 
-__all__ = ["BootStep", "BootJob", "BootDocument", "HealthResponse"]
+__all__ = ["BootStep", "BootJob", "SupervisorLoadHeadline", "BootDocument", "HealthResponse"]

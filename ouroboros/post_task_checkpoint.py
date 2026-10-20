@@ -466,11 +466,13 @@ def is_root_post_task(task: Dict[str, Any]) -> bool:
 
 def root_checkpoint_roots(env: Any, task: Dict[str, Any]) -> list[pathlib.Path]:
     """Return the one durable phase authority (compatibility list shape)."""
+    from ouroboros.install_identity import require_owned_root
+
     raw = task.get("budget_drive_root") or getattr(env, "drive_root", None)
     if not raw:
         return []
     try:
-        return [pathlib.Path(raw).resolve(strict=False)]
+        return [require_owned_root(raw)]
     except (TypeError, OSError, ValueError):
         return []
 

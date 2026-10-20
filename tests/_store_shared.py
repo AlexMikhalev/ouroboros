@@ -6,6 +6,8 @@ Plain callables (many callers need them at module import time), never fixtures.
 """
 from __future__ import annotations
 
+import contextlib
+import os
 import pathlib
 import time
 from typing import Any, Dict, Optional, Tuple
@@ -23,6 +25,21 @@ def seed_result(root: Any, task_id: str, document: Dict[str, Any]) -> Dict[str, 
     body.setdefault("task_id", str(task_id))
     body.setdefault(SCHEMA_VERSION_KEY, TASK_RESULT_SCHEMA_VERSION)
     return patch_document(root, task_id, lambda _current: body)
+
+
+@contextlib.contextmanager
+def as_install(root: Any):
+    """Act as the install ROOT names, as its own processes do: a root another process booted
+    carries its own identity, which any other install refuses to touch (copied-folder rule)."""
+    prior = os.environ.get("OUROBOROS_DATA_DIR")
+    os.environ["OUROBOROS_DATA_DIR"] = str(root)
+    try:
+        yield
+    finally:
+        if prior is None:
+            os.environ.pop("OUROBOROS_DATA_DIR", None)
+        else:
+            os.environ["OUROBOROS_DATA_DIR"] = prior
 
 
 def read_result(root: Any, task_id: str) -> Optional[Dict[str, Any]]:

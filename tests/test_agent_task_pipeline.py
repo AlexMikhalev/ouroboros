@@ -698,7 +698,8 @@ def test_terminal_event_reports_failed_bundle_over_older_capture_status(tmp_path
     assert terminal["status"] == "completed"
 
 
-def test_task_done_carries_the_custody_debt_list_the_row_holds(tmp_path, monkeypatch):
+@pytest.mark.parametrize("open_run", [False, True])
+def test_task_done_carries_the_custody_debt_list_the_row_holds(tmp_path, monkeypatch, open_run):
     """P5 S1: one debt rule on every surface, from one source.
 
     The owner-facing Reason line names the custody warning only while the row's
@@ -716,6 +717,9 @@ def test_task_done_carries_the_custody_debt_list_the_row_holds(tmp_path, monkeyp
     drive_logs.mkdir()
     env = SimpleNamespace(drive_root=tmp_path, repo_dir=tmp_path)
     write_task_result(tmp_path, "custody-open", "running", delegated_runs_unreconciled=["run-a1"])
+    if open_run:
+        from ouroboros import delegate_custody as custody
+        assert custody.emit(tmp_path, custody.STARTED, {"task_id": "custody-open", "run_id": "run-a1"})
 
     owed_events = []
     pipeline.emit_task_results(
@@ -728,8 +732,9 @@ def test_task_done_carries_the_custody_debt_list_the_row_holds(tmp_path, monkeyp
     )
     owed = next(row for row in owed_events if row["type"] == "task_done")
     stored = pipeline.load_task_result(tmp_path, "custody-open")
-    assert owed["delegated_runs_unreconciled"] == ["run-a1"] == stored["delegated_runs_unreconciled"]
-    assert owed["reason_code"] == "delegated_custody_unreconciled"
+    expected = ["run-a1"] if open_run else []  # the addressed current fact clears stale stored debt
+    assert owed["delegated_runs_unreconciled"] == expected == stored["delegated_runs_unreconciled"]
+    assert (owed["reason_code"] == "delegated_custody_unreconciled") is open_run
 
     plain_events = []
     pipeline.emit_task_results(

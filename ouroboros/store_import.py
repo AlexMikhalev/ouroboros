@@ -27,7 +27,7 @@ import uuid
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from ouroboros import obligations as o
-from ouroboros import store
+from ouroboros import store, store_task_cards
 from ouroboros.store import (
     GENERATION, GENERATION_KEY, IMPORT_LOCK_NAME, LOCK_NAME, PUBLISHED, TIER_ENFORCED, TIER_NAME,
     StoreLost, Txn, document_text, supervisor_row, utc_stamp,
@@ -488,7 +488,9 @@ def _baseline_entry(path: pathlib.Path, raw: bytes, document: Optional[Dict[str,
         return {**entry, "refused": reason}  # remembered, so an untouched refused file stays untouched
     if reason == "latch_stamped":
         entry["latch_stamped"] = True
-    return {**entry, "body_sha256": sha256_hex(document_text(document).encode("utf-8"))}  # the whole projected document
+    # The whole projected document in the shape ``load`` returns (its card values last): the same bytes
+    # ``_projected`` hashes, so a stored row is no false conflict against its own file.
+    return {**entry, "body_sha256": sha256_hex(document_text(store_task_cards.canonical(document)).encode("utf-8"))}
 
 
 def _read_result(path: pathlib.Path) -> Optional[bytes]:

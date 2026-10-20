@@ -70,6 +70,15 @@ TERMINAL_WRITERS = {
     ('ouroboros/agent.py::_task_exception_terminal', 'STATUS_FAILED'): 'terminal',
     ('ouroboros/agent_task_pipeline.py::_store_task_result', 'status'): 'dynamic',
     ('ouroboros/delegate_terminal.py::record_terminal_reconciliation', 'str(existing.get("status") or STATUS_RUNNING)'): 'dynamic',
+    # Foreign-root disclosure preserves CURRENT status and pointers under the
+    # projector, then rests the local duty; it never terminalizes a task.
+    ('ouroboros/install_identity.py::rest_foreign_member', 'stored["status"]'): 'dynamic',
+    # A refused foreign-root launch names its reason on this install's own row;
+    # the projector keeps CURRENT status and writes nothing once it is named.
+    ('ouroboros/install_identity.py::disclose_foreign_task', '""'): 'dynamic',
+    # Preparation markers land only on a row still in the named non-terminal
+    # status (requested by default); the projector refuses any other row.
+    ('supervisor/workspace_preparation.py::_transition', 'status'): 'dynamic',
     # F6 upstream sync: the cursor/backfill refresh rewrites a stale stored
     # disclosure without changing the task's terminal status (same preserved
     # read as its record_terminal_reconciliation sibling).

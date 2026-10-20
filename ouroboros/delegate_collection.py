@@ -116,6 +116,9 @@ def record_terminal_money(root, entry, detail: dict, *, failures=None) -> dict:
     profile, access = observed.get("profile_id", ""), str(summary.get("effectiveAccess") or "")
     if not entry.ledger_recorded:
         try:
+            from ouroboros.install_identity import require_owned_root
+
+            require_owned_root(entry.ledger_root or root)  # the usage store is not behind ``open_store``'s check
             record_subscription_session(entry.run_id, drive_root=pathlib.Path(entry.ledger_root or root),
                 route=entry.route_id, model=observed.get("model", ""), task_id=entry.task_id,
                 root_task_id=entry.root_task_id, parent_task_id=entry.parent_task_id,
@@ -352,7 +355,9 @@ class BodyRuntime:
         self.collection_failures: dict[str, dict] = {}
         # Each held run's latest dated execution fact, as the last observation read it.
         self.observed: dict[str, dict] = {}
+        self.observation_gaps: dict[str, tuple] = {}
         self._observing = None
+        self._connecting = None
         self.thread = threading.Thread(target=self._drive, name="delegated-body", daemon=True)
         try:
             self.thread.start()
@@ -393,6 +398,7 @@ class BodyRuntime:
             if self.active:
                 self.requested.add(str(run_id))
                 self.retry_requested.add(str(run_id))
+                self.observation_gaps.pop(str(run_id), None)
                 self.changed.set()
 
     def _gateway(self):
@@ -402,12 +408,41 @@ class BodyRuntime:
         return read_owned_gateway()
 
     def _observer_gateway(self):
-        """The generation's one observation client: a handshake and an HTTP client per poll of
-        every held run kept the server's interpreter busy (N4). A failed read drops it."""
+        """One observation client; discovery and handshake never hold the runtime lock."""
+        from ouroboros.gateways.claudexor_metadata import endpoint_generation
+
         with self.lock:
-            if self._observing is None:
-                self._observing = self._gateway()
-            return self._observing
+            gateway = self._observing
+        endpoint = getattr(gateway, "_endpoint", None)
+        if endpoint is not None and endpoint.descriptor_path and endpoint_generation(endpoint) is None:
+            self._drop_observer_gateway(gateway)
+        with self.lock:
+            if self._observing is not None:
+                return self._observing
+            owner = self._connecting is None
+            if owner:
+                self._connecting = Future()
+            pending = self._connecting
+        if owner:
+            try:
+                gateway = self._gateway()
+                with self.lock:
+                    self._observing = gateway
+                pending.set_result(gateway)
+            except BaseException as exc:
+                pending.set_exception(exc)
+            finally:
+                with self.lock:
+                    self._connecting = None
+        return pending.result()
+
+    def _observation_key(self, entry):
+        from ouroboros.gateways.claudexor_metadata import endpoint_generation
+
+        gateway = self._observing
+        endpoint = getattr(gateway, "_endpoint", None)
+        generation = endpoint_generation(endpoint) if endpoint is not None else id(gateway)
+        return generation, entry.invocation_id, entry.daemon_store_id
 
     def _drop_observer_gateway(self, gateway=None):
         with self.lock:
@@ -422,22 +457,39 @@ class BodyRuntime:
         gateway = self._observer_gateway()
         try:
             detail = gateway.get_run(entry.run_id, timeout_sec=SHORT_POLL_TIMEOUT_SEC)
-        except BaseException:
-            self._remember(entry, None)
-            self._drop_observer_gateway(gateway)  # a moved or restarted daemon gets a fresh handshake
+        except BaseException as exc:
+            self._remember(entry, None, error=exc)
+            if c.daemon_says_absent(exc, gateway=gateway, run=entry):
+                c.close_absent_run(self.root, gateway, entry, "body_observation_absent")
+                return
+            if c.daemon_says_absent(exc):
+                c.record_containment_fault(self.root, entry, "run_absence_identity_unproven",
+                    "The daemon returned 404, but ownership by this store is unproven; run outcome remains unknown.")
+                with self.lock:
+                    self.observation_gaps[entry.run_id] = self._observation_key(entry)
+            if not getattr(exc, "status_code", 0) and not getattr(exc, "observation_answered", False):
+                self._drop_observer_gateway(gateway)
             raise
+        with self.lock:
+            self.observation_gaps.pop(entry.run_id, None)
         # A late valid source fact remains evidence; it grants no wait.
         observe_run(self.root, entry, detail)
+        c.bind_daemon_store(self.root, gateway, entry)
+        if entry.containment_fault.get("reason") == "run_absence_identity_unproven":
+            c.resolve_containment_fault(self.root, entry, "run_observed",
+                                        expected_reason="run_absence_identity_unproven")
         self._remember(entry, detail)
 
-    def _remember(self, entry, detail):
+    def _remember(self, entry, detail, *, error=None):
         """Keep this read's execution fact for readers that must not poll the engine themselves
-        (``gateway/reply_preparation.py``); ``detail`` None is a read nothing answered."""
+        (``gateway/reply_preparation.py``), including a received HTTP refusal."""
         from ouroboros.delegate_supervision import run_activity
 
         summary = c.summary_of(detail) if detail is not None else {}
         fact = {"run_id": entry.run_id, "task_id": entry.task_id, "invocation_id": entry.invocation_id,
-                "answered": detail is not None, "run_state": str(summary.get("state") or ""),
+                "answered": detail is not None or bool(getattr(error, "status_code", 0)),
+                "error_code": str(getattr(error, "code", "")), "http_status": getattr(error, "status_code", 0),
+                "run_state": str(summary.get("state") or ""),
                 "waiting_on_user": bool(summary.get("waitingOnUser") or (detail or {}).get("pendingInteractions")),
                 "at": time.monotonic()}  # dated on this process's clock, like every in-process reader
         with self.lock:
@@ -486,6 +538,7 @@ class BodyRuntime:
         with self.lock:
             for rid in set(self.observed) - set(entries):
                 del self.observed[rid]  # a run no longer held has no current execution fact
+                self.observation_gaps.pop(rid, None)
         with self.lock:
             self.retry_requested.intersection_update(
                 rid for rid in self.retry_requested
@@ -501,7 +554,7 @@ class BodyRuntime:
             with self.lock:
                 if not entry.terminal_source and (not entry.settled or entry.terminal_state):
                     previous = self.reads.get(entry.run_id)
-                    if previous is None or previous.done():
+                    if (previous is None or previous.done()) and self.observation_gaps.get(entry.run_id) != self._observation_key(entry):
                         self.reads[entry.run_id] = self.observers.submit(self._observe, entry)
                 if collection_pending(entry):
                     previous = self.collections.get(entry.run_id)

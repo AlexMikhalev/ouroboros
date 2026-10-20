@@ -36,6 +36,11 @@ def _perform_owner_restart(ctx: Any, reply=None) -> tuple[bool, str]:
     )
     if not ok:
         return False, restart_msg
+    from supervisor.workspace_preparation import pause_admission, resume_admission
+
+    # Before this Restart's own restrictions exist: a launch or Resume already writing its marks hands over
+    # to the still-running pool, which the follow-up restriction below would refuse at its put.
+    pause_admission()
     state_dir = DATA_DIR / "state"
     owner_restart_flag = state_dir / "owner_restart_no_resume.flag"
     stable_skip_flag = state_dir / "panic_stop.flag"
@@ -63,6 +68,7 @@ def _perform_owner_restart(ctx: Any, reply=None) -> tuple[bool, str]:
                 # the restriction before consuming it. Restart still proceeds.
                 log.exception("Restart follow-up restriction awaits boot persistence")
     except Exception:
+        resume_admission()  # first: the Restart does not happen, even if the cleanup below fails too
         owner_restart_flag.unlink(missing_ok=True)
         if not panic_kept:
             stable_skip_flag.unlink(missing_ok=True)
@@ -142,8 +148,10 @@ def _stop_owned_work(ctx: Any) -> list:
     Runs AFTER the checkout gate and the durable no-resume flags, so nothing
     here can veto: an unconfirmed step is a critical diagnostic with custody
     retained, and the next generation's startup custody sweep reconciles the
-    remainder. First prepare the retained-return transaction: native saved
-    work returns only after its fresh acknowledgment, while prior holds stay.
+    remainder. Its caller paused admission before those flags
+    (``pause_admission``), so no launch is left between its marks and its worker.
+    First prepare the retained-return transaction: native saved work returns only
+    after its fresh acknowledgment, while prior holds stay.
     Record cancel intents for owned live ids outside that return set (saved
     pauses excluded), then ``kill_workers`` with ``retain_saved_work``,
     ``preserve_pending``, preserved owner waits and
@@ -167,7 +175,7 @@ def _stop_owned_work(ctx: Any) -> list:
     from ouroboros.owned_shutdown import begin_owned_stop
 
     _OWNER_STOP_BEGAN.set()  # owner Rollback/Apply Update also restart as the owner, but never get here
-    begin_owned_stop(DATA_DIR)  # the grace starts here; every pending stop is recorded before any wait
+    begin_owned_stop(DATA_DIR)  # the grace starts here; every pending stop is recorded before its waits
     returning, owner_waits = _prepare_owner_restart_returns(ctx)
     _LAST_RETURNING.clear()
     _LAST_RETURNING.update(returning)
@@ -462,6 +470,16 @@ def _noticed_bootstrap(safe_restart_fn):
                 log.warning("Bootstrap failure notice was not delivered", exc_info=True)
         return ok, msg
     return run
+
+
+def _begin_task_teardown(restart_requested: bool) -> tuple[str, str]:
+    """The planned restart and Quit start tearing tasks down: admission pauses first, so a launch or
+    Resume already writing its marks hands over to the still-running pool (``pause_admission``);
+    returns ``_shutdown_task_cleanup_args``."""
+    from supervisor.workspace_preparation import pause_admission
+
+    pause_admission()
+    return _shutdown_task_cleanup_args(restart_requested)
 
 
 def _shutdown_task_cleanup_args(restart_requested: bool) -> tuple[str, str]:

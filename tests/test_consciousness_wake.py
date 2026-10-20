@@ -270,17 +270,15 @@ def test_a_result_first_written_late_under_an_old_stamp_is_found_through_its_row
 
 
 def test_an_unreadable_task_store_keeps_the_accepted_inventory(tmp_path, monkeypatch):
-    import ouroboros.task_results as task_results
-
     _write(tmp_path, "kid", status="running", ts=_iso(T0 - 900), updated_at=_iso(T0 - 900))
     first = _wake(tmp_path, None, T0)
-    real = task_results.list_task_results
-    monkeypatch.setattr(task_results, "list_task_results", lambda _root, **_kw: (_ for _ in ()).throw(OSError("busy")))
+    real = wake._task_window
+    monkeypatch.setattr(wake, "_task_window", lambda *_args, **_kw: (_ for _ in ()).throw(OSError("busy")))
     _write(tmp_path, "kid", status="completed", updated_at=_iso(T0 + 60))
     blind = _wake(tmp_path, first.boundary, T0 + 600)
     assert blind.boundary["transitions"] == first.boundary["transitions"]  # nothing consumed
     assert "task_results unreadable: OSError" in blind.gaps
-    monkeypatch.setattr(task_results, "list_task_results", real)
+    monkeypatch.setattr(wake, "_task_window", real)
     assert "- task kid completed" in _lines(_wake(tmp_path, blind.boundary, T0 + 1200))[0]
 
 
@@ -433,12 +431,10 @@ def test_a_project_task_is_an_observed_event_not_a_wake_cause(tmp_path):
 
 
 def test_trigger_stays_first_when_task_results_are_unreadable(tmp_path, monkeypatch):
-    import ouroboros.task_results as task_results
-
-    def broken(_root, **_kw):
+    def broken(*_args, **_kw):
         raise OSError("broken task store")
 
-    monkeypatch.setattr(task_results, "list_task_results", broken)
+    monkeypatch.setattr(wake, "_task_window", broken)
     observation = _observe(tmp_path, since=T0 - 1)
     assert observation.trigger == "- wake cause: the scheduled wake time; events never move it, they are listed as observed"
     assert observation.gaps == ("task_results unreadable: OSError",)
@@ -651,3 +647,60 @@ def test_projection_discloses_parked_wake_and_unknown_outcome(describe):
     assert "still occupies" not in completed_since["detail"] and completed_since["tasks_running"] == 0
     unknown = describe({**BASE, "last_wake_outcome": "unknown"})
     assert unknown["status"] == "wake_outcome_unknown" and "unconfirmed" in unknown["detail"]
+
+
+def test_narrow_task_window_equals_full_scan_and_reads_only_selected_bodies(tmp_path, monkeypatch):
+    from ouroboros import task_store, task_results
+
+    for tid, status in (("unchanged", "completed"), ("settling", "running"), ("changed", "completed"),
+                        ("chat-addressed", "running"), ("open-card", "running")):
+        _write(tmp_path, tid, status=status, ts=_iso(T0 - 600), updated_at=_iso(T0 - 600))
+    _write(tmp_path, "open-card", owner_quiz={"q": {"state": "open", "question": "Still open?"}})
+    first = _wake(tmp_path, None, T0)
+    # Backdated changes and newly inserted results must still be selected.
+    _write(tmp_path, "settling", status="completed", updated_at=_iso(T0 - 600))
+    _write(tmp_path, "changed", owner_quiz={"closed": {"state": "closed", "question": "Old?",
+                                                     "closed_at": _iso(T0 - 600)}})
+    _write(tmp_path, "new-old-date", status="failed", ts=_iso(T0 - 900), updated_at=_iso(T0 - 900))
+    _chat(tmp_path, _summary("chat-addressed", T0 + 10))
+    selected = []
+    original_decode = task_store._decode
+    def decode(*args):
+        rows = original_decode(*args)
+        selected.extend(row["task_id"] for row in rows)
+        return rows
+    monkeypatch.setattr(task_store, "_decode", decode)
+    narrow = _wake(tmp_path, first.boundary, T0 + 60)
+    assert set(selected) == {"settling", "changed", "new-old-date", "open-card", "chat-addressed"}
+    assert len(selected) == 5
+
+    def full(root, _prior, _chat):
+        rows = task_results.list_task_results(root, strict=True)
+        with task_store.open_store(root, write=False) as txn:
+            signatures = {tid: list(stamp) for tid, stamp in txn.write_seqs().items()}
+        return rows, signatures, {}
+    monkeypatch.setattr(wake, "_task_window", full)
+    reference = _wake(tmp_path, first.boundary, T0 + 60)
+    assert narrow == reference
+    assert narrow.source_bytes() == reference.source_bytes()
+    assert narrow.full_text() == reference.full_text()
+
+
+def test_boundary_without_signatures_reads_once_then_preserves_inventory(tmp_path, monkeypatch):
+    from ouroboros import task_store
+    _write(tmp_path, "old", status="completed", ts=_iso(T0 - 10), updated_at=_iso(T0 - 10))
+    first = _wake(tmp_path, None, T0)
+    first.boundary["transitions"].pop("signatures")
+    selected = []
+    original = task_store._decode
+    def decode(*args):
+        rows = original(*args)
+        selected.extend(row["task_id"] for row in rows)
+        return rows
+    monkeypatch.setattr(task_store, "_decode", decode)
+    second = _wake(tmp_path, first.boundary, T0 + 60)
+    assert selected == ["old"] and second.events == ()
+    selected.clear()
+    third = _wake(tmp_path, second.boundary, T0 + 120)
+    assert selected == [] and third.events == ()
+    assert third.boundary["transitions"]["inventory"] == first.boundary["transitions"]["inventory"]

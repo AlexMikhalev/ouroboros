@@ -196,7 +196,7 @@ def test_schema_gate_is_atomic_and_never_decodes_old_bodies(tmp_path, monkeypatc
         patch.setattr(store.Txn, "body_text", lambda *_: pytest.fail("schema upgrade decoded a task body"))
         upgrade_current_schema(tmp_path)
     with store.open_store(tmp_path, write=False) as txn:
-        assert txn.meta("schema_version") == hot.VERSION
+        assert txn.meta("schema_version") == store.SCHEMA_VERSION >= hot.VERSION
         assert txn.row("legacy", "owner_pause_state", "root_task_id") == (None, None)
         assert txn.body_text("legacy") == before
         assert txn.meta("job:" + hot.JOB)["state"] == "pending"
@@ -211,7 +211,7 @@ def test_first_custody_publication_upgrades_an_old_child_store(tmp_path, monkeyp
     _schema_five(tmp_path, monkeypatch)
     assert custody.emit(tmp_path, custody.STARTED, {"run_id": "new-run", "task_id": "child", "root_task_id": "tree"})
     with store.open_store(tmp_path, write=False) as txn:
-        assert txn.meta("schema_version") == hot.VERSION
+        assert txn.meta("schema_version") == store.SCHEMA_VERSION >= hot.VERSION
         assert tuple(txn.conn.execute("SELECT root_task_id,facts_derived FROM custody_runs WHERE run_id='new-run'").fetchone()) == ("tree", 1)
         assert txn.row("legacy", "owner_pause_state") is None
 
@@ -262,3 +262,37 @@ def test_damaged_job_input_waits_for_its_own_change(tmp_path, monkeypatch):
     with store.open_store(tmp_path, write=True) as txn:
         _task(txn, "bad")
     assert hot.run_hot_facts(tmp_path)["state"] == "done"
+
+
+def test_derived_rows_read_no_body_and_underived_rows_still_do(tmp_path):
+    """Proved by SQLite's authorizer, not by patching ``Txn.body_text``: the SQL itself joins no body."""
+    import sqlite3
+
+    with store.open_store(tmp_path, write=True) as txn:
+        _task(txn, "modern", result="unrelated body" * 1000)
+        _old_task(txn, "legacy", budget_pause={"state": "pausing", "task_attempt": 2})
+        _old_task(txn, "torn")
+        txn.conn.execute("UPDATE task_bodies SET body='{' WHERE task_id='torn'")
+        txn.conn.execute("UPDATE task_bodies SET body='{' WHERE task_id='modern'")  # a corrupt body behind derived columns
+    reads = []
+
+    def authorizer(action, table, column, _db, _source):
+        if action == sqlite3.SQLITE_READ and table == "task_bodies":
+            reads.append(column)
+        return sqlite3.SQLITE_OK
+
+    with store.open_store(tmp_path, write=False) as txn:
+        txn.conn.set_authorizer(authorizer)
+        try:
+            rows = hot._read_rows(txn, ["modern"])
+            assert rows["modern"]["control_valid"] == 1 and rows["modern"]["budget_pause_state"] == ""
+            assert reads == [], "a derived row's read touched task_bodies"
+            rows = hot._read_rows(txn, ["legacy", "torn"])
+        finally:  # ``set_authorizer(None)`` denies everything on Python 3.10: allow all instead (the fixture closes the handle)
+            txn.conn.set_authorizer(lambda *_args: sqlite3.SQLITE_OK)
+    assert "body" in reads, "an underived row must still pay its strict body read"
+    assert (rows["legacy"]["control_valid"], rows["legacy"]["budget_pause_attempt"]) == (1, 2)
+    assert rows["torn"]["control_valid"] == 0  # an unparsable legacy body stays unknown, for that row only
+    assert hot.read(tmp_path, "modern")["control_valid"] == 1
+    with pytest.raises(ValueError, match="unreadable"):
+        hot.read(tmp_path, "torn")

@@ -407,7 +407,8 @@ def collect_audit_artifacts(task_root: pathlib.Path, task_id: str, secrets: list
                   "print(json.dumps(read_document(sys.argv[1], sys.argv[2])))")
         try:
             dumped = subprocess.run([OUROBOROS_PYTHON, "-c", reader, OUROBOROS_DATA, task_id], cwd=OUROBOROS_SRC,
-                                    capture_output=True, text=True, timeout=60)
+                                    capture_output=True, text=True, timeout=60,
+                                    env={**os.environ, "OUROBOROS_DATA_DIR": OUROBOROS_DATA})  # read as that install
         except (OSError, subprocess.SubprocessError):
             dumped = None
         if dumped is not None and dumped.returncode == 0 and dumped.stdout.strip() not in ("", "null"):

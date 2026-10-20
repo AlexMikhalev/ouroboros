@@ -1142,7 +1142,7 @@ def _forward_to_worker(
     from ouroboros.peer_roster import (
         durable_descendant_of, independent_message_target, peer_contribution_admission,
     )
-    from ouroboros.task_results import STATUS_RUNNING, STATUS_SCHEDULED, validate_task_id
+    from ouroboros.task_results import STATUS_REQUESTED, STATUS_RUNNING, STATUS_SCHEDULED, validate_task_id
     from ouroboros.task_status import FINAL_STATUSES, load_effective_task_result
 
     try:
@@ -1162,7 +1162,9 @@ def _forward_to_worker(
         return _publish_tool_result(ctx, ToolResult(status="unavailable", code="LEGACY_UNAVAILABLE", text=(f"⚠️ TASK_NOT_FOUND: task {tid} is not registered.")))
     if status in FINAL_STATUSES:
         return _publish_tool_result(ctx, ToolResult(status="blocked", code="LEGACY_BLOCKED", text=(f"⚠️ TASK_NOT_ACTIVE: task {tid} is already {status}.")))
-    if status not in (STATUS_RUNNING, STATUS_SCHEDULED):
+    # A requested child's mailbox exists in its recorded drive from the request on: its words are
+    # read when it starts, or stay in its result as unread mail, the same receipt a queued one gives.
+    if status not in (STATUS_RUNNING, STATUS_SCHEDULED, STATUS_REQUESTED):
         return _publish_tool_result(ctx, ToolResult(status="blocked", code="LEGACY_BLOCKED", text=(f"⚠️ TASK_NOT_ACTIVE: task {tid} is {status or 'unknown'}, neither running nor queued.")))
     # AR2-6: no NEW steering writes while a cancellation is pending. The
     # effective status honestly stays ``running`` (cancel_state=pending rides
@@ -1227,16 +1229,23 @@ def _forward_to_worker(
     # The recipient drains ITS recorded drive, else the canonical status root — never
     # the sender's ``ctx.drive_root`` (a forked sender's private execution drive).
     mailbox_drive = pathlib.Path(child_drive) if child_drive else status_drive_root
-    written = write_task_message(
-        mailbox_drive,
-        message,
-        task_id=tid,
-        source_task_id=current_task_id,
-        provenance=provenance,
-        relayed_from_task_id=relayed_from,
-        msg_id=uuid.uuid4().hex,
-        relation=relation,
-    )
+    from ouroboros.install_identity import StoreForeign
+
+    try:
+        written = write_task_message(
+            mailbox_drive,
+            message,
+            task_id=tid,
+            source_task_id=current_task_id,
+            provenance=provenance,
+            relayed_from_task_id=relayed_from,
+            msg_id=uuid.uuid4().hex,
+            relation=relation,
+        )
+    except StoreForeign as exc:
+        return _publish_tool_result(ctx, ToolResult(status="blocked", code="ACCESS_BLOCKED", text=(
+            f"⚠️ TASK_FOREIGN_INSTALL: task {tid}'s mailbox {exc}; the message was NOT delivered."),
+            meta={"reason": exc.reason, "path": str(exc.path)}))
     if not written:
         return _publish_tool_result(ctx, ToolResult(status="error", code="TOOL_ERROR", text=(f"⚠️ TASK_MESSAGE_UNWRITTEN: message to task {tid} was not persisted.")))
     from ouroboros.owner_mailbox import MAIL_QUEUED, MAIL_RETAINED_UNREAD, mail_write_receipt, mailbox_drain_ended
@@ -1462,7 +1471,7 @@ def get_tools() -> List[ToolEntry]:
         ToolEntry("forward_to_worker", {
             "name": "forward_to_worker",
             "description": (
-                "Write an addressed task-tree message into a running or queued task's mailbox: a child "
+                "Write an addressed task-tree message into a running, queued or requested task's mailbox: a child "
                 "or descendant of yours (delivered as the ancestor's message), any other task in your "
                 "tree — your parent, a sibling, or any task sharing your root (delivered as a message "
                 "from a peer task naming the relation — a contribution it weighs, never steering; relay "
@@ -1476,7 +1485,7 @@ def get_tools() -> List[ToolEntry]:
                 "result. To wait for a reply without spending model rounds, call await_messages."
             ),
             "parameters": {"type": "object", "properties": {
-                "task_id": {"type": "string", "description": "ID of the running or queued task to forward to"},
+                "task_id": {"type": "string", "description": "ID of the running, queued or requested task to forward to"},
                 "message": {"type": "string", "description": "Message text to forward (at most 8000 chars)"},
                 "relayed_from_task_id": {"type": "string", "description":
                     "Optional sibling/descendant task whose output this ancestor relays. "

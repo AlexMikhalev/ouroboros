@@ -17,7 +17,7 @@ import pytest
 
 pytestmark = pytest.mark.serial
 
-CONTRACT_KEYS = {"phase", "since", "dialogue_ready", "tasks_ready", "steps", "jobs", "error"}
+CONTRACT_KEYS = {"phase", "since", "dialogue_ready", "tasks_ready", "steps", "jobs", "error", "supervisor_load"}
 
 
 def _wait(predicate, timeout=20.0, *, what="condition"):
@@ -355,3 +355,28 @@ def test_the_dialogue_cutover_runs_before_the_dialogue_opens_and_a_failure_stays
     steps = {row["name"]: row for row in BOOT.snapshot()["steps"]}
     assert steps["dialogue_cutover"]["state"] == "failed" and "append lock held" in steps["dialogue_cutover"]["error"]
     BOOT.reset()
+
+
+@pytest.mark.parametrize("busy", [True, False])
+def test_a_busy_dialogue_store_is_named_instead_of_initialization(busy):
+    """A refused acceptance caused by a busy dialogue store says so; any other failure keeps the generic notice."""
+    import asyncio
+    import json as _json
+
+    from ouroboros.gateway.ws import _accept_chat_after
+    from ouroboros.store import StoreBusy
+
+    sent = []
+
+    class Socket:
+        async def send_text(self, text):
+            sent.append(_json.loads(text))
+
+    def accept():
+        cause = StoreBusy("dialogue store busy", reason="contention") if busy else OSError("disk")
+        raise RuntimeError("canonical message acceptance could not be persisted") from cause
+
+    asyncio.run(_accept_chat_after(Socket(), None, accept, client_message_id="cm-1", chat_id=3))
+    assert sent and sent[0]["client_message_id"] == "cm-1" and sent[0]["system_type"] == "initialization_notice"
+    assert ("dialogue store is busy" in sent[0]["content"]) is busy
+    assert ("still initializing" in sent[0]["content"]) is (not busy)

@@ -642,6 +642,73 @@ def _grant_exact_resume(task: Dict[str, Any], pause: Dict[str, Any], *, selected
             **({"released_hold": str(released_hold.get("reason") or "")} if released_hold else {})}
 
 
+def newer_continuation_basis(task: Dict[str, Any], drive_root: Any) -> bool:
+    """Custody after a spent Resume, never permission to dispatch that custody.
+
+    Each carrier's existing admission validates its source/transaction. An
+    unreadable authority raises: neither a continuation nor absence is proven.
+    """
+    from ouroboros.budget_pause import LIVE_PAUSE_STATES, budget_pause_row
+    from ouroboros.delegate_recovery import _read, planned_handoff_matches
+
+    if any(isinstance(task.get(key), dict) for key in ("_owner_wait_resume", "_working_recovery")):
+        return True
+    root = pathlib.Path(task.get("budget_drive_root") or drive_root)
+    pause = task.get("_budget_pause") or {}
+    if pause.get("exact_continuation"):
+        row = budget_pause_row(root, str(task.get("id") or ""))
+        if (row.get("state") in LIVE_PAUSE_STATES and row.get("source_ref")
+                and row.get("pause_id") == (pause.get("checkpoint") or {}).get("pause_id")):
+            return True
+    return int(task.get("_attempt") or 1) > 1 and planned_handoff_matches(
+        _read(root, str(task.get("id") or ""), strict=True), task)
+
+
+def resume_hold_requires_fence(task: Dict[str, Any], drive_root: Any) -> bool:
+    """Re-decide spent, marker-less custody using its durable hold after restore."""
+    from supervisor.events_budget import BUDGET_HOLD_KEY, HOLD_GRANT_CONSUMED_STALE_ROW, HOLD_STALE_GRANT_SUPERSEDED
+
+    task.pop("_budget_pause_consumed", None)  # legacy in-memory copy; the hold owns these identities
+    hold = task.get(BUDGET_HOLD_KEY) or {}
+    if hold.get("reason") not in {HOLD_GRANT_CONSUMED_STALE_ROW, HOLD_STALE_GRANT_SUPERSEDED}:
+        return False
+    if hold.get("reason") == HOLD_STALE_GRANT_SUPERSEDED and isinstance(task.get("_budget_pause"), dict):
+        return False  # retained exact-pause admission owns this hold
+    if not newer_continuation_basis(task, drive_root):
+        return True
+    task.pop(BUDGET_HOLD_KEY, None)
+    return False
+
+
+def revalidate_consumed_resume_holds() -> None:
+    """Call first in ``supervisor.task_admission.revalidate_project_holds()`` under Q,
+    before its empty-project-holds early return and before normal admission.
+
+    Safe every tick: without consumed or marker-less superseded holds, the queue
+    scan is in-memory only, with no store reads/writes or snapshot publication;
+    with them its store reads are zero-wait, contention retrying next tick.
+    """
+    from supervisor import queue as q
+    from supervisor.events_budget import BUDGET_HOLD_KEY
+    from supervisor.queue_snapshot import _fence_snapshot_running_rows
+
+    from ouroboros.store import StoreError, admission_acquisition
+
+    changed = False
+    for task in q.PENDING:
+        before = task.get(BUDGET_HOLD_KEY)
+        try:
+            with admission_acquisition():  # under Q nothing waits: a busy read keeps the hold for the next tick
+                # A live attempt of the same id owns the task: its stale row waits, never fences it.
+                if resume_hold_requires_fence(task, q.DRIVE_ROOT) and task.get("id") not in q.RUNNING:
+                    _fence_snapshot_running_rows([{"id": task["id"]}], restored_ids=set())
+            changed |= before != task.get(BUDGET_HOLD_KEY)
+        except (StoreError, OSError, ValueError, TypeError, RuntimeError):
+            log.warning("Continuation basis unreadable for %s; hold retained", task.get("id"), exc_info=True)
+    if changed:
+        q.persist_queue_snapshot(reason="consumed_resume_hold_revalidated")
+
+
 def revoke_exact_budget_resume(task: Dict[str, Any], reason: str) -> bool:
     """Return a granted-but-undispatched task to its exact pause (queue lock held).
 
@@ -709,32 +776,24 @@ def revoke_exact_budget_resume(task: Dict[str, Any], reason: str) -> bool:
     same_grant = str(grant.get("grant_id") or "") == handoff_grant_id
     consumed = bool(grant.get("consumed_at")) or row_state == STATE_RESUMED
     if same_pause and same_grant and consumed:
-        # NEVER re-armed: the loop consumed this grant, so the task ran (or
-        # ran and ended). This queue row is a stale carrier; it is held typed,
-        # off the dispatch path, with no pause marker — and a restore fences it
-        # as the running work it names.
-        if isinstance(task.get("_owner_wait_resume"), dict):
+        try:
+            continuing = newer_continuation_basis(task, result_root)
+        except (OSError, ValueError, TypeError, RuntimeError):
+            continuing = False  # retained hold; restore/tick re-reads before deciding absence
+        if continuing:
             from supervisor.events_budget import continue_consumed_resume_selection
 
             continue_consumed_resume_selection(task, row)
             task.pop("_budget_pause_resume", None)
-            # The task ran ON past this grant and LATER parked in an owner wait:
-            # the spent carrier is simply retired and the newer planned-restart
-            # handoff decides the row (its own restore gate re-validates it).
-            # Fencing the row here would drop that valid continuation (#1196, F3).
             q.append_jsonl(q.DRIVE_ROOT / "logs" / "events.jsonl",
                            {"ts": utc_now_iso(), "type": "budget_resume_carrier_retired",
                             "task_id": task_id, "reason": str(reason or ""),
                             "grant_id": str(grant.get("grant_id") or ""),
                             "pause_id": current_pause_id,
                             "consumed_at": grant.get("consumed_at"),
-                            "retained": "owner_wait_resume"})
+                            "retained": "newer_continuation_basis"})
             return False
         task.pop("_budget_pause_resume", None)
-        task["_budget_pause_consumed"] = {
-            "pause_id": current_pause_id, "grant_id": str(grant.get("grant_id") or ""),
-            "consumed_at": grant.get("consumed_at"), "reason": str(reason or ""),
-        }
         hold_budget_row(task, reason=HOLD_GRANT_CONSUMED_STALE_ROW, detail=str(reason or ""),
                          extra={"pause_id": current_pause_id, "grant_id": str(grant.get("grant_id") or "")},
                          result_root=None)  # the task's own status is not ours to rewrite

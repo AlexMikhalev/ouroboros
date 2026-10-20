@@ -67,8 +67,8 @@
  * @property {Array<{name: string, state: 'running'|'done'|'failed', started_at: string, ended_at: ?string, error: ?string}>} steps
  * @property {Object<string, {state: ?string, done: ?number, total: ?number}>} jobs  // the store's named background jobs
  * @property {?string} error
+ * @property {?{ts: string, max_event_lag_sec: ?number}=} supervisor_load  // latest supervisor_load row's headline; null before the first
  */
-
 /**
  * Background Consciousness alarm clock (server._describe_bg_consciousness_state over consciousness.status_snapshot). A wake-up is an ordinary Main turn; the direct-activity census owns its liveness.
  * @typedef {Object} BgConsciousnessState

@@ -13,13 +13,18 @@ def root_present_fields(root, task_id, task, stored, *, settled=False):
     from ouroboros.project_admission import project_hold_fact
     from ouroboros.projects_registry import get_project, project_binding_for_task
 
+    from ouroboros.store import StoreError
+
     fields = {}
     if root is not None:
-        binding = project_binding_for_task(root, task_id) or {}
-        if binding:
-            fields.update(project_id=binding["project_id"], chat_id=binding.get("project_chat_id"))
-        project = get_project(root, fields.get("project_id") or task.get("project_id") or "") or {}
-        fields["project_name"] = str(project.get("name") or "")
+        try:
+            binding = project_binding_for_task(root, task_id) or {}
+            if binding:
+                fields.update(project_id=binding["project_id"], chat_id=binding.get("project_chat_id"))
+            project = get_project(root, fields.get("project_id") or task.get("project_id") or "") or {}
+            fields["project_name"] = str(project.get("name") or "")
+        except StoreError as exc:
+            fields["unavailable"] = {"project": type(exc).__name__}
     if settled:
         fields["recorded_status"] = stored["status"]
         return fields
@@ -58,11 +63,13 @@ def live_works_present(root, *, exclude=""):
             "state": row["status"], "started_at": row.get("started_at"),
             "open_questions": row.get("open_questions") or [], "waiting": row.get("waiting") or [],
             "last_line": focus.get("text", ""), "last_line_at": focus.get("authored_at"),
-            **{key: row[key] for key in ("focus", "project_admission_hold", "recorded_status", "tails") if key in row}})
+            **{key: row[key] for key in ("focus", "project_admission_hold", "recorded_status", "tails", "unavailable")
+               if key in row}})
     from ouroboros.peer_roster import unlisted_live_work
 
     other = unlisted_live_work(pathlib.Path(root), {row["task_id"] for row in roster["roots"]})
-    return {"works": works, "last_line_source": "model_authored_focus", "incomplete": roster["incomplete"],
+    return {"works": works, "last_line_source": "model_authored_focus",
+            "incomplete": roster["incomplete"] or any(row.get("unavailable") for row in other),
             **({"other_live_work": other} if other else {}), "note": _HYGIENE_NOTE,
             **{key: roster[key] for key in ("queue_snapshot", "direct_roots")}}
 

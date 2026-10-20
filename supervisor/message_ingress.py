@@ -325,15 +325,17 @@ def log_chat(direction: str, chat_id: int, user_id: int, text: str, *, feed: boo
     if record is None:
         return None
     try:
-        receipt = dialogue_store.append(root, "chat", record, feed=feed)
+        receipt = (dialogue_store.append(root, "chat", record, feed=feed, idempotent=direction != "in")
+                   if require_write else dialogue_store.append_quietly(root, "chat", record, feed=feed))
     except (StoreError, OSError, ValueError) as exc:
         if require_write:
             raise RuntimeError("canonical message acceptance could not be persisted") from exc
         log.warning("chat row not stored in %s", root, exc_info=True)
         return None
-    if not receipt.duplicate:
-        from ouroboros.notice_receipts import record as record_notice_receipt
-        record_notice_receipt(root, record)
+    if receipt is None:
+        return None
+    from ouroboros.notice_receipts import record as record_notice_receipt
+    record_notice_receipt(root, record)  # idempotent: a duplicate also repairs a receipt its first write lost
     return receipt.row
 
 

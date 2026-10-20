@@ -1,8 +1,9 @@
 """Addressed control/phase facts and the resumable ``hot_facts`` derivation job.
 
-Whole-document writers derive these columns in their owning transaction. NULL
-means an older writer has not derived them; a passive reader only reads that
-row's body. Historical classification belongs to ``run_hot_facts``, never boot.
+Whole-document writers derive these columns in their owning transaction, so a derived
+row is read from its columns alone (no body read, no validation). NULL means an older
+writer has not derived them; a passive reader only reads that row's body. Historical
+classification belongs to ``run_hot_facts``, never boot.
 The request snapshot is short lived and released before any consumer runs.
 
 The schema gate adds the columns without decoding bodies. ``run_hot_facts`` classifies
@@ -22,6 +23,7 @@ import os
 import sqlite3
 from typing import Any
 
+from ouroboros import store_task_cards
 from ouroboros.utils import machine_json
 
 VERSION = 6
@@ -178,26 +180,29 @@ def _read_rows(txn, ids) -> dict:
         return {}
     modern = int(txn.meta("schema_version") or VERSION) >= VERSION
     columns = "," + ",".join(f"t.{name}" for name in TASK_COLUMNS) if modern else ""
-    # The live members' own bodies are checked, never decoded: a document that no longer parses keeps
-    # its member's authority unknown (no Resume is offered from it) while its columns still read.
+    cards, join = store_task_cards.select(txn)  # the card facts ride the hot row: the census needs no document
+    # A derived row answers from its columns alone: the writer derived them from the body it validated in
+    # its own transaction, and an action that needs body authority (Resume, adoption, every mutation)
+    # decodes the body strictly in its own write. No body is read or validated for it.
     records = txn.conn.execute(
         "SELECT t.task_id,t.status,t.root_task_id,t.superseded_by,t.retry_task_id,t.write_seq,t.updated_at"
-        f"{columns},json_valid(b.body) AS body_valid FROM tasks AS t LEFT JOIN task_bodies AS b "
-        "ON b.task_id = t.task_id WHERE t.task_id IN (SELECT value FROM json_each(?))", (json.dumps(ids),)).fetchall()
+        f"{columns}{cards} FROM tasks AS t{join} WHERE t.task_id IN (SELECT value FROM json_each(?))",
+        (json.dumps(ids),)).fetchall()
     found = {row["task_id"]: dict(row) for row in records}
-    # Unknown rows alone pay their old strict read; coherent with their sequence.
+    # Underived rows alone pay their old strict read, coherent with their sequence; a body that does not
+    # parse keeps that row's authority unknown (no Resume is offered from it).
     for tid, row in found.items():
-        if row.pop("body_valid", None) == 0:
-            row["control_valid"] = 0
-            continue
         if not modern or any(row.get(name) is None for name in TASK_COLUMNS):
             body = txn.body_text(tid)
-            if body is None:
+            try:
+                document = None if body is None else json.loads(body)
+            except ValueError:
+                document = None
+            if document is None:
                 row["control_valid"] = 0
-            else:
-                document = json.loads(body)
-                row.update(task_columns(document))
-                row["control_valid"] &= int(str(document.get("task_id") or "") == tid)
+                continue
+            row.update(task_columns(document))
+            row["control_valid"] &= int(str(document.get("task_id") or "") == tid)
     if set(ids) - found.keys():
         from ouroboros.store_import import OCCUPIED
         occupied = txn.meta(OCCUPIED) or {}

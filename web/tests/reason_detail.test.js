@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { readdirSync, readFileSync } from 'node:fs';
+import { buildTimelineItemHtml } from '../modules/chat_activity.js';
+import { installDom, restoreDom } from './chat_dom_fixture.js';
 
 import {
     taskDoneIsTerminal, taskPresentation, taskReasonDetail, taskReasonPhrase, taskTerminalPhase, summarizeChatLiveEvent,
@@ -25,6 +27,36 @@ test('a typed cause is stated in the owner\'s words', () => {
 test('an unknown cause stays raw rather than becoming a wrong sentence', () => {
     assert.equal(taskReasonDetail({ reason_code: 'some_future_code' }), 'some_future_code');
     assert.equal(taskReasonPhrase('some_future_code'), 'some_future_code');
+});
+
+test('a foreign install keeps its preserved explanation despite the old terminal outcome', (t) => {
+    const { prior } = installDom();
+    t.after(() => restoreDom(prior));
+    const detail = '/installs/<install_A>/task_drives/t belongs to another Ouroboros install at /installs/<install_A>; move it explicitly to work on it here';
+    for (const prior of [
+        { status: 'completed' },
+        { status: 'failed' },
+        { status: 'cancelled', cancel_origin: { actor: 'owner', reason: 'old stop' } },
+        { status: 'failed', outcome_axes: { objective: { status: 'fail', source: 'plan_review_gate', reason: 'plan_review_advisory' } } },
+    ]) {
+        const record = { ...prior, reason_code: 'foreign_install_root', reason_detail: detail };
+        assert.equal(taskReasonDetail(record), detail + (prior.status === 'cancelled' ? '.' : ''));
+    }
+    const summary = summarizeChatLiveEvent({ type: 'task_done', task_id: 't', status: 'failed',
+        reason_code: 'foreign_install_root', reason_detail: detail });
+    assert.equal(summary.body, detail);
+    assert.equal(summary.activityPreview, detail);
+    const html = buildTimelineItemHtml({ ...summary, lineKey: 'foreign' }, { expandedLineKeys: new Set() });
+    assert.ok(html.includes('/installs/&lt;install_A&gt;/task_drives/t'));
+    assert.ok(html.includes('move it explicitly to work on it here'));
+    assert.ok(!html.includes('<install_A>'));
+});
+
+test('ordinary reasons ignore foreign detail and an absent detail stays explicit', () => {
+    const reason_detail = 'This is not the reason for an ordinary task.';
+    assert.equal(taskReasonDetail({ reason_code: 'final_message', reason_detail }), '');
+    assert.equal(taskReasonDetail({ reason_code: 'some_future_code', reason_detail }), 'some_future_code');
+    assert.equal(taskReasonDetail({ reason_code: 'foreign_install_root' }), 'foreign_install_root');
 });
 
 test('no cause and an owner-requested stop both render nothing', () => {

@@ -913,11 +913,22 @@ def completion_status_label(result: Dict[str, Any], event: Dict[str, Any]) -> st
     return OUTCOME_PHASE_HEADLINE[outcome_phase(result, event)]
 
 
-def append_canonical_task_summary(drive_root: Any, row: Dict[str, Any]) -> bool:
-    """Append one task-summary row to the dialogue store (the one chat writer seam)."""
+def append_canonical_task_summary(drive_root: Any, row: Dict[str, Any], *, retained: bool = False) -> bool:
+    """Append one task-summary row (the one chat writer seam). A root's projection row answers False
+    on a busy store and its readiness appends it again (content dedup); a ``retained`` row (a child's
+    terminal row, host task facts) has no such owner, so a busy store keeps it in the retry buffer."""
+    from ouroboros._usage_wait import ACQUISITION_SLICE_SEC
+    from ouroboros.store import StoreError, acquisition_budget
+
     if not str(row.get("summary_id") or "").strip():
         return False
-    return dialogue_store.append_quietly(pathlib.Path(drive_root), "chat", dict(row)) is not None
+    if retained:
+        return dialogue_store.append_quietly(pathlib.Path(drive_root), "chat", dict(row)) is not None
+    try:
+        with acquisition_budget(ACQUISITION_SLICE_SEC):
+            return dialogue_store.append(pathlib.Path(drive_root), "chat", dict(row), idempotent=True) is not None
+    except (StoreError, OSError, ValueError):
+        return False
 
 
 def canonical_task_summary_receipt(result: Dict[str, Any]) -> Dict[str, Any]:
@@ -940,10 +951,11 @@ def canonical_task_summary_receipt(result: Dict[str, Any]) -> Dict[str, Any]:
 def canonical_task_summary_reached_chat(result: Dict[str, Any], chat_id: Any) -> bool:
     """Did this task's own terminal row already reach THAT chat?
 
-    Every settled task gets a receipt, so "a receipt exists" answers nothing: it
-    is true of every completed, failed and cancelled child alike. The question a
-    second writer actually has is whether the reader it is about to address has
-    already been told, and only the row's own chat answers that. A receipt
+    A settled task whose row landed inline gets a receipt, so "a receipt exists" answers
+    nothing: it is true of every completed, failed and cancelled child alike. A child's row
+    the retry buffer lands later carries no receipt, so a composer may name that child once
+    more. The question a second writer actually has is whether the reader it is about to
+    address has already been told, and only the row's own chat answers that. A receipt
     written before the chat was recorded says nothing either, so it never
     silences anybody.
     """
@@ -1256,7 +1268,9 @@ def _completion_verdict(result: Dict[str, Any], event: Dict[str, Any], *, includ
                                       or (review_cause == "author_finish" and author_closed and review.get("status") != "fail")):
         review_cause = ""
     held = phase == "error" and str(objective.get("source") or "").startswith("plan_review_")
-    if raw_reason == REASON_OWNER_REQUESTED_FINALIZATION:
+    if reason == "foreign_install_root" and (result.get("reason_detail") or event.get("reason_detail")):
+        clause = str(result.get("reason_detail") or event["reason_detail"])
+    elif raw_reason == REASON_OWNER_REQUESTED_FINALIZATION:
         clause = review_cause = ""  # an owner-requested stop carries its own marker
     elif phase == "cancelled" and isinstance(origin, dict) and origin:
         # The recorded cause and the relation the record PROVES (#1061).

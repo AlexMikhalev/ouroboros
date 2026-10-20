@@ -116,17 +116,20 @@ def read_sidecar(path: pathlib.Path) -> Dict[str, Any]:
         raise SidecarCorrupt(f"evidence_corrupt: unreadable sidecar {path.name}") from exc
 
 
-def list_sidecars(root: Any, *, errors: Optional[list] = None) -> List[Tuple[pathlib.Path, Dict[str, Any]]]:
-    """One listing of pack authority; only cache builders may collect faults beside healthy rows."""
+def _sidecar_names(root: Any) -> set[str]:
+    try:
+        return {name for name in os.listdir(packs_dir(root))
+                if not name.startswith(".") and name.endswith(".members.json")}
+    except FileNotFoundError:
+        return set()
+
+
+def list_sidecars(root: Any, *, errors: Optional[list] = None,
+                  names: Optional[set[str]] = None) -> List[Tuple[pathlib.Path, Dict[str, Any]]]:
+    """Read pack authority, or a rebuild's filename delta; cache builders may collect faults."""
     out = []
     directory = packs_dir(root)
-    try:
-        names = sorted(os.listdir(directory))
-    except FileNotFoundError:
-        return out
-    for name in names:
-        if name.startswith(".") or not name.endswith(".members.json"):
-            continue
+    for name in sorted(_sidecar_names(root) if names is None else names):
         try:
             out.append((directory / name, read_sidecar(directory / name)))
         except SidecarCorrupt as exc:
@@ -264,52 +267,88 @@ def _index_rows(conn: sqlite3.Connection, pack_path: pathlib.Path, sidecar: Dict
                          (task_id, str(member["path"]), member["sha256"], generation))
 
 
-def _rebuild_index(root: pathlib.Path, path: pathlib.Path, tier: str) -> None:
-    """Rebuild the cache from the sidecars (one listing) into a temp file published by rename."""
+def _index_wait(wait_sec: float = INDEX_WAIT_SEC) -> float:
+    return store.bounded_wait(min(wait_sec, INDEX_WAIT_SEC))
+
+
+def _rebuild_index(root: pathlib.Path, path: pathlib.Path, tier: str, *, wait_sec: float = INDEX_WAIT_SEC) -> None:
+    """Build privately, refresh changed sidecars unlocked, then publish a still-current snapshot."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    def build(tmp):
+    tmp = path.with_name(f".{path.name}.tmp.{os.getpid()}.{threading.get_ident()}.{uuid.uuid4().hex[:8]}")
+    indexed: set[str] = set()
+    names, faults = _sidecar_names(root), {}
+    try:
         with contextlib.closing(store.connect(tmp, tier, create=True)) as conn:
             conn.execute(f"PRAGMA application_id = {_APPLICATION_ID[tier]}")
             conn.executescript(_INDEX_SCHEMA)
             with store.transaction(conn, write=True):
                 conn.execute("INSERT INTO meta VALUES ('schema_version', ?)", (str(INDEX_SCHEMA_VERSION),))
                 conn.execute("INSERT INTO meta VALUES ('built_at', ?)", (utc_now_iso(),))
-                errors: list = []
-                for sidecar_path, sidecar in list_sidecars(root, errors=errors):
-                    _index_rows(conn, sidecar_path.with_name(pack_name(sidecar["task_id"], sidecar["generation"])), sidecar)
-                conn.execute("INSERT INTO meta VALUES ('sidecar_errors', ?)", (json.dumps([str(e) for e in errors]),))
-    _atomic_overwrite(path, build)
-    store.fsync_directory(path.parent)
+        while True:
+            added, removed = names - indexed, indexed - names
+            errors: list = []
+            sidecars = list_sidecars(root, errors=errors, names=added)
+            for name in removed:
+                faults.pop(name, None)
+            failed = sorted(added - {sidecar_path.name for sidecar_path, _ in sidecars})
+            faults.update(zip(failed, map(str, errors)))
+            with contextlib.closing(store.connect(tmp, tier)) as conn:
+                with store.transaction(conn, write=True):
+                    for name in removed:
+                        row = conn.execute("SELECT task_id, generation FROM packs WHERE path=?",
+                                           (name.removesuffix(".members.json") + ".xz",)).fetchone()
+                        if row is not None:
+                            for table in ("packs", "members", "handles"):
+                                conn.execute(f"DELETE FROM {table} WHERE task_id=? AND generation=?", tuple(row))
+                    for sidecar_path, sidecar in sidecars:
+                        _index_rows(conn, sidecar_path.with_name(pack_name(sidecar["task_id"], sidecar["generation"])), sidecar)
+                    conn.execute("INSERT OR REPLACE INTO meta VALUES ('sidecar_errors', ?)",
+                                 (json.dumps(list(faults.values())),))
+            indexed = names
+            with store.name_lock(root, INDEX_LOCK_NAME, timeout_sec=_index_wait(wait_sec)):
+                if _index_valid(path, tier, wait_sec=_index_wait(wait_sec)):
+                    return  # another builder published; keep its subsequent writes too
+                names = _sidecar_names(root)
+                if names == indexed:
+                    with contextlib.suppress(FileNotFoundError):
+                        tmp.chmod(path.stat().st_mode)
+                    replace_atomic(tmp, path)
+                    store.fsync_directory(path.parent)
+                    return
+    finally:
+        for leftover in (tmp, *(tmp.with_name(tmp.name + suffix) for suffix in ("-journal", "-wal", "-shm"))):
+            with contextlib.suppress(FileNotFoundError):
+                leftover.unlink()
+
 
 @contextlib.contextmanager
 def open_index(root: Any, *, write: bool = False, wait_sec: float = INDEX_WAIT_SEC,
                rebuild: bool = True) -> Iterator[sqlite3.Connection]:
-    """One transaction on the index cache under the name lock; a missing, damaged or
-    other-version cache is rebuilt from the sidecars first. ``rebuild=False`` is
-    advisory discovery: unavailable cache raises instead of walking all sidecars.
-    ``store.StoreBusy`` on contention."""
+    """One transaction under the name lock, narrowed by the caller's acquisition budget.
+
+    Missing, damaged or other-version caches rebuild outside the lock. ``rebuild=False``
+    is advisory discovery: unavailable cache raises instead of walking all sidecars.
+    ``store.StoreBusy`` on contention.
+    """
     root = pathlib.Path(root)
     path, tier = packs_dir(root) / INDEX_NAME, index_tier(root)
-    with store.name_lock(root, INDEX_LOCK_NAME, timeout_sec=wait_sec):
-        if not _index_valid(path, tier, wait_sec=wait_sec):
+    wait_sec = _index_wait(wait_sec)
+    while True:
+        with store.name_lock(root, INDEX_LOCK_NAME, timeout_sec=wait_sec):
+            if _index_valid(path, tier, wait_sec=wait_sec):
+                with contextlib.closing(store.connect(path, tier, wait_sec=wait_sec)) as conn:
+                    with store.transaction(conn, write=write):
+                        yield conn
+                return
             if not rebuild:
                 raise sqlite3.DatabaseError("evidence index requires reconstruction")
-            _rebuild_index(root, path, tier)
-        with contextlib.closing(store.connect(path, tier, wait_sec=wait_sec)) as conn:
-            with store.transaction(conn, write=write):
-                yield conn
+        _rebuild_index(root, path, tier, wait_sec=wait_sec)
 
 
 def index_upsert(root: Any, pack_path: pathlib.Path, sidecar: Dict[str, Any]) -> None:
-    """Record one published, verified pack; a cache that cannot take the row is dropped so the
-    next access rebuilds it from the sidecars."""
-    try:
-        with open_index(root, write=True) as conn:
-            _index_rows(conn, pack_path, sidecar)
-    except (store.StoreError, sqlite3.Error):
-        with contextlib.suppress(OSError):
-            (packs_dir(root) / INDEX_NAME).unlink()
-        _VALIDATED.pop(str(packs_dir(root) / INDEX_NAME), None)
+    """Record one verified pack, or defer its caller without destroying a contended cache."""
+    with open_index(root, write=True) as conn:
+        _index_rows(conn, pack_path, sidecar)
 
 
 def _placements(root: pathlib.Path, *, sha256: str = "", kind: str = "", task_id: str = "", rel_path: str = "",
@@ -765,8 +804,9 @@ def write_pack(root: Any, task_id: str, generation: int, members: List[Dict[str,
             os.fsync(handle.fileno())
         replace_atomic(tmp_pack, pack_path)
         store.fsync_directory(directory)
-        replace_atomic(tmp_sidecar, sidecar_path)  # publication
-        store.fsync_directory(directory)
+        with store.name_lock(root, INDEX_LOCK_NAME, timeout_sec=_index_wait()):
+            replace_atomic(tmp_sidecar, sidecar_path)  # serialize publication with index revalidation
+            store.fsync_directory(directory)
     finally:
         for tmp in (tmp_pack, tmp_sidecar):
             with contextlib.suppress(FileNotFoundError):

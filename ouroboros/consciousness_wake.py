@@ -374,7 +374,8 @@ def _transitions_since(transitions: Dict[str, Dict[str, Dict[str, Any]]], accept
     first write copied an old timestamp. A key an earlier inventory holds and no
     task records any more (a pre-fold late-review key) is simply never fresh again.
     The existing wake boundary owns this state, with no new
-    store or count cutoff. Cost is one fact extraction per result per scan.
+    store or count cutoff. Unchanged tasks retain their accepted keys; their
+    bodies are not needed for comparison.
 
     V1 recorded only open tasks. Unknown keys in that incomplete inventory are
     conservatively replayed once, with coverage disclosed by the caller.
@@ -529,6 +530,33 @@ class WakeObservation:
 _CHAT_BOUNDARY_KEYS = ("version", "upper", "segment_start", "segment_sha256")
 
 
+def _task_window(root, prior, chat_rows):
+    """Capture typed signatures and only changed/question/chat-addressed bodies together.
+
+    The accepted inventory already owns unchanged transition identities. Old
+    boundaries without signatures scan once; timestamps alone cannot prove that
+    a result carrying an old date is unchanged. NULL question flags are unknown.
+    """
+    from ouroboros import task_store
+
+    complete = (isinstance(prior, dict) and prior.get("version") == TRANSITIONS_VERSION
+                and isinstance(prior.get("inventory"), dict) and isinstance(prior.get("signatures"), dict))
+    previous = prior["signatures"] if complete else {}
+    with task_store.open_store(root, write=False) as txn:
+        signatures = {tid: list(stamp) for tid, stamp in txn.write_seqs().items()}
+        selected = {tid for tid, stamp in signatures.items()
+                    if not complete or tid not in prior["inventory"] or previous.get(tid) != stamp}
+        selected.update(str(row.get("task_id") or "") for _offset, row in chat_rows)
+        selected.update(row[0] for row in txn.conn.execute(
+            "SELECT task_id FROM tasks WHERE has_owner_questions=1 OR has_owner_questions IS NULL"))
+        fetched = task_store._fetch(txn, "t.task_id IN (SELECT value FROM json_each(?))",
+                                   (json.dumps(sorted(selected)),))
+    rows = task_store._decode(*fetched)
+    retained = {tid: {key: None for key in prior["inventory"][tid]}
+                for tid in signatures if complete and tid not in selected}
+    return rows, signatures, retained
+
+
 def observe_wake(drive_root: Any, *, boundary: Any, since: float, now: float, reason: str = "") -> WakeObservation:
     """Capture every fact since the accepted boundary, plus outstanding cards.
 
@@ -542,7 +570,6 @@ def observe_wake(drive_root: Any, *, boundary: Any, since: float, now: float, re
     """
     from ouroboros.dialogue_provenance import RoomLabelResolver
     from ouroboros.owner_quiz import STATE_EXPIRED_TERMINAL, STATE_OPEN
-    from ouroboros.task_results import list_task_results
     from ouroboros.projects_registry import list_reserved_projects, PROJECT_ACTIVE
 
     root, gaps = pathlib.Path(drive_root), set()
@@ -571,21 +598,6 @@ def observe_wake(drive_root: Any, *, boundary: Any, since: float, now: float, re
             source_unreadable = True
             gaps.add(f"unreadable_transition_source: {type(exc).__name__}")
     try:
-        rows, scanned = list_task_results(root, strict=True), True
-    except Exception as exc:  # a disclosed gap beats a missing wake
-        rows, scanned = [], False
-        gaps.add(f"task_results unreadable: {type(exc).__name__}")
-    results = {str(row.get("task_id") or ""): row for row in rows}
-    transitions = {task_id: _transition_facts(row) for task_id, row in results.items()}
-
-    if source_unreadable:
-        fresh, known, state, basis = {}, set(), None, "unreadable_transition_source"
-    elif scanned:
-        fresh, known, state, basis = _transitions_since(
-            transitions, prior, since=since, scan_at=now)
-    else:  # nothing was read: the accepted state stays, so the next wake finds the same transitions
-        fresh, known, state, basis = {}, set(), prior, "unreadable_task_results"
-    try:
         chat_rows, window = _chat_window(root, accepted or None, since, gaps)
     except Exception as exc:
         chat_rows, window = [], {"lower": None, "upper": None, "basis": "chat_chain_unreadable", "boundary": None}
@@ -593,6 +605,23 @@ def observe_wake(drive_root: Any, *, boundary: Any, since: float, now: float, re
         from ouroboros.store import StoreError
         if isinstance(exc, StoreError):
             gaps.add(str(exc))
+    try:
+        rows, signatures, transitions = _task_window(root, prior, chat_rows)
+        scanned = True
+    except Exception as exc:  # a disclosed gap beats a missing wake
+        rows, signatures, transitions, scanned = [], {}, {}, False
+        gaps.add(f"task_results unreadable: {type(exc).__name__}")
+    results = {str(row.get("task_id") or ""): row for row in rows}
+    transitions.update({task_id: _transition_facts(row) for task_id, row in results.items()})
+
+    if source_unreadable:
+        fresh, known, state, basis = {}, set(), None, "unreadable_transition_source"
+    elif scanned:
+        fresh, known, state, basis = _transitions_since(
+            transitions, prior, since=since, scan_at=now)
+        state["signatures"] = signatures
+    else:  # nothing was read: the accepted state stays, so the next wake finds the same transitions
+        fresh, known, state, basis = {}, set(), prior, "unreadable_task_results"
     window["transitions_basis"] = basis
     try:
         registry = list_reserved_projects(root)

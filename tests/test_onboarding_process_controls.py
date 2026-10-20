@@ -170,6 +170,9 @@ def test_restart_during_initialization_does_not_queue_to_published_bridge(
                 assert did_stop.wait(3), 'Restart remained behind the initializing supervisor'
         assert stopped == [{}]
         if surface == 'ws_chat_files':
+            from ouroboros import dialogue_retry
+
+            dialogue_retry.drain()  # a best-effort reply that met the restart's writes lands from the retry buffer
             rows = dialogue_test.log_rows(obj.data / 'logs/chat.jsonl')
             (row,) = [item for item in rows if item['direction'] == 'in']
             assert (row['text'], row['client_message_id']) == ('/restart', 'with-file')

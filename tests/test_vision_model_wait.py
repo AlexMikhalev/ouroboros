@@ -36,7 +36,7 @@ def _install_child_fixture(mode, events_path):
         polls = 0
         lost = False
 
-        def operations(self):
+        def operations(self, **_kwargs):
             return []  # Legacy model-operation catalog.
 
         def upload_model_request(self, payload, *, idempotency_key):
@@ -95,7 +95,7 @@ def _install_child_fixture(mode, events_path):
             event("close")
 
     gateway = Gateway()
-    transport.ensure_owned_gateway = lambda: gateway
+    transport.ensure_owned_gateway = lambda **_kw: gateway
     transport.config.CLAUDEXOR_MODEL_POLL_INTERVAL_SEC = 0.01
     pricing._fetch_live_rows = lambda *_: pytest.fail("VLM fixture must never fetch live pricing")
     original_write = vision_process._private_json

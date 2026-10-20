@@ -455,7 +455,8 @@ def test_encode_document_matches_the_result_writer_bytes(tmp_path):
 _ABOVE_3_24 = re.compile(
     r"\bSTRICT\b|->>?|\bRETURNING\b|\bGENERATED\s+ALWAYS\b|\bjsonb?\(|\bjson_[a-z]+\(|\bIIF\(|\bVACUUM\s+INTO\b"
     r"|\bRENAME\s+COLUMN\b|\bDROP\s+COLUMN\b|\bOVER\s*\(|\bFILTER\s*\(|\bNULLS\s+(FIRST|LAST)\b", re.IGNORECASE)
-STORE_MODULES = ("ouroboros/store.py", "ouroboros/store_import.py", "ouroboros/store_switch.py")
+STORE_MODULES = ("ouroboros/store.py", "ouroboros/store_import.py", "ouroboros/store_switch.py",
+                 "ouroboros/store_task_cards.py")
 
 
 def _string_literals(source: str):
@@ -495,7 +496,7 @@ def test_the_schema_builds_on_this_engine(tmp_path):
     path = publish(tmp_path, document("t1"))
     with sqlite3.connect(path) as conn:
         tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-        assert tables == {"tasks", "task_bodies", "obligations", "task_handoffs", "custody_runs",
+        assert tables == {"tasks", "task_bodies", "task_cards", "obligations", "task_handoffs", "custody_runs",
                           "custody_outbox", "meta"}
         assert conn.execute("PRAGMA journal_mode").fetchone()[0] == "delete"
         assert conn.execute("PRAGMA user_version").fetchone()[0] == 0  # the version lives in meta

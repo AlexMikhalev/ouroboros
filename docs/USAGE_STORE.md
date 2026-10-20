@@ -13,7 +13,7 @@ journal era.
 ## 1. Schema
 
 The shared store core defaults to `journal_mode=PERSIST`, `synchronous=FULL`
-and a 1 MiB idle journal size limit. A retained rollback journal avoids file
+and a 64 MiB idle journal size limit. A retained rollback journal avoids file
 creation/deletion on every commit; DELETE-mode older writers can interleave.
 WAL keeps FULL and requires all three facts: SQLite >= 3.51.3 (or the 3.50
 branch >= 3.50.7 / 3.44 branch >= 3.44.6), enforced locks, and a proven local

@@ -255,13 +255,16 @@ class TestForwardToWorkerTool(unittest.TestCase):
             child_drive.mkdir(parents=True)
             write_task_result(parent_drive, "child1", STATUS_RUNNING, child_drive_root=str(child_drive), parent_task_id="parent1", root_task_id="parent1", result="running")
             write_task_result(parent_drive, "queued1", STATUS_SCHEDULED, child_drive_root=str(queued_drive), parent_task_id="parent1", root_task_id="parent1", result="queued")
-            write_task_result(parent_drive, "asked1", "requested", parent_task_id="parent1", root_task_id="parent1", result="requested")
+            asked_drive = pathlib.Path(tmp) / "asked-child"
+            write_task_result(parent_drive, "asked1", "requested", child_drive_root=str(asked_drive), parent_task_id="parent1", root_task_id="parent1", result="requested")
+            write_task_result(parent_drive, "ended1", "completed", child_drive_root=str(asked_drive), parent_task_id="parent1", root_task_id="parent1", result="done")
             write_task_result(parent_drive, "otherchild", STATUS_RUNNING, parent_task_id="otherparent", root_task_id="otherroot", result="running")
             ctx = SimpleNamespace(drive_root=parent_drive, task_id="parent1")
 
             output = _forward_to_worker(ctx, "child1", "continue")
             queued = _forward_to_worker(ctx, "queued1", "read this when you start")
-            blocked = _forward_to_worker(ctx, "asked1", "not admitted yet")
+            requested = _forward_to_worker(ctx, "asked1", "read this once admitted")
+            blocked = _forward_to_worker(ctx, "ended1", "too late")
             forbidden = _forward_to_worker(ctx, "otherchild", "wrong root")
 
             self.assertIn("Message forwarded", output)
@@ -270,7 +273,13 @@ class TestForwardToWorkerTool(unittest.TestCase):
             self.assertIn("has not started, so nothing has read it", queued)
             queued_mailbox = queued_drive / "memory" / "owner_mailbox" / "queued1.jsonl"
             self.assertIn("read this when you start", queued_mailbox.read_text(encoding="utf-8"))
+            # A requested child's mailbox already exists in its recorded drive: the message waits
+            # there for its start (never dropped); a settled task still refuses.
+            self.assertIn("(queued)", requested)
+            asked_mailbox = asked_drive / "memory" / "owner_mailbox" / "asked1.jsonl"
+            self.assertIn("read this once admitted", asked_mailbox.read_text(encoding="utf-8"))
             self.assertIn("TASK_NOT_ACTIVE", blocked)
+            self.assertFalse((asked_drive / "memory" / "owner_mailbox" / "ended1.jsonl").exists())
             self.assertIn("TASK_FORBIDDEN", forbidden)
             self.assertFalse((parent_drive / "memory" / "owner_mailbox" / "child1.jsonl").exists())
             mailbox = child_drive / "memory" / "owner_mailbox" / "child1.jsonl"

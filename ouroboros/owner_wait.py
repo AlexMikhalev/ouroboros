@@ -529,11 +529,18 @@ def _sleep_wake(ctx: Any, checkpoint: dict) -> str | None:
     from ouroboros.model_sleep import wake_reason
     from ouroboros.store import acquisition_budget
 
+    wait_id = checkpoint.get("wait_id") or id(chosen)
     try:
         with acquisition_budget(0):  # store contention is retried by the next poll, never waited on
-            return wake_reason(ctx, chosen)
+            reason = wake_reason(ctx, chosen)
+        ctx._sleep_read_failures = None
+        return reason
     except Exception:
-        log.warning("Sleep readiness unreadable for %s; still sleeping", ctx.task_id, exc_info=True)
+        previous = getattr(ctx, "_sleep_read_failures", None)
+        count = previous[1] + 1 if previous and previous[0] == wait_id else 1
+        ctx._sleep_read_failures = (wait_id, count)
+        log.warning("Sleep readiness unreadable for %s; still sleeping (consecutive failures: %d)",
+                    ctx.task_id, count, exc_info=count == 1)
         return ""
 
 

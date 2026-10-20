@@ -5,8 +5,9 @@ steps the coordinator and the supervisor init run; what ``/api/health`` and ``/a
 answer as ``boot``), the boot coordinator that runs the lifespan's post-serve steps on its
 own thread, and the supervisor generation's wedge detection: the two silent-wedge
 predicates (a stalled supervisor loop, a heartbeat-silent in-process chat turn), the owner
-alert one of them raises, the measurements the loop publishes about itself, and the
-dedicated watchdog thread that evaluates both outside the loop it watches.
+alert one of them raises, the measurements the loop publishes about itself (its stall facts
+and the ``supervisor_load`` row per busy minute), and the dedicated watchdog thread that
+evaluates both outside the loop it watches.
 """
 
 from __future__ import annotations
@@ -25,7 +26,7 @@ from ouroboros.runtime_limits import (
     BUDGET_PROJECTION_RETRY_SEC, SUPERVISOR_EVENT_BATCH_MAX_EVENTS, SUPERVISOR_EVENT_BATCH_MAX_SEC,
 )
 from ouroboros.server_process import DATA_DIR, log, _restart_requested
-from ouroboros.utils import utc_now_iso
+from ouroboros.utils import append_jsonl, utc_now_iso
 
 # The loop hands the watchdog ONE list: [0] the monotonic stamp the watchdog
 # triggers on, [1] the facts published with that stamp, [2] the loop thread's CPU
@@ -136,20 +137,21 @@ def loop_phase_facts(liveness: list, phase: str, *, new_tick: bool = False) -> d
     return facts
 
 
-def observe_worker_event_lag(liveness: list, evt: Any) -> None:
-    """Record how far behind the loop is on the worker event it is draining now.
+def observe_worker_event_lag(liveness: list, evt: Any) -> Optional[float]:
+    """Record and return how far behind the loop is on the worker event it is draining now.
 
     The worker stamps ``ts`` in its OWN process when it queues the event, so this
     is a cross-process wall-clock gap — a measurement, never the watchdog's
     monotonic trigger. An event without a parsable worker stamp is skipped: the
-    host's own clock is not evidence about when a worker spoke.
+    host's own clock is not evidence about when a worker spoke (None).
     """
     stamped = parse_deadline_ts(evt.get("ts")) if isinstance(evt, dict) else None
     if stamped is None:
-        return
+        return None
     lag = (utc_now() - stamped).total_seconds()
     if liveness[_LAG] is None or lag > liveness[_LAG]:
         liveness[_LAG] = lag
+    return lag
 
 
 def drain_worker_events(event_q: Any, ctx: Any, liveness: list, *, on_restart: Callable[..., Any]) -> bool:
@@ -165,8 +167,15 @@ def drain_worker_events(event_q: Any, ctx: Any, liveness: list, *, on_restart: C
     stays queued for the next turn, so a producer that keeps the queue non-empty
     can never starve owner-message intake. A dequeued event carrying a
     ``delivery_id`` is released from the bus's outstanding-delivery membership after
-    its handler returned or raised, whichever path it took. Returns True when the
-    pass stopped at its bound (a backlog may remain: the caller skips its idle sleep)."""
+    its handler returned or raised, whichever path it took. A live final answer is
+    stamped as dequeued the moment it is taken (``finalization_timing``), and every
+    event's service time, take to handler return, feeds ``supervisor.loop_load.CONSUMER``
+    by type, with its lag by lane. Returns True
+    when the pass stopped at its bound (a backlog may remain: the caller skips its idle
+    sleep and polls intake without its wait)."""
+    from ouroboros.finalization_timing import stamp_finalization_dequeue
+    from supervisor import loop_load
+    from supervisor.event_observation import event_lane
     from supervisor.events import dispatch_event
 
     deadline = time.monotonic() + SUPERVISOR_EVENT_BATCH_MAX_SEC
@@ -177,15 +186,85 @@ def drain_worker_events(event_q: Any, ctx: Any, liveness: list, *, on_restart: C
         except queue.Empty:
             return False
         drained += 1
+        taken, lag = time.monotonic(), None
         try:
+            stamp_finalization_dequeue(evt)
             if evt.get("type") == "restart_request":
                 on_restart(evt, ctx)
                 continue
-            observe_worker_event_lag(liveness, evt)
+            lag = observe_worker_event_lag(liveness, evt)
             dispatch_event(evt, ctx)
         finally:
+            served = time.monotonic() - taken
             _release_delivery(event_q, evt)
+            kind = str(evt.get("type") or "") if isinstance(evt, dict) else ""
+            loop_load.CONSUMER.note(kind, event_lane(evt), served, lag)
     return True
+
+
+# The supervisor_load row's window: a reporting cadence, never a gate or a deadline.
+SUPERVISOR_LOAD_WINDOW_SEC = 60.0
+_LOAD_FAILURES_SEEN: set = set()
+
+
+def _load_sections() -> Dict[str, Callable[[], Dict[str, Any]]]:
+    """The row's further sections: a name and a zero-argument drain of its own window, one line each
+    (``dialogue_retry`` answers its process-lifetime counters and current occupancy instead)."""
+    from ouroboros import dialogue_retry, store_timing
+    from supervisor import queue
+
+    return {
+        "queue_lock": lambda: queue._queue_lock.drain(),
+        "store_locks": store_timing.drain,
+        "dialogue_retry": dialogue_retry.snapshot,
+    }
+
+
+def publish_supervisor_load(event_q: Any, drive_root: Any) -> Optional[dict]:
+    """At most one ``supervisor_load`` row per window into ``logs/supervisor.jsonl``.
+
+    The loop thread calls this once per tick at its top level (outside Q and any store
+    transaction); it returns None while the window is open or while the consumer has served
+    no event in it (an idle stretch folds into the next row, whose ``window_sec`` says how
+    long, so an idle install adds no rows), else the row: ``window_sec``;
+    ``handlers`` (event type -> count, total_sec, max_sec of service time, take to handler
+    return); ``lanes`` (control/telemetry -> ``depth`` and ``oldest_age_sec`` of the bus at
+    this moment, None when the bus cannot say, and ``max_lag_sec``, the worst producer-stamp
+    lag the drain saw); ``max_event_lag_sec`` over both lanes; then one key per
+    ``_load_sections`` entry (Q: outermost waits, holds, longest hold's site), a failing
+    source answering ``{"error": <type>}``. The append never waits on the jsonl lock and a
+    failure is logged once per class: diagnostics never cost the loop or a delivery. The boot
+    document keeps the row's ``ts`` and ``max_event_lag_sec`` for the health answers.
+    """
+    from supervisor import loop_load
+    from supervisor.event_observation import lane_observations
+    from supervisor.event_taxonomy import LANES
+
+    now = time.monotonic()
+    if now - loop_load.CONSUMER.started < SUPERVISOR_LOAD_WINDOW_SEC or not loop_load.CONSUMER.served():
+        return None
+    try:
+        window = loop_load.CONSUMER.drain(now)
+        lanes, lag = lane_observations(event_q) or {}, window["lag"]
+        row = {"ts": utc_now_iso(), "type": "supervisor_load", "window_sec": window["window_sec"],
+               "handlers": window["handlers"],
+               "lanes": {lane: {"depth": (lanes.get(lane) or {}).get("depth"),
+                                "oldest_age_sec": (lanes.get(lane) or {}).get("oldest_age_sec"),
+                                "max_lag_sec": lag.get(lane)} for lane in LANES},
+               "max_event_lag_sec": max(lag.values()) if lag else None}
+        for name, drain in _load_sections().items():
+            try:
+                row[name] = drain()
+            except Exception as exc:
+                row[name] = {"error": type(exc).__name__}
+        BOOT.note_supervisor_load({"ts": row["ts"], "max_event_lag_sec": row["max_event_lag_sec"]})
+        append_jsonl(drive_root / "logs" / "supervisor.jsonl", row, lock_timeout_sec=0)
+        return row
+    except Exception as exc:
+        if type(exc).__name__ not in _LOAD_FAILURES_SEEN:
+            _LOAD_FAILURES_SEEN.add(type(exc).__name__)
+            log.warning("supervisor_load row not recorded (%s)", type(exc).__name__, exc_info=True)
+        return None
 
 
 _RELEASE_FAILURES_SEEN: set = set()
@@ -516,7 +595,9 @@ class BootDocument:
     ``dialogue_ready``: an owner message is accepted durably (the chat bridge is published).
     ``tasks_ready``: pooled task starts are admitted (the supervisor's readiness latch, read
     from the caller at snapshot time so one latch serves the API and this document).
-    ``steps``: every named boot step in the order it started, with its outcome. A failed
+    ``supervisor_load``: the latest load row's ``ts`` and ``max_event_lag_sec``
+    (None before this generation's first row). ``steps``: every named boot step in the order
+    it started, with its outcome. A failed
     fail-soft step (an extension that did not load) is reported as such and does not fail the
     phase; a step that ends the boot calls ``fail``. The document is per generation
     (``reset`` at every lifespan start) and lives in memory: durable boot facts stay where
@@ -535,6 +616,7 @@ class BootDocument:
             self._dialogue_ready = False
             self._error: Optional[str] = None
             self._steps: Dict[str, Dict[str, Any]] = {}
+            self._load: Optional[Dict[str, Any]] = None
 
     def serving(self) -> None:
         with self._lock:
@@ -553,6 +635,10 @@ class BootDocument:
         with self._lock:
             if not self._error:
                 self._error = str(error)
+
+    def note_supervisor_load(self, headline: Dict[str, Any]) -> None:
+        with self._lock:
+            self._load = dict(headline)
 
     def step_started(self, name: str) -> None:
         with self._lock:
@@ -599,6 +685,7 @@ class BootDocument:
                 "tasks_ready": bool(tasks_ready),
                 "steps": [dict(row) for row in self._steps.values()],
                 "jobs": {},
+                "supervisor_load": dict(self._load) if self._load is not None else None,
                 "error": self._error or supervisor_error or None,
             }
         if jobs and root is not None:

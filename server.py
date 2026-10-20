@@ -81,7 +81,7 @@ from ouroboros.server_liveness import (  # noqa: F401
     _chat_turn_wedged,
     _start_supervisor_liveness_watchdog,
     _supervisor_loop_stalled,
-    drain_worker_events, flush_budget_projection,
+    drain_worker_events, flush_budget_projection, publish_supervisor_load,
 )
 from ouroboros.server_liveness import BOOT, start_boot_coordinator, wait_event
 from ouroboros.server_maintenance import (  # noqa: F401
@@ -107,7 +107,7 @@ from ouroboros.ui_translation import start_background as _start_ui_translation
 from supervisor.workspace_preparation import start_generation as _start_preparation_generation
 from supervisor.event_observation import pending_idle_observations
 from ouroboros.server_restart import (  # noqa: F401
-    _live_running_task_ids, _managed_update_pending_kwargs,
+    _begin_task_teardown, _live_running_task_ids, _managed_update_pending_kwargs,
     _perform_owner_restart, _safe_restart_serialized,
     _shutdown_supervisor_event_bus, _shutdown_task_cleanup_args,
     _stop_owned_daemon_for_new_pin, _stop_owned_work,
@@ -334,8 +334,8 @@ def _preserve_unprocessed_updates(bridge, updates, consumed: int) -> int:
     return kept
 
 
-def _process_bridge_updates(bridge, offset: int, ctx: Any) -> int:
-    updates = bridge.get_updates(offset=offset, timeout=1)
+def _process_bridge_updates(bridge, offset: int, ctx: Any, *, timeout: float = 1) -> int:
+    updates = bridge.get_updates(offset=offset, timeout=timeout)
     cursor = [0]  # updates taken up so far, the one in flight included
     try:
         return _handle_bridge_update_batch(bridge, updates, offset, ctx, cursor)
@@ -902,8 +902,9 @@ def _run_supervisor(settings: dict) -> None:
             # WS3: intake new bridge messages EARLY — before the heavy steps
             # (enforce_task_timeouts / assign_tasks / evolution) — so a later
             # blocking step can never starve new-message intake (the wedge class
-            # where no task_received fired for hours until a full restart).
-            offset = _process_bridge_updates(bridge, offset, _event_ctx)
+            # where no task_received fired for hours until a full restart). A drain that stopped
+            # at its bound only polls: the idle wait would steal its backlog's second.
+            offset = _process_bridge_updates(bridge, offset, _event_ctx, timeout=0 if backlog else 1)
             # The one budget-projection write of this turn (llm_usage events only mark it dirty).
             flush_budget_projection(_event_ctx)
 
@@ -937,6 +938,7 @@ def _run_supervisor(settings: dict) -> None:
                     log.warning("Consciousness alarm tick failed", exc_info=True)
 
             crash_count = 0
+            publish_supervisor_load(get_event_q(), DATA_DIR)  # one row a minute, never under Q; never raises
             if not backlog:
                 time.sleep(0.5)  # a turn that hit its events bound drains the backlog at full speed
 
@@ -1110,7 +1112,7 @@ def _perform_supervisor_restart(
         if st.get("owner_chat_id"):
             ctx.send_with_budget(int(st["owner_chat_id"]), f"⚠️ Restart skipped: {msg}", role="system", system_type="restart_notice")
         return
-    cleanup_status, cleanup_reason = _shutdown_task_cleanup_args(restart_requested=True)
+    cleanup_status, cleanup_reason = _begin_task_teardown(restart_requested=True)
     global _planned_delegate_restart_transaction_id
     _planned_delegate_restart_transaction_id = ""
     planned_handoffs: set[str] = set()
@@ -1494,7 +1496,7 @@ async def lifespan(app):
         try:
             restart_requested = _restart_requested.is_set()
             from supervisor.workers import kill_workers
-            cleanup_status, cleanup_reason = _shutdown_task_cleanup_args(restart_requested)
+            cleanup_status, cleanup_reason = _begin_task_teardown(restart_requested)
             kill_workers(
                 force=True,
                 terminal_status=cleanup_status,

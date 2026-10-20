@@ -119,7 +119,7 @@ def test_failed_quiz_transaction_retry_leaves_readable_evidence(publication, mon
     assert any(row.get('quiz', {}).get('state') == state for row in _history(publication.root))
 
 
-def test_main_retry_keeps_original_nonempty_timestamp(owed, monkeypatch):
+def test_main_retry_keeps_one_row_with_original_nonempty_timestamp(owed, monkeypatch):
     from ouroboros.terminal_projection import settle_terminal_projection
     from supervisor import events_chat_delivery as handler, message_bus as bus
     first_ts = owed.event.get('ts')
@@ -136,8 +136,8 @@ def test_main_retry_keeps_original_nonempty_timestamp(owed, monkeypatch):
     handler._handle_send_message({**owed.queued[-1], 'format': ''}, context)
     rows = dialogue_test.chat_rows(owed.root)
     rows = [row for row in rows if row.get('delivery_id') == owed.event['delivery_id']]
-    assert len(rows) == 2 and {row['ts'] for row in rows} == {first_ts}
-    assert frames[0]['ts'] == first_ts
+    assert len(rows) == 1 and rows[0]['ts'] == first_ts
+    assert len(frames) == 1 and frames[0]['ts'] == first_ts
 
 
 @pytest.mark.parametrize('lost_queue', [False, True])

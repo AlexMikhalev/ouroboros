@@ -9,11 +9,11 @@ import math
 import os
 import pathlib
 import queue as _stdqueue  # noqa: F401 — re-exported for the test suite's reap-queue isolation
-import threading
 import time  # noqa: F401 -- facade name tests read (queue.time)
 import uuid
 from typing import Any, Dict, List, Optional, Tuple
 
+from supervisor.loop_load import MeasuredRLock
 from supervisor.state import (
     load_state,
     append_jsonl,  # noqa: F401 -- queue_snapshot leaf reads it via the _queue() handle
@@ -146,8 +146,9 @@ ADMISSION_RESERVATIONS: Dict[str, str] = {}
 # Those doors always exit; the next generation's ``init_queue_refs`` starts open.
 RETURNS_NAMED: Dict[str, str] = {}
 
-# Guards PENDING/RUNNING mutations across main loop, direct chat, watchdog.
-_queue_lock = threading.RLock()
+# Guards PENDING/RUNNING mutations across main loop, direct chat, watchdog. An RLock that
+# times its outermost waits and holds for the per-minute supervisor_load row.
+_queue_lock = MeasuredRLock()
 
 
 def name_queue_returns(pending: List[Dict[str, Any]], door: str) -> List[Dict[str, Any]]:
@@ -158,10 +159,13 @@ def name_queue_returns(pending: List[Dict[str, Any]], door: str) -> List[Dict[st
 
 
 def reopen_queue_returns(door: str) -> None:
-    """That door's stop raised before its exit: this generation goes on admitting."""
+    """That door's stop raised before its exit: this generation goes on admitting, its admission lane too."""
+    from supervisor.workspace_preparation import resume_admission
+
     with _queue_lock:
         if RETURNS_NAMED.get("door") == door:
             RETURNS_NAMED.clear()
+    resume_admission()
 from supervisor.task_admission import (  # noqa: E402,F401 - public queue API
     coerce_queue_order, enqueue_with_admission_receipt, prefer_terminalization_retry_rows,
     reject_invalid_task_depth, release_task_admission, restore_invalid_depth_admission,

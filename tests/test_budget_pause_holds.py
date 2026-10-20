@@ -267,7 +267,8 @@ def test_a_consumed_grant_is_never_re_armed_by_a_later_revocation(tmp_path, monk
     assert revoke_exact_budget_resume(task, "money_vanished") is False
     assert "_budget_pause_resume" not in task
     assert "_budget_pause" not in task  # NOT re-minted over a task that is running on
-    assert task["_budget_pause_consumed"]["grant_id"] == grant_id
+    assert "_budget_pause_consumed" not in task
+    assert budget_hold_fact(task)["grant_id"] == grant_id
     assert budget_hold_fact(task)["reason"] == HOLD_GRANT_CONSUMED_STALE_ROW
     after = budget_pause.budget_pause_row(tmp_path, "loop-4")
     assert after["state"] == budget_pause.STATE_RESUMED and after["grant"]["consumed_at"]
@@ -648,3 +649,51 @@ def test_owner_wait_restart_assignment_and_the_cold_loop_keep_the_budget_paused_
                   "model_wait": {"budget_paused_sec": 600.0}}
     owner_wait.restore_continuation_state(SimpleNamespace(_ctx=ctx), state_blob, [], {}, {}, set())
     assert ctx._budget_paused_sec == 600.0
+
+
+@pytest.mark.parametrize("race", ["consumed", "unreadable"])
+def test_worker_death_reads_the_revokers_hold_before_reparking(tmp_path, monkeypatch, race):
+    from ouroboros import budget_pause
+    from supervisor import budget_resume, worker_health
+    from supervisor.events_budget import BUDGET_HOLD_KEY, HOLD_GRANT_CONSUMED_STALE_ROW, HOLD_RECORD_UNREADABLE_AT_REVOKE
+    from tests.test_worker_crash_retry import _make_worker
+
+    queue, state, workers = _install_queue(tmp_path, monkeypatch)
+    monkeypatch.setattr(state, "budget_remaining", lambda _st, **_kw: 5.0)
+    task, _ = _parked(tmp_path, monkeypatch, task_id="death-race")
+    assert queue.resume_budget_paused_task(task["id"])["ok"]
+    granted = budget_pause.budget_pause_row(tmp_path, task["id"])
+    workers.PENDING.remove(task)
+    worker = _make_worker(busy_task_id=task["id"], exitcode=1)
+    workers.WORKERS[0] = worker
+    meta = workers.RUNNING[task["id"]] = {"task": task, "attempt": 1, "worker_id": 0}
+    job = {"worker": worker, "task": task, "task_id": task["id"], "meta": meta,
+           "attempt": 1, "worker_id": 0, "drive_root": str(tmp_path)}
+    revoke = budget_resume.revoke_exact_budget_resume
+
+    def raced_revoke(row, reason):
+        assert reason == "worker_death_before_consumption"
+        if race == "consumed":
+            budget_pause.set_budget_pause(tmp_path, task["id"], {
+                **granted, "state": budget_pause.STATE_RESUMED,
+                "grant": {**granted["grant"], "consumed_at": time.time()}})
+            return revoke(row, reason)
+        with monkeypatch.context() as reading:
+            def unreadable(*_args, **_kwargs):
+                raise OSError("pause authority unreadable during revocation")
+            reading.setattr(budget_pause, "budget_pause_row", unreadable)
+            return revoke(row, reason)
+
+    monkeypatch.setattr(budget_resume, "revoke_exact_budget_resume", raced_revoke)
+    parked, fenced = worker_health._complete_exact_budget_pause_after_death(
+        job, tmp_path, task, task["id"], 1)
+    assert fenced and parked is (race == "unreadable")
+    assert "_budget_pause_consumed" not in task
+    expected = HOLD_GRANT_CONSUMED_STALE_ROW if race == "consumed" else HOLD_RECORD_UNREADABLE_AT_REVOKE
+    assert task[BUDGET_HOLD_KEY]["reason"] == expected
+    if race == "consumed":
+        assert not workers.PENDING and workers.RUNNING[task["id"]] is meta
+        assert budget_pause.budget_pause_row(tmp_path, task["id"])["state"] == budget_pause.STATE_RESUMED
+    else:
+        assert not workers.RUNNING and len(workers.PENDING) == 1
+        assert workers.PENDING[0]["_budget_pause"]["exact_continuation"]

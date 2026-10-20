@@ -750,7 +750,7 @@ def _supervisor_harness(monkeypatch, tmp_path, steps):
         monkeypatch.setattr(server, name, noop)
     monkeypatch.setattr(server, "_start_supervisor_liveness_watchdog",
                         lambda _liveness, stop_event=None: rec.watchdog_stops.append(stop_event))
-    monkeypatch.setattr(server, "_process_bridge_updates", lambda _bridge, offset, _ctx: offset)
+    monkeypatch.setattr(server, "_process_bridge_updates", lambda _bridge, offset, _ctx, **_kw: offset)
     monkeypatch.setattr(server, "_check_pending_restart_drain", lambda _ctx: True)
     monkeypatch.setattr(bus_mod, "init", noop)
     monkeypatch.setattr(bus_mod, "LocalChatBridge", _Bridge)

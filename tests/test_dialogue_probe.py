@@ -71,8 +71,8 @@ def connection(records):
 
 
 def probe(conn, keys, **kwargs):
-    return ds._probe(conn, kwargs.pop("stream", "chat"), keys, **{
-        "before": None, "lower": 0, "limit": 200, "newest_first": True, **kwargs})
+    return [ds._row(record) for record in ds._probe(conn, kwargs.pop("stream", "chat"), keys, **{
+        "before": None, "lower": 0, "limit": 200, "newest_first": True, **kwargs})]
 
 
 @pytest.mark.parametrize("stream", ["chat", "progress"])
@@ -251,3 +251,36 @@ def test_selection_and_body_hydration_share_the_read_snapshot(tmp_path, monkeypa
     assert changed and len(transactions) >= 2
     assert [row.row["text"] for row in found] == ["before"]
     assert ds.row_at(tmp_path, "chat", receipt.seq).row["text"] == "after"
+
+
+def test_public_readers_decode_after_releasing_the_snapshot(tmp_path, monkeypatch):
+    seed(tmp_path, live={"chat": [{"chat_id": 1, "task_id": "task", "text": f"row {n}"}
+                                for n in range(12)]})
+    ds.ensure(tmp_path)
+    transaction, decode = ds.transaction, ds.decode
+    held, decoded = [], []
+    @contextmanager
+    def tracked(*args, **kwargs):
+        with transaction(*args, **kwargs) as conn:
+            held.append(True)
+            try:
+                yield conn
+            finally:
+                held.pop()
+    def outside(body):
+        assert not held, "materialization must not retain a SQLite reader lock"
+        decoded.append(body)
+        return decode(body)
+    monkeypatch.setattr(ds, "transaction", tracked)
+    monkeypatch.setattr(ds, "decode", outside)
+    keys = [("chat_id", 1), ("task_id", "task")]
+    readers = [lambda: ds.probe_rows(tmp_path, "chat", keys),
+               lambda: ds.main_candidates(tmp_path, "chat", exclude_chats=[]),
+               lambda: ds.task_rows(tmp_path, ["task"], stream="chat"),
+               lambda: list(ds.iter_probes(tmp_path, "chat", keys, batch=5)),
+               lambda: ds.newest(tmp_path, "chat", limit=12)]
+    for read in readers:
+        decoded.clear()
+        rows = read()
+        assert len(rows) == len(decoded) == 12
+        assert sorted(row.row["text"] for row in rows) == sorted(f"row {n}" for n in range(12))

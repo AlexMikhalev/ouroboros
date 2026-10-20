@@ -22,6 +22,7 @@ from ouroboros.claudexor_daemon import ensure_owned_gateway, owned_engine_versio
 from ouroboros.deadline_utils import llm_transport_timeout_sec
 from ouroboros.gateways.claudexor import (ClaudexorUnavailable, engine_at_least, model_failure_evidence_supported,
                                           operation_query_supported, _READ_TIMEOUT_SEC)
+from ouroboros.gateways.claudexor_metadata import model_gateway
 from ouroboros.llm_attempt import _attempt_request, _candidate_before_dispatch, effort_request_facts
 from ouroboros.llm_capability_policy import model_catalog as model_catalog, catalog_admits_model as catalog_admits_model
 from ouroboros.send_clock import stamp_clock_note
@@ -405,11 +406,33 @@ class _ModelInvocation:
         scope = current_usage_scope()
         self.task_id = scope.task_id if scope else ""
         self.check_control()
+        deadline = time.monotonic() + self.timeout
+        last_error = None
         try:
-            self.gateway = ensure_owned_gateway()
-            # Freeze once before create. A lost create reply or replaced gateway
-            # must reuse this same operation's diagnostic/idempotency contract.
-            operations = self.gateway.operations()
+            while True:
+                self.check_control()
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise last_error or ClaudexorUnavailable("daemon_not_answering", "Call deadline elapsed before model creation")
+                try:
+                    self.gateway = model_gateway(lambda: ensure_owned_gateway(
+                        admission_wait_sec=remaining, startup_wait_sec=remaining))
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise ClaudexorUnavailable("daemon_not_answering", "Call deadline elapsed before model creation")
+                    operations = self.gateway.operations(timeout_sec=remaining)
+                    break
+                except ClaudexorUnavailable as error:
+                    # No model create has been attempted. Wait on this call's
+                    # own transport deadline; received refusals remain refusals.
+                    unanswered = not error.status_code and (error.observation_timeout or error.code in {
+                        "daemon_unreachable", "daemon_not_answering", "daemon_starting", "daemon_descriptor_changed"})
+                    if not unanswered or time.monotonic() >= deadline:
+                        raise
+                    last_error = error
+                    self.close()
+                    time.sleep(min(config.CLAUDEXOR_MODEL_POLL_INTERVAL_SEC, max(0, deadline - time.monotonic())))
+            # Freeze capabilities before the one create attempt.
             self.capture_failure_evidence = model_failure_evidence_supported(operations)
             self.capture_effort_evidence = operation_query_supported(operations, method="POST",
                 path="/v2/model-operations", name="captureEffortEvidence", value="true")
@@ -421,7 +444,7 @@ class _ModelInvocation:
                                    "capture_failure_evidence": self.capture_failure_evidence,
                                    "capture_effort_evidence": self.capture_effort_evidence})["manifest_ref"]
         except ClaudexorUnavailable as error:
-            raise ClaudexorModelError({"code": error.code, "message": str(error)}, model_role=self.role) from None
+            raise ClaudexorModelNotDispatched({"code": error.code, "message": str(error)}, model_role=self.role) from None
 
     def observe_operation(self, *, accepted: bool = False, phase: str = "") -> None:
         """Publish changed custody/activity facts, never account or provider content.

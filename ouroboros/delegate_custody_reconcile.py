@@ -10,6 +10,8 @@ tests and monkeypatch targets — still finds them there.
 from __future__ import annotations
 
 import logging
+from contextlib import contextmanager
+from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional
 
 from ouroboros._usage_rows import REVIEW_ATTRIBUTION_KEYS
@@ -110,6 +112,19 @@ def attach_only_gateway() -> Any:
     return read_owned_gateway()
 
 
+_loop_exit_audit: ContextVar[Optional[Dict[str, Any]]] = ContextVar("loop_exit_audit", default=None)
+
+
+@contextmanager
+def defer_loop_exit_audit(usage: Dict[str, Any]):
+    """Retain only audit facts for delivery; resource release still finishes in this scope."""
+    token = _loop_exit_audit.set(usage)
+    try:
+        yield
+    finally:
+        _loop_exit_audit.reset(token)
+
+
 @timed_phase("release_task_runs")
 def release_task_runs(drive_root: Any, task_id: str, *,
                       gateway_factory: Optional[Callable[[], Any]] = None) -> List[Dict[str, Any]]:
@@ -124,11 +139,15 @@ def release_task_runs(drive_root: Any, task_id: str, *,
         terminal_reconcile_task,
     )
 
+    deferred = _loop_exit_audit.get()
     result = terminal_reconcile_task(
         drive_root, task_id, gateway_factory=gateway_factory or attach_only_gateway,
-        trigger="loop_exit",
+        trigger="loop_exit", audit=deferred is None,
     )
-    record_terminal_reconciliation(drive_root, task_id, result)
+    if deferred is None:
+        record_terminal_reconciliation(drive_root, task_id, result)
+    else:
+        deferred["delegate_terminal_reconciliation"] = result
     return list(result.get("outcomes") or [])
 
 
@@ -571,7 +590,7 @@ def _reconcile_one(drive_root: Any, gateway: Any, custody: RunCustody, *,
     try:
         detail = gateway.get_run(custody.run_id)
     except ClaudexorUnavailable as exc:
-        if _custody().daemon_says_absent(exc):
+        if _custody().daemon_says_absent(exc, gateway=gateway, run=custody):
             _custody().close_absent_run(drive_root, gateway, custody, "reconcile_absent")
             result = {"run_id": custody.run_id, "task_id": custody.task_id, "action": "absent"}
         else:

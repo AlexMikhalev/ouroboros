@@ -605,9 +605,19 @@ def process_environment(ctx: Any, work_dir: Any, *, source=None) -> Optional[Dic
         return None
     try:
         from ouroboros.settings_integrity import runtime_environ
-        from ouroboros.test_environment import isolated_environment
+        from ouroboros.test_environment import SCRATCH_MARKER, declare_scratch, isolated_environment
 
-        return isolated_environment(candidate.with_name(candidate.name + ".env"), candidate,
+        env_root = candidate.with_name(candidate.name + ".env")
+        try:
+            env_root.mkdir(parents=True)
+        except FileExistsError:
+            # A new process invalidates a prior quiescent observation. An older,
+            # undeclared environment keeps its unknown provenance.
+            if (env_root / SCRATCH_MARKER).is_file() and not (env_root / SCRATCH_MARKER).is_symlink():
+                (env_root / SCRATCH_MARKER).touch()
+        else:
+            declare_scratch(env_root, "body-process")
+        return isolated_environment(env_root, candidate,
                                     source=runtime_environ() if source is None else source)
     except Exception as exc:
         log.warning("candidate process environment unavailable", exc_info=True)
@@ -849,13 +859,13 @@ def retention_verdict(row: Dict[str, Any], *, expired: bool, data_dir: Optional[
         return {"remove": True, "keep_branch": True, "reason": "checkout_missing", "pin": ""}
     if not expired:
         return {"remove": False, "keep_branch": True, "reason": "within_retention", "pin": ""}
-    if _retained_scratch(row):
-        return {"remove": False, "keep_branch": True, "reason": "retained_process_environment", "pin": ""}
     if not _recorded_terminal(str(row.get("task_id") or ""), data_dir):
         # Its owner may still be working, or its record is unreadable: unknown is not ended.
         return {"remove": False, "keep_branch": True, "reason": "owner_not_terminal", "pin": ""}
     if live_lineage_processes(data_dir, str(row.get("task_id") or "")):
         return {"remove": False, "keep_branch": True, "reason": "owner_processes_live", "pin": ""}
+    if _retained_scratch(row, classify=True, data_dir=data_dir):
+        return {"remove": False, "keep_branch": True, "reason": "retained_process_environment", "pin": ""}
     work = unique_work(row)
     if not has_unique_work(work):
         return {"remove": True, "keep_branch": False, "reason": "no_unique_work", "pin": "", "work": work,
@@ -906,18 +916,36 @@ def verdict_holds(row: Dict[str, Any], verdict: Dict[str, Any], *, data_dir: Opt
     return True
 
 
-def _retained_scratch(row: Dict[str, Any]) -> bool:
-    """Unconfirmed nested preflight readers retain both their env and source checkout."""
-    from ouroboros.test_environment import retention_markers
+def _retained_scratch(row: Dict[str, Any], *, classify: bool = False, data_dir=None) -> bool:
+    """Keep a candidate's one quiescent scratch observation on its existing row."""
+    from ouroboros.test_environment import scratch_retention
 
     path = pathlib.Path(str(row.get("path") or ""))
     env_root = path.with_name(path.name + ".env")
-    return env_root.exists() and bool(retention_markers(env_root))
+    previous = row.get("scratch_retention")
+    previous = previous if isinstance(previous, dict) else {}
+    owner = _owner_stamp(row)
+    observed = scratch_retention(env_root, previous=previous.get("observation")
+                                 if previous.get("owner") == owner else None, classify=classify)
+    record = {"owner": owner, "observation": observed}
+    if classify and row.get("kind") == KIND and record != previous:
+        # The walk is outside the lock. Publish only against its exact preview,
+        # including retirement/ownership; update that preview for GC's same-row check.
+        with _wt._ops_lock(_wt._resolve_root(), op="record_scratch_retention"):
+            entries = _wt._load_registry(data_dir, strict=True, op="record_scratch_retention")
+            entry = next((entry for entry in entries if entry == row), None)
+            if entry is None:
+                return True
+            entry["scratch_retention"] = record
+            _wt._save_registry(entries, data_dir)
+            row["scratch_retention"] = record
+    return observed["retained"]
 
 
 def discard_scratch(row: Dict[str, Any]) -> None:
     """Delete reproducible scratch only when no nested teardown retained it."""
     path = pathlib.Path(str(row.get("path") or ""))
     env_root = path.with_name(path.name + ".env")
-    if path.name and _wt._deletable(env_root, _wt._resolve_root()) and env_root.exists() and not _retained_scratch(row):
+    if path.name and _wt._deletable(env_root, _wt._resolve_root()) and env_root.exists() and not _retained_scratch(
+            row, classify=row.get("kind") != KIND):
         _wt._force_rmtree(env_root)

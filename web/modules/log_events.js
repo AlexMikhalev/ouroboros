@@ -589,7 +589,8 @@ export function taskReasonDetail(evt) {
         provider_unavailable: 'acceptance_bypassed_provider_unavailable', context_overflow: 'acceptance_bypassed_context_overflow',
         children_unabsorbed: 'acceptance_bypassed_children_unabsorbed', owner_requested_finalization: 'acceptance_bypassed_owner_requested_finalization' };
     let clause = '';
-    if (taskStoppedWithSummary(evt)) clause = '';
+    if (reason === 'foreign_install_root' && record.reason_detail) clause = String(record.reason_detail);
+    else if (taskStoppedWithSummary(evt)) clause = '';
     else if (severity === "cancelled" && origin && typeof origin === "object"
         && !Array.isArray(origin) && Object.keys(origin).length) {
         clause = joinCauseClauses(cancelCauseClauses(origin, record));

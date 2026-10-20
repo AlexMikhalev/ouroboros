@@ -230,7 +230,7 @@ def persist_queue_snapshot(reason: str = "") -> bool:
         members = {}
         for task in [*pending_items, *(meta.get("task") or {} for _, meta in running_items)]:
             if str(task.get("root_task_id") or task.get("id") or "") in fenced:
-                member = {key: task[key] for key in ("id", "_budget_pause", "_budget_pause_consumed", "_continuation_prepared") if key in task}
+                member = {key: task[key] for key in ("id", "_budget_pause", "_continuation_prepared") if key in task}
                 for key, fields in ((BUDGET_HOLD_KEY, ("selected", "fence_id")),
                                     ("_budget_pause_resume", ("pause_id", "grant_id", "authority", "root_fence_id", "selected_by", "root_grant_id", "root_resume_generation"))):
                     if key in task:
@@ -385,7 +385,7 @@ def _retain_snapshot_pending(snapshot_pending: list, running_rows: list, *, stal
     from ouroboros.owner_wait import restore_owner_wait_allowed, saved_sleep_checkpoint
     from ouroboros.project_admission import host_unscoped
     from ouroboros.task_results import load_task_result
-    from supervisor.budget_resume import revoke_exact_budget_resume
+    from supervisor.budget_resume import resume_hold_requires_fence, revoke_exact_budget_resume
     from supervisor.events_budget import (BUDGET_HOLD_KEY, HOLD_OWNER_RESTART, HOLD_PANIC, HOLD_RESTORE_REFUSED_PREFIX,
                                           budget_hold_fact, hold_budget_row, hold_restored_budget_pause)
     from supervisor.restart_retention import (fresh_return_transaction, hold_after_stop, hold_for_owner_restart,
@@ -465,6 +465,13 @@ def _retain_snapshot_pending(snapshot_pending: list, running_rows: list, *, stal
     retained = []
     consumed: list = []
     for task in list(snapshot_pending) + parked:
+        try:
+            if resume_hold_requires_fence(task, _queue().DRIVE_ROOT):
+                consumed.append(str(task.get("id") or ""))
+                continue
+        except (OSError, ValueError, TypeError, RuntimeError):
+            retained.append(task)  # unreadable continuation authority is not interrupted work
+            continue
         wait_allowed = False
         if task.get("_owner_wait_resume"):
             try:
@@ -505,9 +512,6 @@ def _retain_snapshot_pending(snapshot_pending: list, running_rows: list, *, stal
         # custody that re-reads the receipt each tick (``revalidate_project_holds``).
         recheck = (verdict == "busy" and task.get("admitted_dispatch") == "possible" and first_attempt(task)
                    and budget_hold_fact(task) is None)
-        if isinstance(task.get("_budget_pause_consumed"), dict):
-            consumed.append(str(task.get("id") or ""))
-            continue
         if _exact_pause_row(task):
             refusal = budget_pause_restore_refusal(_queue().DRIVE_ROOT, task)
             retained.append(task if not refusal else hold_restored_budget_pause(
@@ -585,6 +589,12 @@ def _retain_snapshot_pending(snapshot_pending: list, running_rows: list, *, stal
             {"ts": utc_now_iso(), "type": "queue_restore_stale_consumed_grant_rows",
              "task_ids": consumed, "action": "fenced_as_running_work"},
         )
+    from supervisor.restart_retention import _record_refused_returns
+
+    kept_ids = {str(task.get("id") or "") for task in retained}
+    _record_refused_returns(_queue().DRIVE_ROOT, {
+        str(task["id"]): "planned_handoff_not_retained" for task in snapshot_pending
+        if task.get("id") in set(transaction.get("task_ids") or []) and task["id"] not in kept_ids}, stop_cause)
     return retained, unseen, consumed, prior_roots
 
 

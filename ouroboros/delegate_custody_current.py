@@ -196,15 +196,22 @@ def pending(root):
 
 
 def task_snapshot(root, task_id: str):
-    """ONE transaction's view of a task: its runs and its pending invocations (a request that
-    becomes STARTED between two reads lands in exactly one of them)."""
+    """One transaction's task runs and pending invocations; STARTED crosses no read gap.
+
+    Runs use the task index. The request predicate scans only custody_open:
+    closed requests leave that set, so cost follows open requests, not history.
+    Only this task's matching request bodies are materialized.
+    """
     from ouroboros.delegate_pending import pending_invocations
 
     mine = str(task_id or "")
     with store.open_store(root, write=False) as txn:
-        raw, requests = txn.custody_raw_rows("task_id=?", (mine,)), _pending_rows(txn)
+        raw = txn.custody_raw_rows("task_id=?", (mine,))
+        requests = [row["facts"] for row in txn.conn.execute(
+            "SELECT facts FROM obligations WHERE set_name='custody_open' "
+            "AND CAST(json_extract(facts, '$.request.task_id') AS TEXT)=? ORDER BY rowid", (mine,))]
     runs_by_id = {rid: json_loads(text) for rid, text in raw.items()}
-    requests = [row for row in requests if str(row.get("task_id") or "") == mine]
+    requests = [json_loads(text)["request"] for text in requests]
     return {"runs": _decode_all(runs_by_id), "pending": pending_invocations(root, rows=requests)}
 
 

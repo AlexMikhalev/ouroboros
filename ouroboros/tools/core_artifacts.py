@@ -684,6 +684,7 @@ def _escalate(
         # live ancestor is the typed terminal (decision 31: the owner-facing
         # card still belongs to the ROOT alone, so an orphaned subtree keeps
         # the assumption path).
+        from ouroboros.install_identity import StoreForeign
         from ouroboros.owner_mailbox import write_task_message
         from ouroboros.task_status import FINAL_STATUSES, load_effective_task_result
 
@@ -741,13 +742,20 @@ def _escalate(
             "escalate this question yourself (verbatim) if it is above your authority."
         )
         parent_drive = str(data.get("child_drive_root") or data.get("headless_child_drive_root") or data.get("drive_root") or "").strip()
-        written = write_task_message(
-            pathlib.Path(parent_drive) if parent_drive else status_drive_root,
-            "\n".join(lines),
-            task_id=parent_task_id,
-            source_task_id=task_id,
-            provenance="descendant_task",
-        )
+        try:
+            written = write_task_message(
+                pathlib.Path(parent_drive) if parent_drive else status_drive_root,
+                "\n".join(lines),
+                task_id=parent_task_id,
+                source_task_id=task_id,
+                provenance="descendant_task",
+            )
+        except StoreForeign as exc:
+            return _publish_tool_result(ctx, ToolResult(
+                status="blocked", code="ACCESS_BLOCKED",
+                text=f"⚠️ ESCALATE_UNWRITTEN: {exc.reason}: {exc}",
+                meta={"reason": exc.reason, "path": str(exc.path)},
+            ))
         if not written:
             return f"⚠️ ESCALATE_UNWRITTEN: the escalation to parent {parent_task_id} was not persisted."
         return (f"OK: escalated to parent task {parent_task_id}; continuing under "

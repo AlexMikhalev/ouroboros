@@ -76,6 +76,8 @@ def _open(row: dict) -> bool:
 
 @contextmanager
 def _publication_lock(root: Any, tid: str):
+    from ouroboros.install_identity import require_owned_root
+    require_owned_root(root)
     path = task_result_path(root, tid, create=False).with_suffix(".projection.lock")
     fd = acquire_exclusive_file_lock(path, timeout_sec=0.01, poll_sec=0.005)
     try:
@@ -120,6 +122,8 @@ def _prepare(root: Any, tid: str, task: dict, event: dict) -> tuple[dict, bool]:
     Returns ``(stored, minted)``: ``minted`` says THIS call recorded the readiness,
     so no chat row can carry its token yet and the duplicate scan is skipped.
     """
+    from ouroboros.install_identity import require_owned_root, require_task_roots
+    require_owned_root(root)
     minted = False
 
     def prepare(current: dict, _patch: dict):
@@ -158,6 +162,7 @@ def _prepare(root: Any, tid: str, task: dict, event: dict) -> tuple[dict, bool]:
     stored = load_task_result(root, tid, strict=True)
     if not stored or not _settled(stored):
         return stored or {}, False
+    require_task_roots({**task, **stored})
     return write_task_result(root, tid, stored["status"], strict_existing_dict=True,
                              _field_projector=prepare), minted
 
@@ -169,7 +174,6 @@ def completion_notice(record: dict) -> dict:
     never success or reviewer approval. Unknown/partial rows retain their causes.
     """
     from ouroboros import project_dialogue as dialogue
-
     axes = record.get("outcome_axes") or {}
     execution, objective = axes.get("execution") or {}, axes.get("objective") or {}
     delivery = record.get("terminal_delivery") or {}
@@ -325,7 +329,8 @@ def _append_project(root: Any, tid: str, task: dict, event: dict, *,
     if existing_row:
         row = existing_row  # append/receipt crash: retain actual publication time
     else:
-        appended = dialogue.append_canonical_task_summary(root, row)
+        # A child mints no readiness, so nothing settles it again: its row waits in the retry buffer.
+        appended = dialogue.append_canonical_task_summary(root, row, **({} if is_root else {"retained": True}))
         if not appended:
             return False
 
@@ -543,6 +548,8 @@ def settle_terminal_projection(drive_root: Any, task_id: str, *, task: dict | No
     """
     from ouroboros import project_dialogue as dialogue
 
+    from ouroboros.install_identity import StoreForeign, require_task_roots
+
     tid = str(task_id or "").strip()
     waits = {} if waits is None else waits
     if not tid:
@@ -555,6 +562,7 @@ def settle_terminal_projection(drive_root: Any, task_id: str, *, task: dict | No
                 stored, minted_now = _prepare(drive_root, tid, task or {}, event or {})
             else:
                 stored, minted_now = load_task_result(drive_root, tid, strict=True) or {}, False
+                require_task_roots({**(task or {}), **stored})
             if (not isinstance(stored.get("canonical_terminal_projection_ready"), dict)
                     or is_reconciled_presence_placeholder(stored)):  # readiness an earlier release recorded
                 waits["on"] = "nothing_owed"
@@ -587,6 +595,8 @@ def settle_terminal_projection(drive_root: Any, task_id: str, *, task: dict | No
             if main_delivery_recorded(drive_root, f"project-completion:{tid}", task_id=tid):
                 return SETTLEMENT_SETTLED
             return SETTLEMENT_DEFERRED
+    except StoreForeign:
+        raise
     except Exception:
         log.warning("Terminal projection deferred for %s", tid, exc_info=True)
         return SETTLEMENT_DEFERRED
@@ -620,6 +630,7 @@ def reconcile_terminal_projections(drive_root: Any) -> int:
     rests (``rest_deferral``) until its row or the delivery registry changes.
     """
     from ouroboros.obligations import DutyRest, result_rows
+    from ouroboros.install_identity import StoreForeign, rest_foreign_member
 
     rest = DutyRest(drive_root, "terminal_projection", name="terminal_projection",
                     inputs={"terminal_deliveries": delivery_registry_stamp(drive_root)})
@@ -630,6 +641,9 @@ def reconcile_terminal_projections(drive_root: Any) -> int:
             if terminal_projection_owed(row["task_id"], row):
                 waits = {}
                 settled += settle_terminal_projection(drive_root, row["task_id"], waits=waits) == SETTLEMENT_SETTLED
+        except StoreForeign as exc:
+            rest_foreign_member(rest, row["task_id"], row, exc)
+            continue
         except Exception:
             waits = {}
             log.warning("Terminal projection reconciliation deferred for %s", row["task_id"], exc_info=True)

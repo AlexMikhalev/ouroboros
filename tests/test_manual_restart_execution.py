@@ -136,6 +136,36 @@ def test_restart_checks_out_first_then_stops_owned_work_in_order(owners, restart
     assert _rows(restart_root) == [] and not [r for r in caplog.records if r.levelno >= logging.CRITICAL]
 
 
+def test_restart_pauses_admission_before_it_names_returns(owners, restart_root, monkeypatch):
+    """The stop's first step: a launch or Resume already writing its marks hands over to the still-running
+    pool (``pause_admission``) before the returns are named, the cancels recorded and the pool retired."""
+    from supervisor import workspace_preparation
+
+    flag = restart_root / "state" / "owner_restart_no_resume.flag"
+    monkeypatch.setattr(workspace_preparation, "pause_admission",
+                        lambda timeout=None: owners.calls.append(("pause", flag.exists())) or True)
+    real_returns = server_restart._prepare_owner_restart_returns
+    monkeypatch.setattr(server_restart, "_prepare_owner_restart_returns",
+                        lambda ctx: owners.calls.append(("returns",)) or real_returns(ctx))
+    assert _restart(_ctx(owners.calls), monkeypatch) == [True]
+    order = [c[0] for c in owners.calls]
+    assert order.index("checkout") < order.index("pause") < order.index("returns") < order.index("kill")
+    # Before the Restart's own follow-up restriction exists, which would refuse a committed launch's put.
+    assert ("pause", False) in owners.calls and order.count("pause") == 1
+
+
+def test_a_restart_whose_flag_cannot_be_written_reopens_admission(owners, restart_root, monkeypatch):
+    from supervisor import workspace_preparation
+
+    events = []
+    monkeypatch.setattr(workspace_preparation, "pause_admission", lambda timeout=None: events.append("pause") or True)
+    monkeypatch.setattr(workspace_preparation, "resume_admission", lambda: events.append("resume"))
+    monkeypatch.setattr("supervisor.queue_schedules.schedule_transaction",
+                        lambda _root: (_ for _ in ()).throw(OSError("read-only state")))
+    assert _restart(_ctx(owners.calls), monkeypatch) == []
+    assert events == ["pause", "resume"] and "kill" not in [c[0] for c in owners.calls]
+
+
 def test_assisted_update_refusal_still_refuses_before_any_stop(owners, restart_root, monkeypatch):
     from supervisor import update_merge
 

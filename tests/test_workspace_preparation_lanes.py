@@ -57,10 +57,12 @@ def test_existing_folder_is_admitted_while_another_task_copy_waits(env, monkeypa
     with env.ops_lock_held():
         assert env.dispatch_returns(env.request("slowcopy", root="slow-root"))
         env.wait_phase("slowcopy", "copying")
-        assert env.dispatch_returns(env.readonly("readcontrol"))  # a non-acting request never enters a lane
-        assert env.row("readcontrol")["status"] == STATUS_SCHEDULED and env.pending_ids() == ["readcontrol"]
+        assert env.dispatch_returns(env.readonly("readcontrol"))  # a readonly request rides the admission lane
+        wait_for(lambda: env.phase("readcontrol") == "admitted", "the readonly child's admission")
+        assert env.pending_ids() == ["readcontrol"] and env.row("readcontrol")["status"] == STATUS_SCHEDULED
         assert env.dispatch_returns(env.request("existing", root="fast-root", surface="external_workspace"))
-        wait_for(lambda: env.row("existing")["status"] == STATUS_SCHEDULED, "the existing folder's admission")
+        # The receipt (SCHEDULED, ``admitting``) precedes the put, which retires the marker to ``admitted``.
+        wait_for(lambda: env.phase("existing") == "admitted", "the existing folder's admission")
         row = env.row("existing")
         assert row["workspace_preparation"]["phase"] == "admitted"
         assert row["workspace_root"] == str(env.source.resolve()) and "resource" not in row["workspace_preparation"]
@@ -79,14 +81,20 @@ def test_each_surface_runs_on_its_lane(env, monkeypatch):
 
     def transition(drive_root, task_id, token, marker, *, expected):
         if marker["phase"] in {"copying", "admitting"}:
-            seen.setdefault(task_id, set()).add(threading.current_thread().name)
+            seen.setdefault(task_id, set()).add((marker["phase"], threading.current_thread().name))
         return real(drive_root, task_id, token, marker, expected=expected)
 
     monkeypatch.setattr(prep, "_transition", transition)
     for tid, surface in (("copy1", "self_worktree"), ("gen1", "genesis"), ("ext1", "external_workspace")):
         assert env.dispatch_returns(env.request(tid, root=f"r-{tid}", surface=surface))
-        assert env.gen.wait_idle(_WAIT_SEC)  # one at a time: entry contention is another test's subject
-    assert seen == {"copy1": {_COPY_THREAD}, "gen1": {_COPY_THREAD}, "ext1": {_VALIDATION_THREAD}}
+        assert env.gen.wait_idle(_WAIT_SEC)  # one at a time
+    assert env.dispatch_returns(env.readonly("ro1")) and env.gen.wait_idle(_WAIT_SEC)
+    # Copies stay on the copy lane; every admission step (the ``admitting`` boundary, the receipt, the
+    # put) runs on the admission lane, an existing folder's validation and a readonly child included.
+    assert seen == {"copy1": {("copying", _COPY_THREAD), ("admitting", _VALIDATION_THREAD)},
+                    "gen1": {("copying", _COPY_THREAD), ("admitting", _VALIDATION_THREAD)},
+                    "ext1": {("copying", _VALIDATION_THREAD), ("admitting", _VALIDATION_THREAD)},
+                    "ro1": {("admitting", _VALIDATION_THREAD)}}
     assert all(env.row(tid)["status"] == STATUS_SCHEDULED for tid in seen)
 
 
@@ -101,7 +109,9 @@ def test_closing_the_generation_settles_both_lanes_and_admits_nothing(env, monke
             assert env.dispatch_returns(env.request("ext1", root="r3", surface="external_workspace"))
             assert reached.wait(_WAIT_SEC), "the existing folder waited behind the held copy"
             assert env.dispatch_returns(env.request("ext2", root="r4", surface="external_workspace"))
-            assert env.phase("copy2") == "queued" and env.phase("ext2") == "queued"
+            # Queued behind a lane's running job: claimed in memory, nothing written yet.
+            assert env.phase("copy2") is None and env.phase("ext2") is None
+            assert sorted(claim.task_id for claim in prep._LIVE.values()) == ["copy1", "copy2", "ext1", "ext2"]
             assert executors == [(_VALIDATION_THREAD, True)] and not env.gen.on_executor()
             assert sorted(prep.recover_interrupted_preparations(env.data)["live"]) == ["copy1", "copy2", "ext1", "ext2"]
             prep.close_generation(env.gen)

@@ -119,6 +119,21 @@ def local_work_settled() -> bool:
     return local_producers_settled() and local_reviews_settled() and local_producers_settled()
 
 
+def _retained_rows_after_drain() -> int:
+    """The best-effort dialogue rows this idle worker still holds after one drain: a retirement kills
+    without finalizers, so the server counts them lost (``worker_retired``) only if it really retires
+    this worker; a kept one retries them at its next append or task end."""
+    try:
+        from ouroboros import dialogue_retry
+
+        if dialogue_retry.snapshot()["rows"]:
+            dialogue_retry.drain()
+        return int(dialogue_retry.snapshot()["rows"])
+    except Exception:
+        log.debug("Dialogue retry state unreadable at the idle probe", exc_info=True)
+        return 0
+
+
 def _adopt_published_extensions(pool_drive_root: str) -> None:
     """Catch up with the server's extension generation before the task runs.
 
@@ -490,7 +505,8 @@ def worker_main(wid: int, in_q: Any, out_q: Any, repo_dir: str, drive_root: str,
                     log.warning("Idle probe could not prove local quiescence", exc_info=True)
                 if probe is None:
                     out_q.put({"type": "worker_quiescent", "worker_id": wid, "pid": _os.getpid(),
-                               "process_birth": birth, "token": str(task.get("token") or "")})
+                               "process_birth": birth, "token": str(task.get("token") or ""),
+                               "retained_rows": _retained_rows_after_drain()})
                 continue
             probe = None
             task_drive_root = str(task.get("drive_root") or drive_root)
@@ -540,11 +556,23 @@ def worker_main(wid: int, in_q: Any, out_q: Any, repo_dir: str, drive_root: str,
                         log.exception("Terminal file preparation failed for %s", task.get("id"))
                     e2["_files_prepared_attempt"] = int(task.get("_attempt") or 1)
                 task_queue.put(stamp_finalization_enqueue(e2))
+            _drain_dialogue_retry()
             if task_drive_root != str(drive_root):
                 _release_drive_stores(task_drive_root)
         except Exception as _e:
             _log_worker_crash(wid, _drive, "handle_task", _e, _tb.format_exc())
             return
+
+
+def _drain_dialogue_retry() -> None:
+    """The reusable worker's task boundary: best-effort rows it retained land before the next task
+    (a retired worker is killed without finalizers, so its exit drain never runs)."""
+    try:
+        from ouroboros import dialogue_retry
+
+        dialogue_retry.drain()
+    except Exception:
+        log.debug("Dialogue retry drain at the task boundary failed", exc_info=True)
 
 
 def _release_drive_stores(drive: Any) -> None:
