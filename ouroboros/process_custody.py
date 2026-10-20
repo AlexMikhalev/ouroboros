@@ -143,6 +143,9 @@ def record_process(
     """Append a custody record for an already-spawned process."""
     if scope not in _VALID_SCOPES:
         raise ValueError(f"process custody scope must be one of {_VALID_SCOPES}, got {scope!r}")
+    from ouroboros.install_identity import require_owned_root
+
+    drive_root = require_owned_root(drive_root)
     try:
         pgid = process_group_id(pid)
     except Exception:
@@ -188,6 +191,9 @@ def spawn_supervised(
     it must not wait or persist. Callback failure follows normal spawn cleanup.
     The returned Popen retains its exact durable row as ``_ouroboros_custody``.
     """
+    from ouroboros.install_identity import require_owned_root
+
+    drive_root = require_owned_root(drive_root)  # refuse before handoff or spawn
     if new_process_group:
         merged = dict(subprocess_new_group_kwargs())
         merged.update(popen_kwargs)
