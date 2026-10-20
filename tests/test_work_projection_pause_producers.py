@@ -10,8 +10,10 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from tests._budget_pause_exact_helpers import _install_queue
+from tests._budget_pause_exact_helpers import _install_queue, _loop_ctx
 from tests.test_owner_pause import _live_tree, _owner_park
+
+_OWNER = {"actor": "owner", "text": "", "at": "2026-10-20T00:43:00Z"}
 
 
 def _works(root):
@@ -32,8 +34,7 @@ def test_a_settling_pause_says_what_still_executes_and_a_stop_nobody_confirmed(t
     _live_tree(tmp_path, workers)  # a RUNNING root and child, and a child that never started
     delegate_custody.emit(tmp_path, delegate_custody.STARTED,
                           {"run_id": "run-1", "task_id": "child-run", "root_task_id": "root-1"})
-    assert request_owner_pause("root-1", request_id="p",
-                               by={"actor": "owner", "text": "", "at": "2026-10-20T00:43:00Z"})["ok"]
+    assert request_owner_pause("root-1", request_id="p", by=_OWNER)["ok"]
     [work] = _works(tmp_path)
     # The root and the running child finish their step; the child that never started is queued, not working.
     assert (work["activity"], work["transition"], work["live"]) == ("working", "pausing", True)
@@ -55,3 +56,46 @@ def test_a_settling_pause_says_what_still_executes_and_a_stop_nobody_confirmed(t
     assert [(tail["code"], tail["state"], tail["ids"]) for tail in work["tails"]] == [
         ("external_runs_unconfirmed", "unknown", ["run-1"])]
     assert "stop" in {control["action"] for control in work["controls"]}, "its Stop still reaches that run"
+
+
+def test_a_warm_park_executes_nothing_and_its_unconfirmed_stop_stays_unconfirmed(tmp_path, monkeypatch):
+    """A helper whose launched review the Pause lets finish parks warm: it keeps its worker while its stack waits,
+    and the stop of its own run it could not confirm is recorded on its stored result, not on a pause row."""
+    from ouroboros import delegate_custody, external_runs, owner_pause, owner_wait, peer_roster
+    from supervisor.owner_pause_control import request_owner_pause, warm_paused_member
+
+    queue, _state, workers = _install_queue(tmp_path, monkeypatch)
+    _live_tree(tmp_path, workers)
+    assert request_owner_pause("root-1", request_id="p", by=_OWNER)["ok"]
+    for run_id, source in (("own-run", "delegated_subagent"), ("review-run", "review_substrate")):
+        delegate_custody.emit(tmp_path, delegate_custody.STARTED,
+                              {"run_id": run_id, "task_id": "child-run", "root_task_id": "root-1", "source": source})
+    child, limit = _loop_ctx(tmp_path, "child-run")
+    child.root_task_id = "root-1"
+
+    def retained(ctx, checkpoint):  # the worker keeps the stack; only its blocking wait is stood in for
+        wait = owner_wait.set_owner_wait(tmp_path, "child-run", {**checkpoint, "state": "waiting"})
+        workers.RUNNING["child-run"]["owner_wait"] = dict(wait)
+        return "retained"
+
+    child.owner_wait_callback = retained
+    observed = {"custody_read": "ok", "runs": [
+        {"run_id": "own-run", "state": "stop_unknown", "stop_outcome": "not_issued_gateway_unavailable"},
+        {"run_id": "review-run", "state": "running", "source": "review_substrate"}]}
+    monkeypatch.setattr(external_runs, "observe_task_runs", lambda *args, **kwargs: observed)
+    owner_wait.park_owner_pause_warm(limit, child, fence=owner_pause.read_fence(tmp_path, "root-1"),
+                                     detached=[{"operation_id": "review-op"}])
+    assert warm_paused_member(workers.RUNNING["child-run"])
+    [work] = _works(tmp_path)
+    # The root still finishes its step. The warm helper is not said as working: its review finishes beside the
+    # work, and its own run is the one nobody can confirm.
+    assert (work["activity"], work["transition"], work["live"]) == ("working", "pausing", True)
+    assert [(tail["code"], tail["state"], tail["ids"]) for tail in work["tails"]] == [
+        ("review_work_finishing", "live", ["review-run"]), ("external_runs_unconfirmed", "unknown", ["own-run"])]
+    # Ouroboros's own roster reads the same tree the same way.
+    queue.persist_queue_snapshot(reason="warm-park")
+    tree = peer_roster._live_trees(tmp_path, peer_roster._load_queue_snapshot(tmp_path))["root-1"]
+    assert tree["running"] == [] and tree["pending"] == 2
+    tails = peer_roster._tree_tails(tmp_path, tree, owner_pause.read_fence(tmp_path, "root-1"))
+    assert [(tail["code"], tail["state"]) for tail in tails] == [
+        ("review_work_finishing", "live"), ("external_runs_unconfirmed", "unknown")]

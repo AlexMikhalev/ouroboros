@@ -11,8 +11,8 @@ of its own.
 
 The word and its reason describe one subject. While the current episode lives,
 the word is the episode's own state and its reason the episode's; what still runs
-beside it (helpers, external runs, reviews a Pause lets finish, runs nobody can
-confirm) is a typed ``tails`` list, said as a second fact and never promoted into
+beside it (helpers, external runs, review work beside an episode that does not
+execute, runs nobody can confirm) is a typed ``tails`` list, said as a second fact and never promoted into
 the word: a paused episode whose review still finishes reads Paused with
 "Review work finishing", not Working. ``live`` says whether anything actually
 executes, which the room's mark shows. Only an ended episode, or a Continue held
@@ -374,8 +374,9 @@ def _tail(kind: str, code: str, ids: List[str], *, state: str = "live", count: O
 def work_tails(helper_ids: List[str], runs: Iterable[Mapping[str, Any]], *, reviewing: bool = False,
                named: Iterable[str] = ()) -> List[Dict[str, Any]]:
     """What still runs beside an episode, in the order and words every reader says it: working helpers, live
-    external runs, review work a Pause lets finish, runs nobody can confirm. ``runs`` are typed by ``run_tail``;
-    ``named`` holds the kinds the episode's own sentence already says (a Continue held for its earlier attempt)."""
+    external runs, review work (never beside an episode that executes), runs nobody can confirm. ``runs`` are
+    typed by ``run_tail``; ``named`` holds the kinds the episode's own sentence already says (a Continue held for
+    its earlier attempt)."""
     runs = [run for run in runs if run.get("kind") in RUN_KINDS and run.get("state") in TAIL_STATES]
     live = [str(run["run_id"]) for run in runs if run["kind"] == "run" and run["state"] == "live"]
     reviews = [str(run["run_id"]) for run in runs if run["kind"] == "review" and run["state"] == "live"]

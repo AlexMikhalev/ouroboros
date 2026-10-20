@@ -69,29 +69,38 @@ class _Observations:
                 self.fences[root_id] = {}
         return self.fences[root_id]
 
-    def stop_unknown(self, task_id: str, drive_root: Any = None) -> frozenset:
+    def stop_unknown(self, task_id: str, drive_root: Any = None, owner: Optional[Mapping[str, Any]] = None
+                     ) -> frozenset:
         if task_id not in self.stops:
-            self.stops[task_id] = unconfirmed_stops(drive_root or self.drive_root, task_id)
+            self.stops[task_id] = unconfirmed_stops(drive_root or self.drive_root, task_id, owner)
         return self.stops[task_id]
 
 
-def unconfirmed_stops(drive_root: Any, task_id: str) -> frozenset:
-    """The runs whose stop ``task_id``'s live Pause could not confirm (its pause row's ``external_runs``,
-    ``external_runs.EXTERNAL_STOP_UNKNOWN``): the server's and the roster's one reading. An unreadable row
-    proves no trouble, so those runs read as before."""
+def unconfirmed_stops(drive_root: Any, task_id: str, owner: Optional[Mapping[str, Any]] = None) -> frozenset:
+    """The runs whose stop ``task_id``'s live Pause could not confirm (``external_runs.EXTERNAL_STOP_UNKNOWN``): its
+    cold park's pause row, or the record its warm park keeps on its stored result (``owner``, waiting under the
+    owner's Pause). The server's and the roster's one reading; an unreadable record proves no trouble, so those
+    runs read as before."""
+    from ouroboros.external_runs import EXTERNAL_STOP_UNKNOWN
+    from supervisor.owner_pause_control import warm_paused_member
+
+    def unknown(external: Any) -> set:
+        runs = (external.get("runs") or ()) if isinstance(external, dict) else ()
+        return {str(run["run_id"]) for run in runs
+                if isinstance(run, dict) and run.get("run_id") and run.get("state") == EXTERNAL_STOP_UNKNOWN}
+
+    stops = set()
+    if isinstance(owner, Mapping) and warm_paused_member({"owner_wait": owner.get("owner_wait")}):
+        stops |= unknown((owner["owner_wait"].get("owner_pause") or {}).get("external_runs"))
     try:
         from ouroboros.budget_pause import LIVE_PAUSE_STATES, budget_pause_row
-        from ouroboros.external_runs import EXTERNAL_STOP_UNKNOWN
 
         row = budget_pause_row(pathlib.Path(drive_root), str(task_id)) if task_id else {}
-        if row.get("state") not in LIVE_PAUSE_STATES:
-            return frozenset()
-        runs = (row.get("external_runs") or {}).get("runs") or ()
-        return frozenset(str(run["run_id"]) for run in runs if isinstance(run, dict) and run.get("run_id")
-                         and run.get("state") == EXTERNAL_STOP_UNKNOWN)
+        if row.get("state") in LIVE_PAUSE_STATES:
+            stops |= unknown(row.get("external_runs"))
     except Exception:
         log.debug("Work projection could not read the pause of %s", task_id, exc_info=True)
-        return frozenset()
+    return frozenset(stops)
 
 
 def _continuation(source: Mapping[str, Any]) -> dict:
@@ -200,7 +209,7 @@ def _typed_run(entry: Any, obs: _Observations, raw: Mapping[str, Mapping[str, An
     from the run's ``source``, its own task's stored outcome and that task's live Pause."""
     task_id = str(entry.task_id or "")
     owner = obs.result(task_id) if task_id else None
-    stops = obs.stop_unknown(task_id, (raw.get(task_id) or {}).get("budget_drive_root")) if task_id else frozenset()
+    stops = obs.stop_unknown(task_id, (raw.get(task_id) or {}).get("budget_drive_root"), owner) if task_id else frozenset()
     kind, state = ws.run_tail(getattr(entry, "source", ""), owner, stop_unknown=str(entry.run_id) in stops)
     return {"run_id": str(entry.run_id), "kind": kind, "state": state}
 

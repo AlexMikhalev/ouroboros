@@ -294,6 +294,8 @@ def _live_trees(root: pathlib.Path, snapshot: Dict[str, Any], gaps: Optional[Lis
     ids and the ``pending`` count) and the open delegated runs as the server's work projection reads them
     (``work_projection._open_runs``: started, unsettled, not finished by the engine). Never raises; an unreadable
     custody adds no runs and is named in ``gaps``, which the roster's ``incomplete`` carries."""
+    from supervisor.owner_pause_control import warm_paused_member
+
     trees: Dict[str, Dict[str, Any]] = {}
 
     def tree(root_id: str) -> Dict[str, Any]:
@@ -307,7 +309,8 @@ def _live_trees(root: pathlib.Path, snapshot: Dict[str, Any], gaps: Optional[Lis
             task_id = str(row.get("id") or task.get("id") or "")
             root_id = str(task.get("root_task_id") or "").strip()
             if root_id and root_id != task_id:
-                if status_key == "running":
+                # A member parked warm under its root's Pause holds its worker, but its stack waits.
+                if status_key == "running" and not warm_paused_member(row):
                     tree(root_id)["running"].append(task_id)
                 else:
                     tree(root_id)["pending"] += 1
@@ -340,7 +343,7 @@ def _tree_tails(root: Any, tree: Optional[Dict[str, Any]], fence: Any) -> List[D
             owner = load_task_result(pathlib.Path(root), str(entry.task_id)) if entry.task_id else None
         except Exception:
             owner = None  # an unreadable owner proves no failure: the run reads live, as on the card
-        stops = unconfirmed_stops(root, str(entry.task_id)) if entry.task_id else frozenset()
+        stops = unconfirmed_stops(root, str(entry.task_id), owner) if entry.task_id else frozenset()
         kind, state = ws.run_tail(getattr(entry, "source", ""), owner, stop_unknown=str(entry.run_id) in stops)
         runs.append({"run_id": str(entry.run_id), "kind": kind, "state": state})
     return ws.work_tails([task for task in tree["running"] if task not in parked], runs,

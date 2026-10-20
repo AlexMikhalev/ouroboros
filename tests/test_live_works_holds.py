@@ -180,3 +180,17 @@ def test_a_running_root_says_no_tails_its_own_status_already_says_it_runs(tmp_pa
     [row] = independent_roots(tmp_path)["roots"]
     assert "waiting" not in row and "tails" not in row
     assert unlisted_live_work(tmp_path, {"r"}) == []  # its tree is listed: nothing moves into other_live_work
+
+
+def test_an_unreadable_custody_leaves_the_roster_incomplete(tmp_path, monkeypatch):
+    """Runs the roster could not read are a gap it discloses, never a quiet tree."""
+    from ouroboros.gateway import work_projection
+
+    _paused_root(tmp_path)
+    assert independent_roots(tmp_path)["incomplete"] is False
+
+    def unreadable(drive_root):
+        raise OSError("custody store unreadable")
+
+    monkeypatch.setattr(work_projection, "_open_runs", unreadable)
+    assert independent_roots(tmp_path)["incomplete"] is True

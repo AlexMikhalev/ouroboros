@@ -34,7 +34,7 @@ def work_fields(owners, raw=None, *, results=None, fences=None, held=None, stops
             mock.patch.object(wp._Observations, "result", lambda self, task_id: results.get(task_id)), \
             mock.patch.object(wp._Observations, "fence", lambda self, root_id, drive_root=None: fences.get(root_id, {})), \
             mock.patch.object(wp._Observations, "stop_unknown",
-                              lambda self, task_id, drive_root=None: frozenset(stops.get(task_id, ()))), \
+                              lambda self, task_id, drive_root=None, owner=None: frozenset(stops.get(task_id, ()))), \
             mock.patch.object(wp, "_open_runs", lambda drive_root: held), \
             mock.patch.object(wp, "_inflight_upkeep", lambda drive_root, known: []):
         snapshot = wp.works_snapshot(root, [dict(row) for row in owners], dict(raw or {}), complete=complete)

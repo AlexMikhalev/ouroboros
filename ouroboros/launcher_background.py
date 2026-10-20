@@ -113,14 +113,14 @@ def status_line(port: int) -> str:
     elif "paused" in activities and "waiting" not in activities:
         line = "Ouroboros: paused"
     elif unconfirmed and not known:
-        line = "Ouroboros"
+        line = f"Ouroboros: {unconfirmed} task{'' if unconfirmed == 1 else 's'} unconfirmed"
     else:
         line = "Ouroboros: waiting"
-    if unconfirmed:
-        line += f"{' ·' if known else ':'} {unconfirmed} task{'' if unconfirmed == 1 else 's'} unconfirmed"
     waits = sum(bool(work.get("turn")) for work in works)
     if waits:
         line += f" · {waits} {'waits' if waits == 1 else 'wait'} for you"
+    if unconfirmed and known:  # after what waits for the owner, which a cut line must keep
+        line += f" · {unconfirmed} unconfirmed"
     return line if len(line) <= TRAY_LINE_MAX else line[:TRAY_LINE_MAX - 1] + "…"
 
 

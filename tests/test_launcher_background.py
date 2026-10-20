@@ -558,7 +558,10 @@ def work(activity, transition="none", turn=False, confirmed=None):
     # A confirmed work whose only remainder is a run nobody can confirm is counted beside the rest, not all of it.
     (projection(work("unknown", confirmed=True)), "Ouroboros: 1 task unconfirmed"),
     (projection(work("working"), work("unknown", confirmed=True), work("unknown", confirmed=True)),
-     "Ouroboros: working on 1 task · 2 tasks unconfirmed"),
+     "Ouroboros: working on 1 task · 2 unconfirmed"),
+    # What waits for the owner comes first, so a cut line keeps it.
+    (projection(work("working"), work("waiting", turn=True), work("unknown", confirmed=True)),
+     "Ouroboros: working on 1 task · 1 waits for you · 1 unconfirmed"),
     (projection(work("working"), confirmed=False), "Ouroboros: activity unconfirmed"),
 ])
 def test_the_state_line_reads_the_servers_own_activity(monkeypatch, body, line):

@@ -437,7 +437,7 @@ def test_one_rule_types_an_open_run_for_the_card_and_for_ouroboros(source, owner
     entry = SimpleNamespace(run_id="r", task_id="h" if owner is not None else "", source=source)
     stops = {}
     obs = SimpleNamespace(result=lambda task_id: owner if task_id == "h" else None,
-                          stop_unknown=lambda task_id, drive_root=None: frozenset(stops.get(task_id, ())))
+                          stop_unknown=lambda task_id, drive_root=None, owner=None: frozenset(stops.get(task_id, ())))
     assert wp._typed_run(entry, obs, {}) == {"run_id": "r", "kind": typed[0], "state": typed[1]}
     stops["h"] = ["r"]
     stopped = "unknown" if typed[0] == "run" and entry.task_id else typed[1]
@@ -459,6 +459,13 @@ def test_a_stop_is_unconfirmed_only_while_its_tasks_pause_lives(tmp_path):
     budget_pause.set_budget_pause(tmp_path, "t", {**controls(tmp_path, "t")["budget_pause"],
                                                   "state": budget_pause.STATE_RESUMED}, expected_pause_id="p")
     assert wp.unconfirmed_stops(tmp_path, "t") == frozenset(), "a resumed Pause's old observation is history"
+    # A warm park keeps its own observation on its stored result while it waits under the owner's Pause.
+    warm = {"owner_wait": {"state": "waiting", "reason": "owner_pause",
+                           "owner_pause": {"external_runs": {"runs": [{"run_id": "w", "state": "stop_unknown"},
+                                                                      {"run_id": "x", "state": "stop_confirmed"}]}}}}
+    assert wp.unconfirmed_stops(tmp_path, "t", warm) == frozenset({"w"})
+    for ended in ({**warm["owner_wait"], "state": "resumed"}, {**warm["owner_wait"], "reason": "question"}):
+        assert wp.unconfirmed_stops(tmp_path, "t", {"owner_wait": ended}) == frozenset()
 
 
 def test_a_review_the_pause_lets_finish_is_one_review_tail_from_either_source(stored, monkeypatch, tmp_path):
