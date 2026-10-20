@@ -399,20 +399,42 @@ def test_a_fence_keeps_its_first_declared_author_and_a_press_that_declared_nobod
     assert pause_author(fence)["text"] == "Freeing the worker for the update"
 
 
-def test_the_pause_endpoint_is_text_free_and_typed(tmp_path, monkeypatch):
+def test_the_pause_endpoint_is_typed_and_records_only_a_declared_author(tmp_path, monkeypatch):
     from starlette.applications import Starlette
     from starlette.routing import Route
     from starlette.testclient import TestClient
 
+    from ouroboros.control_actor import pause_author
     from ouroboros.gateway.task_pause import api_task_pause
+    from ouroboros.owner_pause import read_fence
 
     _queue, _state, workers = _install_queue(tmp_path, monkeypatch)
     _live_tree(tmp_path, workers)
     client = TestClient(Starlette(routes=[Route("/api/tasks/{task_id}/pause", api_task_pause, methods=["POST"])]))
     assert client.post("/api/tasks/root-1/pause", json={"request_id": "r", "text": "x"}).status_code == 400
     assert client.post("/api/tasks/root-1/pause", json={}).status_code == 400
-    ok = client.post("/api/tasks/root-1/pause", json={"request_id": "r"})
+    for reason in (5, "x" * 401):
+        refused = client.post("/api/tasks/root-1/pause", json={"request_id": "r", "actor": "owner", "reason": reason})
+        assert refused.status_code == 400 and refused.json()["reason_code"] == "pause_reason_invalid"
+    assert read_fence(tmp_path, "root-1") == {}, "a refused body wrote nothing"
+    # An actor the core does not know is no declaration, not an error.
+    ok = client.post("/api/tasks/root-1/pause", json={"request_id": "r", "actor": "app", "reason": "mine"})
     assert ok.status_code == 200 and ok.json()["state"] == "requested"
+    fence = read_fence(tmp_path, "root-1")
+    assert "by" not in fence and pause_author(fence)["actor"] == ""
+    declared = client.post("/api/tasks/root-1/pause", json={"request_id": "r2", "actor": "owner"})
+    assert declared.status_code == 200 and declared.json()["duplicate"] is True
+    by = read_fence(tmp_path, "root-1")["by"]
+    assert by["actor"] == "owner" and by["text"] == "" and by["at"]
+    said = client.post("/api/tasks/root-1/pause",
+                       json={"request_id": "r3", "actor": "ouroboros", "reason": "  Updating everything.  "})
+    assert said.status_code == 200
+    fence = read_fence(tmp_path, "root-1")
+    assert fence["requests"]["r3"]["by"]["text"] == "Updating everything." and fence["by"] == by
+    # A retry of the same press is the same Pause; its declaration is not re-read.
+    again = client.post("/api/tasks/root-1/pause", json={"request_id": "r2", "actor": "ouroboros", "reason": "no"})
+    assert again.status_code == 200 and again.json()["duplicate"] is True
+    assert read_fence(tmp_path, "root-1")["requests"]["r2"]["by"]["actor"] == "owner"
     child = client.post("/api/tasks/child-run/pause", json={"request_id": "r"})
     assert child.status_code == 409 and child.json()["reason_code"] == "not_a_root_task"
     assert client.post("/api/tasks/ghost/pause", json={"request_id": "r"}).status_code == 404
