@@ -379,8 +379,10 @@ def test_main_sheet_follows_real_roots_through_pause_resume_and_finish(direct_se
                 evidence.record("paused", paused_facts)
                 assert [row["id"] for row in paused_facts["rows"]] == ids, "order holds while open"
                 alpha = _row(paused_facts, ALPHA)
-                # The owner's own Pause: neutral ink (amber is only what waits for the owner), and it says who paused.
-                assert (alpha["tone"], alpha["word"], alpha["secondary"]) == ("held", "Paused", "by you"), alpha
+                # The owner's own Pause: neutral ink (amber is only what waits for the owner), the word alone, and
+                # its line says who paused and when (the owner's client declares the press).
+                assert (alpha["tone"], alpha["word"]) == ("held", "Paused"), alpha
+                assert alpha["secondary"].startswith("You paused it · "), alpha
                 assert alpha["more"], "a paused root keeps its shared controls"
                 evidence.shot(page, "04-main-paused-open")
 

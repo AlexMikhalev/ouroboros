@@ -102,7 +102,8 @@ SHEET = {
     "access_automatic": ("Waiting for access", "neutral", "still", "ink"),
     "access_owner": ("Waiting for access", "owner", "dot", "owner"),
     "paused": ("Paused", "neutral", "pause", "ink"),
-    "paused_limit": ("Paused · spending limit", "owner", "dot", "owner"),
+    # The chip says its word alone; why it waits is said beside it (the work's line, the owner's message).
+    "paused_limit": ("Paused", "owner", "dot", "owner"),
     "pausing": ("Pausing…", "neutral", "moving", "ink"),
     "question": ("Waiting for your answer", "owner", "dot", "owner"),
     "unconfirmed": ("Activity unconfirmed", "neutral", "ring", "ink"),
