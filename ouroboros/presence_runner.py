@@ -1034,10 +1034,18 @@ def _log_dialogue(
             SimpleNamespace(drive_root=drive_root, task_id=task_id), "presence-event",
             json.dumps(source, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8"), "json")
     from ouroboros import dialogue_store
+    from ouroboros.store import StoreError
 
     # An inbound row is a named acceptance (its source event id): a re-run that logs again rejoins
-    # the row it landed, never a second one.
-    written = dialogue_store.append_quietly(drive_root, "chat", row)
+    # the row it landed, never a second one. It is a required acceptance, so it waits for the store
+    # (``dialogue_store``'s rule); only the reply row is best effort and joins the retry buffer.
+    if direction == "in":
+        try:
+            written = dialogue_store.append(drive_root, "chat", row)
+        except (StoreError, OSError, ValueError):
+            written = None
+    else:
+        written = dialogue_store.append_quietly(drive_root, "chat", row)
     if direction == "in" and written is None:
         # A re-run of a lost attempt relies on the inbound row having landed, so a turn whose row
         # cannot be written fails here, before the model runs; the transport retries.

@@ -130,6 +130,40 @@ def test_runner_builds_bounded_fresh_task_and_logs_shared_dialogue(tmp_path):
     assert rows[1]["presence_provenance"] == rows[0]["presence_provenance"]
 
 
+def test_inbound_presence_row_waits_out_a_concurrent_dialogue_write(tmp_path):
+    """The inbound row is a required acceptance: a write already holding the dialogue store makes
+    it wait, not answer ``chat_log_unwritable`` at once (a burst of released turns hit that)."""
+    from ouroboros import dialogue_store
+
+    repo, data = tmp_path / "repo", tmp_path / "data"
+    repo.mkdir()
+    data.mkdir()
+    dialogue_store.append(data, "progress", {"ts": "2026-10-20T00:00:00+00:00", "text": "warm"})
+    holding, done = threading.Event(), threading.Event()
+
+    def hold() -> None:
+        with dialogue_store.transaction(data, write=True):
+            holding.set()
+            done.wait(0.6)
+
+    class Agent:
+        def handle_task(self, task):
+            _terminal(data, task, "Hi")
+            return [{"type": "presence_result", "outcome": "message", "text": "Hi", "work_ref": ""}]
+
+    holder = threading.Thread(target=hold, daemon=True)
+    holder.start()
+    assert holding.wait(5)
+    try:
+        result = run_presence_turn(admission=_admission(), event=_event(), repo_dir=repo, drive_root=data,
+                                   agent_factory=lambda **_kwargs: Agent(), gate=PresenceTurnGate(2))
+    finally:
+        done.set()
+        holder.join(5)
+    assert result.outcome == "message" and result.text == "Hi"
+    assert [row["direction"] for row in chat_rows(data)] == ["in", "out"]
+
+
 def test_presence_initial_attachment_rejection_defaults_to_partial_staging(tmp_path):
     """В25c (capinv-447): one bad attachment no longer discards the whole set —
     the staged sibling rides into the task and the rejected row stays disclosed."""
