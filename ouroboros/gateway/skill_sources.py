@@ -25,31 +25,16 @@ from ouroboros.gateway._helpers import (
     request_repo_dir,
 )
 from ouroboros.skill_lifecycle_queue import (
-    JobProgressTarget,
+    JobHandle,
     LifecycleJobOptions,
     run_blocking_preserving_cancellation,
     run_lifecycle_job,
 )
 from ouroboros.skill_source_install import SkillInstallError
+from ouroboros import skill_lifecycle_queue
 
 log = logging.getLogger(__name__)
 _BACKGROUND: Set[asyncio.Task] = set()
-
-
-class _JobHandle(JobProgressTarget):
-    """Progress relay that also tells the request which lifecycle job it started."""
-
-    __slots__ = ("job_id", "bound")
-
-    def __init__(self) -> None:
-        super().__init__()
-        self.job_id = ""
-        self.bound = asyncio.Event()
-
-    def bind(self, job: Any) -> None:
-        super().bind(job)
-        self.job_id = str(job.id)
-        self.bound.set()
 
 
 def _refusal(exc: SkillInstallError) -> JSONResponse:
@@ -67,7 +52,7 @@ def _resync_schedules(drive_root: pathlib.Path) -> None:
 
 async def _start_job(kind: str, target: str, message: str, work: Any, after: Any = None) -> str:
     """Run ``work(progress)`` in the lifecycle lane in the background; answer its job id."""
-    handle = _JobHandle()
+    handle = JobHandle()
 
     async def _runner() -> Any:
         return await run_blocking_preserving_cancellation(work, handle.set, log_label=f"skill {kind} lifecycle operation")
@@ -75,12 +60,20 @@ async def _start_job(kind: str, target: str, message: str, work: Any, after: Any
     def _error(result: Any) -> str:
         return str(result.get("error") or "") if isinstance(result, dict) and result.get("ok") is False else ""
 
+    def _message(result: Any) -> str:
+        # The payload landed even when its packages did not: the job succeeds and says so in one line.
+        acceptance = (result.get("acceptance") or {}) if isinstance(result, dict) else {}
+        deps_error = str(acceptance.get("deps_error") or "")
+        done = f"{kind} {result.get('name', target) if isinstance(result, dict) else target}: done"
+        if deps_error:
+            return f"{done}; its packages did not install: {deps_error.splitlines()[0][:200]}"
+        return f"{done}; {acceptance['setup_error']}" if acceptance.get("setup_error") else done
+
     async def _job() -> None:
         try:
             result = await run_lifecycle_job(
                 kind=kind, target=target, source="skills", message=message, runner=_runner,
-                options=LifecycleJobOptions(progress_target=handle, result_error=_error,
-                                            result_message=lambda r: f"{kind} {r.get('name', target)}: done"),
+                options=LifecycleJobOptions(progress_target=handle, result_error=_error, result_message=_message),
             )
             if after is not None:
                 await asyncio.to_thread(after, result)
@@ -93,7 +86,7 @@ async def _start_job(kind: str, target: str, message: str, work: Any, after: Any
     _BACKGROUND.add(task)
     task.add_done_callback(_BACKGROUND.discard)
     waiter = asyncio.ensure_future(handle.bound.wait())
-    await asyncio.wait({waiter, task}, timeout=10, return_when=asyncio.FIRST_COMPLETED)
+    await asyncio.wait({waiter, task}, timeout=skill_lifecycle_queue.JOB_ANSWER_WAIT_SEC, return_when=asyncio.FIRST_COMPLETED)
     waiter.cancel()
     return handle.job_id
 

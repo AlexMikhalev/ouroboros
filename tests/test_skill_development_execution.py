@@ -86,7 +86,7 @@ def test_free_replay_refreshes_disabled_auto_flow_without_another_panel(developm
                               plugin_body="def register(api):\n    return None\n", extra_frontmatter='plugin_api: "2.0"\n')
     _mark_self_authored(payload, drive)
     phases = iter([("failed", "controlled dependency failure"), ("not_required", "")])
-    monkeypatch.setattr("ouroboros.skill_review_runner._reconcile_deps_after_pass_review", lambda *a, **k: next(phases))
+    monkeypatch.setattr("ouroboros.skill_dependencies.ensure_skill_dependencies", lambda *a, **k: next(phases))
     first = run_skill_review_lifecycle_blocking(registry._ctx, "demo")
     assert first["status"] == "clean" and first["auto_flow"] is True
     assert not load_enabled(drive, "demo")
@@ -167,7 +167,7 @@ def test_dependency_repair_replays_review_and_preserves_owner_disable(developmen
     )
     _admit(registry, drive, payload)
     phases = iter([("failed", "controlled dependency failure"), ("installed", "")])
-    monkeypatch.setattr("ouroboros.skill_review_runner._reconcile_deps_after_pass_review", lambda *a, **k: next(phases))
+    monkeypatch.setattr("ouroboros.skill_dependencies.ensure_skill_dependencies", lambda *a, **k: next(phases))
     first = run_skill_review_lifecycle_blocking(registry._ctx, "demo")
     assert first["status"] == "clean" and first["deps_status"] == "failed", first
     before = (drive / "state" / "skills" / "demo" / "review.json").read_bytes()

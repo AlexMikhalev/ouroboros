@@ -31,6 +31,8 @@ from ouroboros.settings_integrity import copy_task_settings_context
 log = logging.getLogger(__name__)
 
 _MAX_EVENTS = 80
+_BACKGROUND: set = set()  # strong references to answered-pending owner actions still running
+JOB_ANSWER_WAIT_SEC = 10.0  # the transport bound install/update already use; a slow action answers its job
 _STALE_RUNNING_JOB_SEC = int(os.environ.get("OUROBOROS_SKILL_LIFECYCLE_STALE_SEC", "1800"))
 
 
@@ -646,6 +648,84 @@ class JobProgressTarget:
             return
         self._job.message = str(message or "")
         _notify_chat_progress(self._job, "running")
+
+
+class JobHandle(JobProgressTarget):
+    """Progress relay that also tells the request which lifecycle job it started.
+
+    A blocking job binds from its own thread's loop; the ``bound`` event is set on the
+    creating loop either way, so a request can await it.
+    """
+
+    __slots__ = ("job_id", "bound", "_loop")
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.job_id = ""
+        self.bound = asyncio.Event()
+        try:
+            self._loop: Optional[asyncio.AbstractEventLoop] = asyncio.get_running_loop()
+        except RuntimeError:
+            self._loop = None
+
+    def bind(self, job: LifecycleJob) -> None:
+        super().bind(job)
+        self.job_id = str(job.id)
+        loop = self._loop
+        try:
+            same_loop = loop is None or asyncio.get_running_loop() is loop
+        except RuntimeError:
+            same_loop = loop is None
+        if same_loop:
+            self.bound.set()
+        else:
+            loop.call_soon_threadsafe(self.bound.set)
+
+    @property
+    def message(self) -> str:
+        return str(getattr(self._job, "message", "") or "")
+
+
+def _log_background_failure(task: "asyncio.Task") -> None:
+    if not task.cancelled() and task.exception() is not None:
+        log.warning("answered-pending skill action failed", exc_info=task.exception())
+
+
+async def answer_or_job(work: Callable[[JobHandle], Any], *, after: Callable[[Any], None] | None = None,
+                        log_label: str = "skill lifecycle operation", allow_pending: bool = False) -> Any:
+    """Run ``work(handle)``, a blocking owner action that binds one lifecycle job to ``handle``, off
+    the loop. Legacy callers await the terminal payload. An explicitly pending-aware caller gets
+    that payload within ``JOB_ANSWER_WAIT_SEC``, else ``{ok, pending, job_id, message}`` while work
+    finishes. ``after(payload)`` still runs on completion (the lifecycle broadcast).
+    """
+    handle = JobHandle()
+
+    async def _run() -> Any:
+        payload = await run_blocking_preserving_cancellation(work, handle, log_label=log_label)
+        if after is not None:
+            try:
+                after(payload)
+            except Exception:
+                log.debug("after-hook of %s failed", log_label, exc_info=True)
+        return payload
+
+    if not allow_pending:
+        return await _run()
+    task = asyncio.ensure_future(_run())
+    _BACKGROUND.add(task)
+    task.add_done_callback(_BACKGROUND.discard)
+    done, _ = await asyncio.wait({task}, timeout=JOB_ANSWER_WAIT_SEC)
+    if task not in done and not handle.job_id:
+        # Validation can finish without ever creating a job. Never advertise an empty job id.
+        bound = asyncio.create_task(handle.bound.wait())
+        try:
+            done, _ = await asyncio.wait({task, bound}, return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            bound.cancel()
+    if task in done:
+        return task.result()
+    task.add_done_callback(_log_background_failure)
+    return {"ok": True, "pending": True, "job_id": handle.job_id, "message": handle.message}
 
 
 def queue_snapshot() -> Dict[str, Any]:

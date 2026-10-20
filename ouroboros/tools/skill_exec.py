@@ -690,8 +690,7 @@ def _author_finish_existing_skill_review(
         return {"error": _skill_review_refusal(ctx, "TOOL_ARG_ERROR", f"SKILL_REVIEW_ERROR: {exc}")}
     previous_hash = str(review_state.reviewed_content_hash or review_state.content_hash or "")
     preflight_facts = None
-    # Current preflight is independent evidence; Cyber may continue with its
-    # failure, while ordinary Advisory still requires it to pass.
+    # Current preflight is independent evidence; Cyber may continue with its failure, Advisory may not.
     preflight = _run_deterministic_preflight(
         ctx, drive_root, loaded, current_hash, persist=False, binding=binding,
     )
@@ -710,12 +709,13 @@ def _author_finish_existing_skill_review(
     author_record["review_reference"] = basis
     review_state.author_disposition = author_record
     save_review_state(drive_root, skill_name, review_state)
+    from ouroboros.skill_dependencies import ensure_skill_dependencies
     from ouroboros.skill_loader import auto_grant_if_enabled
-    from ouroboros.skill_review_runner import _reconcile_deps_after_pass_review, _reconcile_extension_payload
+    from ouroboros.skill_review_runner import _reconcile_extension_payload
 
     loaded.review = review_state
     auto_grant_if_enabled(drive_root, loaded)
-    deps_status, deps_error = _reconcile_deps_after_pass_review(drive_root, skill_name, binding=binding)
+    deps_status, deps_error = ensure_skill_dependencies(drive_root, loaded)
     extension = (_reconcile_extension_payload(ctx, skill_name, drive_root=drive_root,
                                              repo_path=None, binding=binding)
                  if loaded.manifest.is_extension() else {})
@@ -771,9 +771,10 @@ def _handle_review_skill(
     if author_value or author_reason:
         if author_value not in {"accepted", "rejected", "partial", "deferred"} or not author_reason:
             return _skill_review_refusal(ctx, "TOOL_ARG_ERROR", "⚠️ SKILL_REVIEW_ERROR: explicit author finish requires a valid disposition and rationale.")
-        finished = _author_finish_existing_skill_review(
-            ctx, binding, skill_name, disposition=author_value, rationale=author_reason, review_reference=review_reference,
-        )
+        from ouroboros.skill_source_install import run_in_lane
+        # Re-load and qualify the binding AFTER waiting for the lane, before any author-state write.
+        finished = run_in_lane(binding.state_drive_root, "review", skill_name, lambda: _author_finish_existing_skill_review(
+            ctx, binding, skill_name, disposition=author_value, rationale=author_reason, review_reference=review_reference))
         if finished is None:
             return _skill_review_refusal(ctx, "LEGACY_UNAVAILABLE", "⚠️ SKILL_REVIEW_ERROR: author finish could not bind the selected skill revision.")
         if finished.get("error"):
@@ -844,7 +845,7 @@ def _skill_deps_exec_block(drive_root: pathlib.Path, loaded: Any) -> str:
     return (
         f"⚠️ SKILL_EXEC_BLOCKED: skill {loaded.name!r} isolated "
         f"dependencies are not ready (status={deps_status!r}). "
-        "Reconcile the declared dependencies through skill_review before executing."
+        "toggle_skill enabled=true installs them (no review is needed for packages); then execute."
     )
 
 
@@ -1408,9 +1409,8 @@ _TOGGLE_SCHEMA = {
         "skill's review_gate to permit the current bytes (outside Cyber Pro: "
         "a current executable reviewer verdict or a qualified Advisory author "
         "acceptance of these exact bytes), any requested key or "
-        "host-permission grants, and ready isolated dependencies. Enabling a skill "
-        "accepted without a review prepares its declared isolated dependencies first; "
-        "other skills require them to be ready already. "
+        "host-permission grants; enabling installs or refreshes the declared isolated dependencies "
+        "itself (a review is never needed for packages) and repairs an enabled skill whose packages broke. "
         "For selected-skill development, interpret the real owner request: "
         "Repair and run authorizes enabling and leaving the repaired skill running. "
         "The host resolves that task's original owner message when owner_source is omitted; "

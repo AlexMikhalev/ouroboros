@@ -75,6 +75,11 @@ function missingGrantLoadError(skill) {
     return !grantReady(skill) && String(skill.load_error || '').includes('missing owner grants');
 }
 
+// An ON skill whose packages are missing, failed or out of date: Enable installs them (it is
+// idempotent); a declaration mismatch (deps_declaration_desync) stays on the repair path.
+const PACKAGES_INSTALLABLE = ['deps_missing', 'deps_failed', 'deps_stale'];
+const packagesInstallable = (skill) => PACKAGES_INSTALLABLE.includes(String(skill?.live_reason || ''));
+
 function repairableSource(skill) {
     const source = sourceTag(skill);
     const payloadRoot = String(skill.payload_root || '');
@@ -88,7 +93,7 @@ function repairReady(skill) {
     return repairableSource(skill)
         && (skill.review_status === 'blockers'
             || preflightFailed(skill)
-            || (Boolean(skill.load_error) && !missingGrantLoadError(skill)));
+            || (Boolean(skill.load_error) && !missingGrantLoadError(skill) && !packagesInstallable(skill)));
 }
 
 function skillConflictReason(skill) {
@@ -202,7 +207,9 @@ export function installedSkillModel(skill, { reviewing = false, repairing = fals
     // goes on by itself: a neutral chip with the moving mark. Amber is kept for
     // the owner's move (Needs access, Not reviewed yet, Review didn't finish).
     if (skill.lifecycle_pending) {
-        chip = chipHtml(lifecyclePendingLabel(skill.lifecycle_kind), 'neutral', { work: true });
+        // An owner action's job names its work; it remains autonomous, not an owner warning.
+        const message = ['enable', 'grant'].includes(String(skill.lifecycle_kind || '')) ? skill.lifecycle_message : '';
+        chip = chipHtml(message || lifecyclePendingLabel(skill.lifecycle_kind), 'neutral', { work: true });
     } else if (skill.lifecycle_status === 'failed') {
         chip = chipHtml(lifecycleFailedLabel(skill.lifecycle_kind), 'danger');
         needs = true;
@@ -233,7 +240,8 @@ export function installedSkillModel(skill, { reviewing = false, repairing = fals
         if (!skill.lifecycle_pending) chip = chipHtml('Couldn’t start', 'danger');
         needs = true;
         trays.push(trayHtml({ tone: 'danger', sentence: escapeHtml(boundedText(String(skill.load_error).split('\n')[0], 240)),
-            actions: repairReady(skill) ? smallButton('Ask Ouroboros to fix', name, 'repair') : '' }));
+            actions: repairReady(skill) ? smallButton('Ask Ouroboros to fix', name, 'repair')
+                : packagesInstallable(skill) ? smallButton('Install packages', name, 'turn_on') : '' }));
         lockReason = repairReady(skill) ? 'Ask Ouroboros to fix it first.' : '';
     } else if (conflict) {
         if (!skill.lifecycle_pending) chip = chipHtml('Conflicts', 'danger');
@@ -626,9 +634,10 @@ function menuHtml(skill, { reviewing, repairing, submit }) {
     if (submit.visible) {
         items.push(`<button type="button" role="menuitem" class="skills-menu-item skills-submit-hub" ${actionAttrs(skill.name, 'submit_hub')} data-submit-disabled="${submit.disabled ? 'true' : 'false'}" data-submit-reason="${escapeHtml(submit.reason || '')}" data-submit-state="${escapeHtml(submit.state || '')}" data-publication-ready="${submit.publication_ready === true ? 'true' : 'false'}" aria-disabled="${submit.disabled ? 'true' : 'false'}">Publish…</button>`);
     }
-    if (installFacts(skill) || ['clawhub', 'ouroboroshub'].includes(sourceTag(skill))) {
-        if (!isBuiltIn(skill)) items.push(`<button type="button" role="menuitem" class="skills-menu-item skills-uninstall" ${actionAttrs(skill.name, 'uninstall')}>Uninstall</button>`);
-    } else if (['external', 'self_authored'].includes(sourceTag(skill)) && String(skill.payload_root || '').startsWith('skills/external/')) {
+    // The host names the removal it offers (listing `removal`, the rule both removers admit by); the card renders exactly that.
+    if (skill.removal === 'uninstall') {
+        items.push(`<button type="button" role="menuitem" class="skills-menu-item skills-uninstall" ${actionAttrs(skill.name, 'uninstall')}>Uninstall</button>`);
+    } else if (skill.removal === 'delete') {
         items.push(`<button type="button" role="menuitem" class="skills-menu-item skills-delete-local" ${actionAttrs(skill.name, 'delete', `data-payload-root="${escapeHtml(skill.payload_root || '')}"`)}>Delete</button>`);
     }
     return `<div class="skills-card-menu"><button type="button" class="skills-card-menu-trigger" aria-label="More actions for ${name}" aria-haspopup="menu" aria-expanded="false" data-skill-menu-trigger>⋮</button><dialog class="skills-card-menu-dialog" role="menu">${items.join('')}</dialog></div>`;

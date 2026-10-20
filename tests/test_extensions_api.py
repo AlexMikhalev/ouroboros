@@ -1105,15 +1105,11 @@ def test_api_skill_toggle_allows_warnings_under_blocking(tmp_path, monkeypatch):
         _stop_patches(patches)
 
 
-def test_api_skill_toggle_blocks_missing_isolated_deps_env(tmp_path, monkeypatch):
+def test_api_skill_toggle_installs_a_missing_isolated_deps_env(tmp_path, monkeypatch):
+    """Inverted pin: a missing env used to refuse Enable (409, deps_status missing); Enable installs it."""
     from ouroboros.marketplace.install_specs import install_specs_hash
     from ouroboros.marketplace.isolated_deps import DEPS_STATE_FILENAME
-    from ouroboros.skill_loader import (
-        SkillReviewState,
-        compute_content_hash,
-        save_review_state,
-        skill_state_dir,
-    )
+    from ouroboros.skill_loader import SkillReviewState, compute_content_hash, save_review_state, skill_state_dir
 
     skills_root = tmp_path / "skills"
     plugin = "def register(api):\n    api.register_tool('t', lambda ctx: 'ok', description='', schema={})\n"
@@ -1145,13 +1141,16 @@ def test_api_skill_toggle_blocks_missing_isolated_deps_env(tmp_path, monkeypatch
             json.dumps({"status": "installed", "specs_hash": install_specs_hash(specs)}),
             encoding="utf-8",
         )
+        installs = []
+        monkeypatch.setattr("ouroboros.marketplace.isolated_deps._install_python_packages",
+                            lambda packages, *args, **kwargs: installs.append(list(packages)) or [])
+        monkeypatch.setattr("ouroboros.skill_lifecycle_actions._reconcile", lambda *a, **k: {"action": "extension_loaded"})
 
         resp = client.post("/api/skills/ext_deps/toggle", json={"enabled": True})
 
-        assert resp.status_code == 409, resp.text
-        data = resp.json()
-        assert data["deps_status"] == "missing"
-        assert not (state_dir / "enabled.json").exists()
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["enabled"] is True and installs == [["wheel"]]
+        assert (state_dir / "enabled.json").exists()
     finally:
         _stop_patches(patches)
 

@@ -25,7 +25,7 @@ skills_browser = _skills_browser
 WEATHER = {
     "name": "weather", "source": "external", "description": "Local forecast", "version": "1.0",
     "enabled": False, "review_status": "pending", "payload_root": "skills/external/weather",
-    "content_hash": "a" * 64, "grants": {}, "permissions": [],
+    "content_hash": "a" * 64, "grants": {}, "permissions": [], "removal": "delete",
 }
 CONFIRMED_SOURCES = fixture("skill_sources.json")
 for _row in CONFIRMED_SOURCES["sources"]:
@@ -572,7 +572,7 @@ def _failed_review_projection(tmp_path, monkeypatch, deps_reason):
         encoding="utf-8",
     )
     monkeypatch.setattr("supervisor.message_bus.send_with_budget", lambda *a, **k: None)
-    monkeypatch.setattr("ouroboros.skill_review_runner._reconcile_deps_after_pass_review",
+    monkeypatch.setattr("ouroboros.skill_dependencies.ensure_skill_dependencies",
                         lambda *_a, **_k: ("failed", deps_reason))
     monkeypatch.setattr("ouroboros.skill_review_runner._reconcile_extension_payload",
                         lambda *_a, **_k: {"action": None, "reason": None, "process": "", "server_reconcile": ""})
@@ -584,7 +584,10 @@ def _failed_review_projection(tmp_path, monkeypatch, deps_reason):
         )
 
     def clean(_ctx, name):
-        return SkillReviewOutcome(skill_name=name, status="pass", content_hash="",
+        from ouroboros.skill_loader import find_skill, save_review_state, SkillReviewState
+        loaded = find_skill(drive_root, name, repo_path=str(skills_root))
+        save_review_state(drive_root, name, SkillReviewState(status="clean", content_hash=loaded.content_hash))
+        return SkillReviewOutcome(skill_name=name, status="pass", content_hash=loaded.content_hash,
                                   findings=[{"item": "manifest_schema", "verdict": "PASS"}])
 
     def broken(_ctx, _name):

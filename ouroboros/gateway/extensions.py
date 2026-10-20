@@ -24,10 +24,7 @@ from ouroboros.gateway._helpers import (
     request_repo_dir as _request_repo_dir,
 )
 from ouroboros.gateway.extension_receipts import extension_process_receipt, extension_reconcile_receipt
-from ouroboros.skill_lifecycle_queue import (
-    queue_snapshot,
-    run_blocking_preserving_cancellation,
-)
+from ouroboros.skill_lifecycle_queue import queue_snapshot
 from ouroboros.skill_loader import (
     discover_skills,
     find_skill,
@@ -340,6 +337,7 @@ def _build_extensions_index(drive_root, repo_path):
                 "grants": {},
                 "install": None,
                 "category": [],
+                "removal": "",
             })
             catalog.append(entry)
             continue
@@ -664,6 +662,8 @@ async def api_skill_toggle(request: Request) -> JSONResponse:
     payload = await _run_owner_skill_action(request, skill_name, "enable" if enabled else "disable", body)
     if payload.get("error"):
         return JSONResponse(payload, status_code=int(payload.get("status_code") or 400))
+    if payload.get("pending"):  # still installing packages: the running job answers
+        return JSONResponse({"skill": skill_name, **payload})
     return JSONResponse({
         "skill": payload.get("skill", skill_name), "enabled": payload.get("enabled", False),
         "review_status": payload.get("review_status"), "review_stale": payload.get("review_stale"),
@@ -692,20 +692,29 @@ async def _run_owner_skill_action(request: Request, skill_name: str, action: str
     from ouroboros.config import get_skills_repo_path
     from ouroboros.skill_lifecycle_actions import run_skill_action
 
+    from ouroboros.skill_lifecycle_queue import answer_or_job
+
     ctx = _ApiReviewCtx(_request_drive_root(request), _request_repo_dir(request))
     ctx.task_id = ""  # A UI lifecycle action is not a managed task.
     ctx._skill_owner_client_host = str(getattr(getattr(request, "client", None), "host", "") or "")
-    payload = await run_blocking_preserving_cancellation(
-        run_skill_action, ctx, skill_name, action,
-        expected_content_hash=str(body.get("expected_content_hash") or ""),
-        items=_grant_items_from_body(body) if action == "grant" else None,
-        payload_root=str(body.get("payload_root") or ""),
-        repo_path=get_skills_repo_path(), _owner_actor="owner_ui",
-        log_label=f"skill {action} lifecycle operation",
-    )
-    if not payload.get("error"):
-        _broadcast_extension_lifecycle(request, skill_name, payload.get("extension_action") or action, payload.get("extension_reason"))
-    return payload
+
+    def work(handle):  # one job, one progress target: the request's own handle
+        return run_skill_action(
+            ctx, skill_name, action, expected_content_hash=str(body.get("expected_content_hash") or ""),
+            items=_grant_items_from_body(body) if action == "grant" else None,
+            payload_root=str(body.get("payload_root") or ""), repo_path=get_skills_repo_path(),
+            _owner_actor="owner_ui", _progress=handle,
+            _enable_after_grant=action == "grant" and body.get("enable_after_grant") is True)
+
+    def after(payload):
+        if not payload.get("error"):
+            _broadcast_extension_lifecycle(request, skill_name, payload.get("extension_action") or action,
+                                           payload.get("extension_reason"))
+
+    # Preserve the upstream success-only broadcast, even when the request has answered pending.
+    preferences = {value.strip().lower() for value in getattr(request, "headers", {}).get("prefer", "").split(",")}
+    return await answer_or_job(work, log_label=f"skill {action} lifecycle operation", after=after,
+                               allow_pending="respond-async" in preferences)
 
 
 async def api_skill_review(request: Request) -> JSONResponse:
@@ -738,6 +747,8 @@ async def api_owner_skill_attest_review(request: Request) -> JSONResponse:
     if not isinstance(body, dict):
         return json_error("request body must be a JSON object", 400)
     payload = await _run_owner_skill_action(request, skill_name, "attest", body)
+    if payload.get("pending"):
+        payload = {"skill": skill_name, "status": "pending", **payload}
     return JSONResponse(payload, status_code=200 if payload.get("ok") else int(payload.get("status_code") or 409))
 
 
@@ -957,12 +968,14 @@ async def api_skill_grants(request: Request) -> JSONResponse:
     body = await request_json_or(request, {}, exceptions=(Exception,))
     if not isinstance(body, dict):
         return json_error("request body must be a JSON object", 400)
+    if "enable_after_grant" in body and not isinstance(body["enable_after_grant"], bool):
+        return json_error("'enable_after_grant' must be a boolean", 400)
     payload = await _run_owner_skill_action(request, skill_name, "grant", body)
     return JSONResponse(payload, status_code=int(payload.get("status_code") or 200))
 
 
 async def api_skill_reconcile(request: Request) -> JSONResponse:
-    """Re-run the extension load gate after launcher-owned grants change."""
+    """Re-run the load gate, including after grants from older frozen launchers."""
     from ouroboros.config import get_skills_repo_path, load_settings
     from ouroboros import extension_loader
 
@@ -971,23 +984,16 @@ async def api_skill_reconcile(request: Request) -> JSONResponse:
         return json_error("missing skill name", 400)
 
     drive_root = _request_drive_root(request)
-    repo_path = get_skills_repo_path()
     state = await asyncio.to_thread(
         extension_loader.reconcile_extension,
-        skill_name,
-        drive_root,
-        load_settings,
-        repo_path=repo_path,
-        retry_load_error=True,
+        skill_name, drive_root, load_settings,
+        repo_path=get_skills_repo_path(), retry_load_error=True,
     )
     _broadcast_extension_lifecycle(
-        request,
-        skill_name,
-        state.get("action"),
-        state.get("reason"),
+        request, skill_name, state.get("action"), state.get("reason"),
     )
-    # Reconcile can flip grants/load state, so refresh schedule readiness now —
-    # off the event loop: the resync waits for the supervisor queue lock.
+    # Reconcile can flip grants/load state: refresh schedule readiness off the
+    # event loop because the schedule resync waits for a lock.
     try:
         from supervisor.queue import resync_skill_schedules
 

@@ -419,7 +419,9 @@ flowchart LR
   through import, handler waits and cleanup. The async form polls
   cooperatively, so it never blocks the ASGI loop; nested scopes and
   unwrapped child work remain unsupported rather than inheriting a lease.
-- **Enable** flips `enabled.json` after current executable-review authority + grants + deps. The
+- **Enable** flips `enabled.json` after current executable-review authority + grants, installing
+  the declared packages itself when they are missing, failed or stale (idempotent: Enable on an
+  enabled skill repairs it; a refusal is typed, `code` + one sentence + `detail`). The
   Skills UI surfaces a toggle; agents can also call `toggle_skill`.
   A self-authored skill's first enablement can follow
   `OUROBOROS_AUTO_GRANT_REVIEWED_SKILLS`; otherwise enabling requires the owner
@@ -471,9 +473,10 @@ install:
 ```
 
 Bare `dependencies` entries are treated as Python packages. `pip`,
-`pipx`, `uv`, `npm`, and `node` specs are installed only after a fresh
-executable review (bytes accepted without a review, such as a trusted source's
-release, count, so they need no model review) and only under the skill's `.ouroboros_env` directory.
+`pipx`, `uv`, `npm`, and `node` specs are installed once the review gate admits the exact
+bytes (a reviewer verdict, a trusted release, the owner's skip or edit, Cyber Pro) by one owner
+(`skill_dependencies.ensure_skill_dependencies`: at enable, review end, install, author finish
+and startup; no new paid review is required) and only under the skill's `.ouroboros_env` directory.
 Global package-manager specs remain manual setup guidance. Exact resources and
 explicit build actions use the same isolated install owner:
 
@@ -836,8 +839,8 @@ consent. The desktop launcher's owner-grant bridge records these grants.
 
 The Skills UI surfaces missing grants on the skill card. The agent
 can also call `toggle_skill enabled=true` only after grants are
-approved (the tool returns `SKILL_TOGGLE_ERROR: cannot enable until
-requested key and permission grants are approved`). Self-authored markers alone
+approved (the tool returns `SKILL_TOGGLE_ERROR` with `code: "grants"` and the sentence
+`Grant it the keys and permissions it asks for first.`). Self-authored markers alone
 do not authorize grants or enablement. Automatic grants and first enablement
 follow the setting below; an explicitly authorized task toggle remains separate.
 
@@ -2089,7 +2092,7 @@ def register(api):
 | Symptom | Likely cause |
 |---------|--------------|
 | `SKILL_EXEC_BLOCKED: review status is 'pending'` | Run `skill_review` for this skill. |
-| `SKILL_TOGGLE_ERROR: dependency fingerprint is stale` | Re-run `skill_review`; post-review deps reconciliation will reinstall. |
+| `SKILL_TOGGLE_ERROR` with `code: "dependencies_failed"` | The installer's words are in `detail` (network, platform); `toggle_skill enabled=true` again retries; packages never need a review. |
 | `EXTENSION_NOT_LIVE` on tool dispatch | The skill is disabled or the loader had a load_error — check the Skills UI. |
 | `SKILL_REPAIR_STALE: ...` | The selected payload or its admission revision changed; inspect the current state and the reported conflict before continuing. |
 | `PluginAPI.register_*` raises `ExtensionRegistrationError` | Usually the skill is missing the matching permission in its manifest. For `register_companion_process` the name must also be alnum/underscore and declared under `companion_processes` — see "Declaring a companion process". |

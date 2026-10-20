@@ -867,44 +867,6 @@ def _mark_review_job_timeout(
     )
 
 
-def _reconcile_deps_after_pass_review(
-    drive_root: pathlib.Path,
-    skill_name: str,
-    *,
-    repo_path: str | None = None,
-    binding: ResolvedResourceBinding | None = None,
-) -> tuple[str, str]:
-    try:
-        from ouroboros.marketplace.install_specs import install_specs_hash
-        from ouroboros.marketplace.isolated_deps import (
-            install_isolated_dependencies,
-            read_deps_state,
-        )
-
-        loaded = _load_binding_skill(binding) if binding is not None else find_skill(
-            drive_root, skill_name, repo_path=repo_path,
-        )
-        if loaded is None:
-            return "failed", "skill not found during dependency reconciliation"
-        from ouroboros.skill_dependencies import auto_install_specs_for_skill
-
-        auto_specs = auto_install_specs_for_skill(drive_root, loaded)
-        if not auto_specs:
-            return "not_required", ""
-        deps_state = read_deps_state(drive_root, skill_name, loaded.skill_dir)
-        expected_hash = install_specs_hash(auto_specs)
-        if (
-            str(deps_state.get("status") or "") == "installed"
-            and deps_state.get("specs_hash") == expected_hash
-        ):
-            return "installed", ""
-        install_isolated_dependencies(drive_root, skill_name, loaded.skill_dir, auto_specs)
-        return "installed", ""
-    except Exception as exc:
-        log.debug("post-review deps reconcile failed", exc_info=True)
-        return "failed", f"{type(exc).__name__}: {exc}"
-
-
 def _outcome_payload(
     outcome: SkillReviewOutcome,
     *,
@@ -1323,6 +1285,7 @@ def run_skill_review_lifecycle_blocking(
     _resolved_binding: ResolvedResourceBinding | None = None,
     owner_attestation: bool = False,
     reviewers: Optional[list[str]] = None, reason: str = "", _panel: Any = None,
+    progress: JobProgressTarget | None = None,
 ) -> Dict[str, Any]:
     binding = _resolved_binding
     if binding is None and repo_path is None:
@@ -1396,7 +1359,7 @@ def run_skill_review_lifecycle_blocking(
     started_monotonic: Dict[str, float] = {}
     bound_content_hash: Dict[str, str] = {}
     owned_job: Dict[str, str] = {}
-    progress = JobProgressTarget()
+    progress = progress or JobProgressTarget()  # an owner action hands its own handle through
     provenance = {**_review_provenance(ctx, source, skill_name), "panel": panel.facts if panel is not None else {}}
 
     def _run_review() -> SkillReviewOutcome:
@@ -1411,20 +1374,13 @@ def run_skill_review_lifecycle_blocking(
             reviewed = _load_binding_skill(binding) if binding is not None else find_skill(
                 drive_root, skill_name, repo_path=repo_path,
             )
-            # The verdict just produced under this skill's acceptance facts (a source
-            # that reviews each skill keeps blockers off): deps only for runnable bytes.
-            executable_review = skill_review_gate(
-                getattr(outcome, "status", ""), current_hash=str(getattr(outcome, "content_hash", "") or ""),
-                acceptance=reviewed.review.acceptance if reviewed is not None else None,
-            )["executable_review"]
+            # Current persisted acceptance is authoritative, including staleness and author finish.
+            executable_review = bool(reviewed is not None and reviewed.review.gate_for(reviewed.content_hash)["executable_review"])
             if executable_review:
-                progress.set("Installing dependencies…")
-                deps_status, deps_error = _reconcile_deps_after_pass_review(
-                    drive_root,
-                    skill_name,
-                    repo_path=repo_path,
-                    binding=binding,
-                )
+                from ouroboros.skill_dependencies import ensure_skill_dependencies
+
+                deps_status, deps_error = ensure_skill_dependencies(drive_root, reviewed, progress=progress.set) if (
+                    reviewed is not None) else ("failed", "skill not found during dependency reconciliation")
             setattr(outcome, "deps_status", deps_status)
             setattr(outcome, "deps_error", deps_error)
             from ouroboros.contracts.task_constraint import normalize_task_constraint
@@ -1434,22 +1390,25 @@ def run_skill_review_lifecycle_blocking(
                 drive_root, skill_name, repo_path=repo_path,
             )
             constraint = normalize_task_constraint(getattr(ctx, "task_constraint", None))
+            deps_ready = deps_status in {"installed", "not_required"}
             just_auto_enabled = bool(
                 executable_review and getattr(outcome, "auto_flow", False)
-                and deps_status != "failed" and current is not None
-                and current.content_hash == outcome.content_hash
+                and deps_ready and current is not None
+                and current.content_hash == outcome.content_hash and current.review.gate_for(current.content_hash)["executable_review"]
                 and grant_status_for_skill(drive_root, current).get("usable")
                 and (constraint is None or (constraint.allow_enable and not constraint.has_selected_skill))
                 and not (skill_state_dir(drive_root, skill_name) / "enabled.json").exists()
             )
             if just_auto_enabled:
                 save_enabled(drive_root, skill_name, True, actor="review_auto_enable")
-            else:
+            elif deps_ready:  # a failure just recorded is not re-run by turn-on in the same job
                 from ouroboros.skill_lifecycle_actions import reconcile_turn_on_when_ready
 
                 turn_on = reconcile_turn_on_when_ready(drive_root, skill_name, repo_path=repo_path,
                                                        reason="review finished")
                 setattr(outcome, "turn_on_when_ready", turn_on["action"])
+            else:
+                setattr(outcome, "turn_on_when_ready", "not_ready")
             progress.set("Reloading extension…")
             reconcile = _reconcile_extension_payload(
                 ctx,

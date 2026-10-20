@@ -13,6 +13,7 @@ import sys
 import tempfile
 import threading
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 import webbrowser
@@ -920,10 +921,11 @@ def _request_auto_grant_reviewed_skills_change(enabled: bool, confirm_fn) -> dic
     return {"ok": True, "enabled": new_enabled}
 
 
-def _request_skill_key_grant(skill: str, keys: list, confirm_fn) -> dict:
-    from types import SimpleNamespace
+def _request_skill_key_grant(skill: str, keys: list, confirm_fn, *, enable_after_grant: bool = False,
+                             allow_pending: bool = False) -> dict:
+    from ouroboros.config import runtime_setting, SETTINGS_DEFAULTS
     from ouroboros.skill_loader import find_skill
-    from ouroboros.skill_lifecycle_actions import prepare_skill_grant, run_skill_action
+    from ouroboros.skill_lifecycle_actions import prepare_skill_grant
 
     skill_name = str(skill or "").strip()
     items = [str(key or "").strip() for key in (keys or []) if str(key or "").strip()]
@@ -937,33 +939,33 @@ def _request_skill_key_grant(skill: str, keys: list, confirm_fn) -> dict:
     message = (
         f"Grant skill {loaded.name!r} access to these settings keys / host permissions?\n\n"
         + "\n".join([*preview["keys"], *preview["permissions"]])
+        + ("\n\nThen turn this skill on." if enable_after_grant else "")
         + "\n\nOnly grant keys and permissions to reviewed skills you trust."
     )
     if not confirm_fn("Confirm Skill Grant", message):
         return {"ok": False, "error": "Skill grant cancelled."}
-
-    def reconcile_on_server(current):
-        # The immutable launcher never imports or registers the skill locally.
-        # Keep the existing server reconcile transport, after the shared grant
-        # owner has revalidated the revision confirmed above and saved its grant.
-        if not current.manifest.is_extension():
-            return {"action": None, "reason": None}
-        actual_port = _read_port_file() or AGENT_SERVER_PORT
-        req = urllib.request.Request(
-            f"http://127.0.0.1:{actual_port}/api/skills/{urllib.parse.quote(current.name)}/reconcile",
-            method="POST", data=b"{}", headers={"Content-Type": "application/json"},
-        )
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            payload = json.loads(resp.read().decode("utf-8") or "{}")
-        return {"action": payload.get("extension_action"), "reason": payload.get("extension_reason"),
-                "load_error": payload.get("load_error"), "live_loaded": payload.get("live_loaded"),
-                "process": payload.get("process"), "server_reconcile": payload.get("server_reconcile")}
-
-    ctx = SimpleNamespace(drive_root=DATA_DIR, repo_dir=REPO_DIR, task_id="", current_chat_id=0)
-    return run_skill_action(
-        ctx, loaded.name, "grant", expected_content_hash=preview["content_hash"], items=items,
-        repo_path=repo_path, _owner_actor="owner_launcher", _reconcile_grant=reconcile_on_server,
+    # The immutable launcher never imports, registers or installs packages for a skill: after its
+    # native confirm the server's grant owner revalidates the revision confirmed above, saves the
+    # grant, turns the skill on when ready and readies its packages (the same POST the browser sends).
+    actual_port = _read_port_file() or AGENT_SERVER_PORT
+    req = urllib.request.Request(
+        f"http://127.0.0.1:{actual_port}/api/skills/{urllib.parse.quote(loaded.name)}/grants", method="POST",
+        data=json.dumps({"items": items, "expected_content_hash": preview["content_hash"],
+                         **({"enable_after_grant": True} if enable_after_grant else {})}).encode("utf-8"),
+        headers={"Content-Type": "application/json", **({"Prefer": "respond-async"} if allow_pending else {})},
     )
+    try:
+        timeout = 20 if allow_pending else float(runtime_setting(
+            "OUROBOROS_SKILL_LIFECYCLE_TIMEOUT_SEC", SETTINGS_DEFAULTS["OUROBOROS_SKILL_LIFECYCLE_TIMEOUT_SEC"]))
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return json.loads(resp.read().decode("utf-8") or "{}")
+    except urllib.error.HTTPError as exc:  # a typed refusal is the server's answer, not a transport failure
+        try:
+            return json.loads(exc.read().decode("utf-8") or "{}") or {"ok": False, "error": f"HTTP {exc.code}"}
+        except ValueError:
+            return {"ok": False, "error": f"HTTP {exc.code}"}
+    except (OSError, ValueError) as exc:
+        return {"ok": False, "error": f"The server did not answer the grant: {exc}"}
 
 
 def _webview_ready() -> tuple[bool, str]:
@@ -1176,7 +1178,7 @@ def main(argv=()):
             return
         webview.create_window(
             "Ouroboros",
-            html="<html><body style='background:#1a1a2e;color:white;font-family:system-ui;display:flex;align-items:center;justify-content:center;height:100vh;margin:0'>"
+            html="<html><body style='background:#0f0f11;color:#efeff2;font-family:system-ui;display:flex;align-items:center;justify-content:center;height:100vh;margin:0'>"
             "<div style='text-align:center'><h2>Ouroboros is already running</h2><p>Only one instance can run at a time.</p></div></body></html>",
             width=420,
             height=200,
@@ -1247,7 +1249,7 @@ def main(argv=()):
         git_window = webview.create_window(
             "Ouroboros — Setup Required",
             html=(
-                """<html><body style="background:#1a1a2e;color:white;font-family:system-ui;display:flex;align-items:center;justify-content:center;height:100vh;margin:0">
+                """<html><body style="background:#0f0f11;color:#efeff2;font-family:system-ui;display:flex;align-items:center;justify-content:center;height:100vh;margin:0">
             <div style="text-align:center">
                 <h2>Git is required</h2>
                 <p>Ouroboros needs Git to manage its local repository.</p>
@@ -1257,7 +1259,7 @@ def main(argv=()):
                 <p id="status" style="color:#fbbf24;margin-top:12px"></p>
             </div></body></html>"""
                 if IS_MACOS
-                else f"""<html><body style="background:#1a1a2e;color:white;font-family:system-ui;display:flex;align-items:center;justify-content:center;height:100vh;margin:0">
+                else f"""<html><body style="background:#0f0f11;color:#efeff2;font-family:system-ui;display:flex;align-items:center;justify-content:center;height:100vh;margin:0">
             <div style="text-align:center">
                 <h2>Git is required</h2>
                 <p>Ouroboros needs Git to manage its local repository.</p>
@@ -1381,7 +1383,7 @@ def main(argv=()):
         webview.create_window(
             "Ouroboros — Startup Failed",
             html=(
-                "<html><body style='background:#1a1a2e;color:white;font-family:system-ui;"
+                "<html><body style='background:#0f0f11;color:#efeff2;font-family:system-ui;"
                 "display:flex;align-items:center;justify-content:center;height:100vh;margin:0'>"
                 "<div style='text-align:center;max-width:460px;padding:24px'>"
                 "<h2>Ouroboros failed to start</h2>"
@@ -1474,9 +1476,14 @@ def main(argv=()):
                 log.warning("Reviewed-skill auto-grant confirmation failed: %s", exc, exc_info=True)
                 return {"ok": False, "error": f"Native confirmation failed: {exc}"}
 
-        def request_skill_key_grant(self, skill: str, keys: list) -> dict:
+        def request_skill_key_grant_with_job(self, skill: str, keys: list, enable_after_grant: bool = False) -> dict:
+            return self.request_skill_key_grant(skill, keys, enable_after_grant, True)
+
+        def request_skill_key_grant(self, skill: str, keys: list, enable_after_grant: bool = False,
+                                   allow_pending: bool = False) -> dict:
             try:
-                return _request_skill_key_grant(skill, keys, self._native_confirm)
+                return _request_skill_key_grant(skill, keys, self._native_confirm,
+                                               enable_after_grant=enable_after_grant, allow_pending=allow_pending)
             except Exception as exc:
                 log.warning("Skill grant native confirmation failed: %s", exc, exc_info=True)
                 return {"ok": False, "error": f"Native confirmation failed: {exc}"}
@@ -1551,7 +1558,7 @@ def main(argv=()):
         width=1100,
         height=750,
         min_size=(800, 500),
-        background_color="#0d0b0f",
+        background_color="#0f0f11",
         text_select=True, hidden=background.start_hidden(options.launch_intent),
     )
     _webview_window = attach_media_permissions(background.attach(window), url)  # Persist cookies and website data (ouroboros.theme); rebuild/limits: ARCHITECTURE §3.

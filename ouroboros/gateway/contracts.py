@@ -872,13 +872,21 @@ class OwnerSkillPresenceRuntimeResponse(TypedDict):
 
 
 class SkillGrantResponse(TypedDict, total=False):
-    """``POST /api/skills/{skill}/grants``; a refusal answers ``SkillActionRefusal``."""
+    """``POST /api/skills/{skill}/grants``; a refusal answers ``SkillActionRefusal``. A grant that
+    turns the skill on may install packages: past the answer bound the body is
+    ``{ok, pending: true, job_id, message}`` (follow the lifecycle queue)."""
 
     ok: bool
+    pending: bool
+    job_id: str
+    message: str
     skill: str
     content_hash: str
     granted_keys: list[str]
     granted_permissions: list[str]
+    turn_on_when_ready: str
+    setup_error: str  # grants succeeded; the requested setup did not
+    enabled: bool  # present when this grant also carried the owner's Enable
     extension_action: str
     extension_reason: str
     load_error: str
@@ -891,6 +899,9 @@ class SkillGrantResponse(TypedDict, total=False):
 
 class SkillDeleteResponse(TypedDict, total=False):
     ok: bool
+    pending: bool  # queued behind a long job past the answer bound: {ok, pending, job_id, message}
+    job_id: str
+    message: str
     skill: str
     source: str
     content_hash: str

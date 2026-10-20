@@ -1365,9 +1365,10 @@ textarea:not(.ui-control):not(.ui-checkbox):focus {
 /* ---- Airy dopamine (DESIGN.md design bible) -------------------------------------------------------------------
    The setup page maps onto the bible's roles in both themes: the shell is the plain room (no wash, no outline, no
    heavy shadow); the step's body is the object on the rest shadow; cards, the collapse and the summary inside it are
-   trays, and a tray inside a tray drops its fill; the step rail is trays with the chosen step in the crimson tone and
-   a done step's chip in green; choices and pills are neutral capsules standing on the rest shadow, the chosen one
-   crimson and still standing. Fields keep their hairline. States change colour, never height. */
+   trays, and a tray inside a tray drops its fill; the step rail is trays with the current step in the soft crimson (a
+   chosen card) and a done step's chip in green; choices and pills are neutral capsules standing on the rest shadow,
+   the chosen one in the soft crimson and still standing. Fields keep their hairline. States change colour, never
+   height. */
 :root[data-theme] .wizard-shell {
   border-color: transparent;
   background: transparent;
@@ -1396,9 +1397,9 @@ textarea:not(.ui-control):not(.ui-checkbox):focus {
   background: var(--surface-tray);
   box-shadow: none;
 }
-:root[data-theme] .wizard-step.active { background: var(--tone-crimson); }
+:root[data-theme] .wizard-step.active { background: var(--tone-crimson-soft); }
 :root[data-theme] .wizard-step.done { border-color: transparent; }
-:root[data-theme] .wizard-step.active .wizard-step-index { background: transparent; color: var(--tone-crimson-ink); }
+:root[data-theme] .wizard-step.active .wizard-step-index { background: transparent; color: var(--tone-crimson-soft-ink); }
 :root[data-theme] .wizard-step.done .wizard-step-index { background: var(--tone-green); color: var(--status-ok-fg); }
 :root[data-theme] .wizard-badge { border-color: transparent; }
 :root[data-theme] :is(.wizard-choice, .selection-pill) {
@@ -1416,11 +1417,13 @@ textarea:not(.ui-control):not(.ui-checkbox):focus {
 }
 :root[data-theme] :is(.wizard-choice, .selection-pill).active {
   border-color: transparent;
-  background: var(--tone-crimson);
-  color: var(--tone-crimson-ink);
+  background: var(--tone-crimson-soft);
+  color: var(--tone-crimson-soft-ink);
   box-shadow: var(--elev-rest);
 }
 :root[data-theme] :is(.wizard-choice, .selection-pill):active { transform: none; filter: var(--press); }
+/* A mark inside a chosen card wears the card's ink (a chosen state's ink is its tone's, DESIGN.md principle 4). */
+:root[data-theme] .wizard-choice.active .skills-mark { color: inherit; }
 
 /* ---- Starter skills (board B13): one Summary row that opens in place into ONE vertical scroll of categorized
    cards — two columns, one on a phone; a ticked card takes the wizard's chosen tone. Under the list stay the two
@@ -1493,7 +1496,7 @@ textarea:not(.ui-control):not(.ui-checkbox):focus {
   display: inline-flex;
   align-items: center;
   gap: var(--space-1);
-  color: var(--tone-crimson-ink);
+  color: var(--tone-crimson-word);
   font-size: var(--type-meta);
   line-height: var(--line-meta);
   font-weight: 500;

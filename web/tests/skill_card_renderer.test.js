@@ -227,15 +227,18 @@ test('a stale recorded preflight failure keeps Review first and offers the fix f
     assert.match(html, /skills-menu-item skills-repair-stale" data-skill="demo" data-skill-action="repair">Ask Ouroboros to fix</);
 });
 
-test('the menu carries details, review again, make runnable, publish and the remove action for the origin', () => {
-    const made = renderInstalledSkillCard(skill({ type: 'instruction', source: 'self_authored', is_self_authored: true }));
+test('the menu carries details, review again, make runnable, publish and exactly the removal the host names', () => {
+    const made = renderInstalledSkillCard(skill({ type: 'instruction', source: 'self_authored', is_self_authored: true, removal: 'delete' }));
     assert.match(made, /skills-make-runnable" data-skill="demo" data-skill-action="repair">Make runnable</);
     assert.match(made, /skills-delete-local"[^>]*data-skill-action="delete"[^>]*>Delete</);
     assert.doesNotMatch(made, /skills-uninstall/);
     const sourced = renderInstalledSkillCard(row('weather'));
     assert.match(sourced, /skills-uninstall"[^>]*>Uninstall</);
     assert.doesNotMatch(sourced, /skills-delete-local/);
-    assert.doesNotMatch(renderInstalledSkillCard(row('telegram')), /skills-uninstall|skills-delete-local/, 'built-in skills are turned off, not removed');
+    // Inverted pin: a built-in is removed like any skill (owner decision 17.10 «7. A»); the host says so.
+    assert.match(renderInstalledSkillCard(row('telegram')), /skills-uninstall"[^>]*>Uninstall</);
+    const unnamed = renderInstalledSkillCard({ ...row('weather'), removal: '' });
+    assert.doesNotMatch(unnamed, /skills-uninstall|skills-delete-local/, 'the card derives no removal of its own');
 });
 
 test('Publish follows the host verdict: task_start_allowed decides, a missing token is said in Details', () => {
