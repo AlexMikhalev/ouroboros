@@ -384,15 +384,21 @@ def test_an_unconfirmed_or_uncaptured_send_proves_no_bytes_and_a_replay_captures
     # The send raised: nothing is registered, the answer stays owed, the version unknown.
     chat._handle_send_message(dict(event), _send_ctx(tmp_path, [], fail=True))
     assert terminal_answer_receipts(tmp_path, TASK)["state"] == "owed"
-    # The send landed but its bytes could not be retained: dedupe still holds, proof does not.
+    # The send landed but capture failed: retain the exact sent obligation, without proof yet.
     sends = []
     with monkeypatch.context() as patched:
         patched.setattr("ouroboros.artifacts.store_actor_source_bytes",
                         lambda *_a, **_k: (_ for _ in ()).throw(OSError("store unavailable")))
         chat._handle_send_message(dict(event), _send_ctx(tmp_path, sends))
     fact = terminal_answer_receipts(tmp_path, TASK)
-    assert sends == [(3, "answer B")] and registry.already_delivered(tmp_path, event["delivery_id"])
-    assert fact["state"] == "unknown" and fact["unverified_delivery_ids"] == [event["delivery_id"]]
+    assert sends == [(3, "answer B")] and not registry.already_delivered(tmp_path, event["delivery_id"])
+    assert fact["state"] == "owed" and fact["unverified_delivery_ids"] == []
+    outbox = DeliveryBus()
+    assert registry.replay_pending_deliveries(tmp_path, event_queue=outbox) == [event["delivery_id"]]
+    assert outbox.empty() and sends == [(3, "answer B")], "the duty completes capture without another send"
+    captured = terminal_answer_receipts(tmp_path, TASK)
+    assert captured["state"] == "delivered"
+    assert captured["delivered"][0]["text_sha256"] == hashlib.sha256(b"answer B").hexdigest()
     # An owed row replayed through the ordinary outbox reaches the same handler and receipt.
     other = TASK + "-replayed"
     write_task_result(tmp_path, other, "completed", chat_id=3, result="answer C")
@@ -406,4 +412,4 @@ def test_an_unconfirmed_or_uncaptured_send_proves_no_bytes_and_a_replay_captures
     replayed = terminal_answer_receipts(tmp_path, other)
     assert replayed["state"] == "delivered"
     assert replayed["delivered"][0]["text_sha256"] == hashlib.sha256(b"answer C").hexdigest()
-    assert terminal_answer_receipts(tmp_path, TASK)["state"] == "unknown", "receipts are per task and survive rewrites"
+    assert terminal_answer_receipts(tmp_path, TASK) == captured, "receipts are per task and survive rewrites"
