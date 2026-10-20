@@ -699,7 +699,8 @@ def revalidate_consumed_resume_holds() -> None:
         before = task.get(BUDGET_HOLD_KEY)
         try:
             with admission_acquisition():  # under Q nothing waits: a busy read keeps the hold for the next tick
-                if resume_hold_requires_fence(task, q.DRIVE_ROOT):
+                # A live attempt of the same id owns the task: its stale row waits, never fences it.
+                if resume_hold_requires_fence(task, q.DRIVE_ROOT) and task.get("id") not in q.RUNNING:
                     _fence_snapshot_running_rows([{"id": task["id"]}], restored_ids=set())
             changed |= before != task.get(BUDGET_HOLD_KEY)
         except (StoreError, OSError, ValueError, TypeError, RuntimeError):

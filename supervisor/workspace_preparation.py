@@ -360,10 +360,11 @@ def _run(claim: "PreparationClaim") -> None:
     _guarded(claim, step)
 
 
-def _guarded(claim: "PreparationClaim", step: Callable[[], None]) -> None:
+def _guarded(claim: "PreparationClaim", step: Callable[[], None], owner: Any = None) -> None:
     """One lane step under the claim: a typed stop refuses, a failure before the admission boundary
-    refuses, and the claim ends unless the step handed its continuation to the admission lane."""
-    claim.handed = False
+    refuses, and the claim ends unless the step handed its continuation to the admission lane.
+    The end belongs to one invocation: a hand-over names the next one before its job can start."""
+    owner = claim.ender = owner or object()
     try:
         step()
     except PreparationStopped as exc:
@@ -381,7 +382,7 @@ def _guarded(claim: "PreparationClaim", step: Callable[[], None]) -> None:
             except Exception:
                 log.warning("Preparation refusal of %s failed", claim.task_id, exc_info=True)
     finally:
-        if not claim.handed:
+        if claim.ender is owner:
             claim.release()
             _finish(claim)
 
@@ -408,7 +409,7 @@ class PreparationClaim:
         self.unidentified_residue = unidentified_residue
         self.crossed = False
         self.submitted = False
-        self.handed = False
+        self.ender: Any = None  # the lane invocation that ends this claim
         self.queued_marker = self.marker(QUEUED)
         self.refusal_receipt = uuid.uuid4().hex
 
@@ -435,8 +436,10 @@ class PreparationClaim:
         if self.generation is None or self.generation.current_lane() != COPY_LANE:
             step()
             return
-        self.handed = self.generation.submit(functools.partial(_guarded, self, step), ADMISSION_LANE)
-        if not self.handed:
+        current, handover = self.ender, object()
+        self.ender = handover  # before the job can start: from here its invocation ends the claim
+        if not self.generation.submit(functools.partial(_guarded, self, step, handover), ADMISSION_LANE):
+            self.ender = current
             log.warning("Admission lane unavailable; %s is admitted on its copy lane", self.task_id)
             step()
 

@@ -434,10 +434,12 @@ def _started_projection() -> list:
 
 def _release_launch(queue, candidate, worker, token: str) -> None:
     """Under Q: the row returns to residual demand and the slot frees (a reaping slot keeps its id
-    for the reaper's identity check; its replacement starts free)."""
+    for the reaper's identity check; its replacement starts free). Only this claim's own holder
+    releases: once the put retired the claim, the worker holds the task even if the job raised."""
     with queue._queue_lock:
-        if (candidate.get(_LAUNCH_CLAIM) or {}).get("token") == token:
-            candidate.pop(_LAUNCH_CLAIM, None)
+        if (candidate.get(_LAUNCH_CLAIM) or {}).get("token") != token:
+            return
+        candidate.pop(_LAUNCH_CLAIM, None)
         if worker.busy_task_id == str(candidate.get("id") or "") and not getattr(worker, "reaping", False):
             worker.busy_task_id = None
 
@@ -598,8 +600,9 @@ def _foreign_roots_refused(candidate) -> bool:
 
 def _candidate_ineligible(queue, candidate, remaining, running, *, selected=(), refused=(), cold_holders=None,
                           leased=None, unresolved_invalid_id_set=(), own_claim: str = "") -> bool:
-    """The chooser's side-effect-free gates over one queued row; also the launch's revalidation under Q
-    (``own_claim``: the revalidating launch's own token, the one claim that does not exclude the row)."""
+    """The chooser's gates over one queued row; also the launch's revalidation under Q (``own_claim``:
+    the revalidating launch's own token, the one claim that does not exclude the row). Side-effect
+    free except that a foreign-root refusal is named once, by a job on the admission lane."""
     from ouroboros.project_lease import candidate_is_leasable, cold_project_holders, running_project_ids
     from ouroboros.project_placement import refresh_pending_placement
     from ouroboros.config import get_max_active_subagents_per_root

@@ -61,7 +61,8 @@ def test_existing_folder_is_admitted_while_another_task_copy_waits(env, monkeypa
         wait_for(lambda: env.phase("readcontrol") == "admitted", "the readonly child's admission")
         assert env.pending_ids() == ["readcontrol"] and env.row("readcontrol")["status"] == STATUS_SCHEDULED
         assert env.dispatch_returns(env.request("existing", root="fast-root", surface="external_workspace"))
-        wait_for(lambda: env.row("existing")["status"] == STATUS_SCHEDULED, "the existing folder's admission")
+        # The receipt (SCHEDULED, ``admitting``) precedes the put, which retires the marker to ``admitted``.
+        wait_for(lambda: env.phase("existing") == "admitted", "the existing folder's admission")
         row = env.row("existing")
         assert row["workspace_preparation"]["phase"] == "admitted"
         assert row["workspace_root"] == str(env.source.resolve()) and "resource" not in row["workspace_preparation"]
