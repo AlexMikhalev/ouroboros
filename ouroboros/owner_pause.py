@@ -318,7 +318,7 @@ def set_fence_state(root_drive: Any, root_task_id: str, *, fence_id: str, state:
         fence = {**old, **fields, "state": state, f"{state}_at": utc_now_iso()}
         written.update(fence)
         from ouroboros.pause_notices import notice_fields
-        notice = (notice_fields(current, root_drive, root_task_id, fence_id, "owner")
+        notice = (notice_fields(current, root_drive, root_task_id, fence_id, "owner", fence=fence)
                   if state == FENCE_PAUSED and old.get("state") != FENCE_PAUSED else {})
         return stamp_task_result_schema({**current, **notice, "owner_pause": fence})
 

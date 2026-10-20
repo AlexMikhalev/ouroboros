@@ -141,7 +141,45 @@ def test_owner_members_do_not_announce_tree_confirmation(notices):
     set_fence_state(root, "task", fence_id=fence["fence_id"], state="paused", expected_state="requested")
     assert _owing(root) == {"task"}
     pause_notices.reconcile_pause_notices(root)
-    assert len(sent) == 1 and "owner's Pause" in sent[0][1]
+    # A press that declared nobody is never told as the owner's own.
+    assert [text for _chat, text, _kw in sent] == ["This task was paused. Its work is retained; Resume continues it."]
+
+
+def test_each_pause_generation_keeps_the_author_its_own_fence_declared(notices):
+    """The notice is worded from the Pause it confirms, never from the latest fence of the task."""
+    from ouroboros.owner_pause import install_fence, release_fence, set_fence_state
+    root, sent = notices
+    owner = {"actor": "owner", "text": "", "at": "2026-10-20T00:43:00+00:00"}
+    mind = {"actor": "ouroboros", "text": "Freeing the worker for the update", "at": "2026-10-20T01:10:00+00:00"}
+    first, _ = install_fence(root, "task", request_id="owner-press", by=owner)
+    set_fence_state(root, "task", fence_id=first["fence_id"], state="paused", expected_state="requested")
+    release_fence(root, "task", reason="owner_resume")
+    second, _ = install_fence(root, "task", request_id="mind-press", by=mind)
+    set_fence_state(root, "task", fence_id=second["fence_id"], state="paused", expected_state="requested")
+    pending = load_task_result(root, "task")["pause_notices"]
+    assert pending[f"pause:task:{first['fence_id']}"]["by"] == owner
+    pause_notices.reconcile_pause_notices(root)
+    words = {row["card_row_id"]: row["text"] for row in _rows(root)}
+    assert words == {
+        f"pause:task:{first['fence_id']}": "You paused this task. Its work is retained; Resume continues it.",
+        f"pause:task:{second['fence_id']}": ("Ouroboros paused this task: Freeing the worker for the update. "
+                                             "Its work is retained; Resume continues it."),
+    }
+    assert len(sent) == 2 and not _owing(root)
+
+
+def test_owner_pause_words_name_its_declared_author_and_never_default_to_the_owner():
+    text = pause_notices.notice_text
+    tail = " Its work is retained; Resume continues it."
+    assert text({"reason": "owner"}) == "This task was paused." + tail, "a notice saved before authors were kept"
+    assert text({"reason": "owner", "by": {"actor": "", "text": "mine"}}) == "This task was paused." + tail
+    assert text({"reason": "owner", "by": {"actor": "owner", "text": ""}}) == "You paused this task." + tail
+    assert text({"reason": "owner", "by": {"actor": "ouroboros", "text": " "}}) == "Ouroboros paused this task." + tail
+    assert text({"reason": "owner", "by": {"actor": "ouroboros", "text": "Is the update done?"}}) == (
+        "Ouroboros paused this task: Is the update done?" + tail)
+    # The budget sentence is unchanged and never borrows an author.
+    assert text({"reason": "budget", "by": {"actor": "owner"}}) == (
+        "The task paused because of its budget limit. Its work is retained. Use Resume on the task when available.")
 
 
 def test_first_dispatch_budget_pause_publishes_its_membership(notices):
