@@ -123,3 +123,21 @@ def test_a_warm_park_executes_nothing_and_its_unconfirmed_stop_stays_unconfirmed
     [work] = _works(tmp_path)
     assert work["live"] is False
     assert [(tail["code"], tail["state"]) for tail in work["tails"]] == [("external_runs_unconfirmed", "unknown")]
+
+
+def test_an_answered_roots_late_work_under_a_settling_pause_executes_and_keeps_its_identity(tmp_path, monkeypatch):
+    """An answered Continue episode whose post-answer synthesis is still in flight when the owner pauses: the census
+    lists it as settling and running, and its work keeps the id and name of the work it continues."""
+    from ouroboros import post_task_checkpoint
+    from ouroboros.task_results import write_task_result
+    from supervisor.owner_pause_control import request_owner_pause
+
+    _install_queue(tmp_path, monkeypatch)
+    write_task_result(tmp_path, "ans", "completed", chat_id=0, root_phase_checkpoint={"post_task_synthesis": "pending_once"},
+                      metadata={"continuation": {"predecessor_task_id": "prev", "work_id": "prev",
+                                                 "work_name": "Whole work"}})
+    monkeypatch.setattr(post_task_checkpoint, "post_task_synthesis_in_flight", lambda root, task_id: task_id == "ans")
+    assert request_owner_pause("ans", request_id="p", by=_OWNER)["ok"]
+    [work] = _works(tmp_path)
+    assert (work["work_id"], work["name"]) == ("prev", "Whole work")
+    assert (work["activity"], work["transition"], work["live"]) == ("working", "pausing", True)
