@@ -124,6 +124,24 @@ def test_warm_owner_pause_registry_and_fence_reach_the_rendered_card(tmp_path, m
             set_owner_wait(tmp_path, task["id"], {"wait_id": "pause-wait", "state": "waiting", "reason": "owner_pause"})
             settling = gateway_state._chat_activities_snapshot_safe(tmp_path)[0]
             assert settling["phase"] == "budget_pausing" and not settling.get("finishing_reviews")
+            # A review the parked author already sent still runs while the Pause settles: the census says it, for a
+            # direct turn and a managed member alike; an unreadable operation proves none and drops no row.
+            from ouroboros import review_operation
+
+            if kind == "managed_task":
+                supervisor_queue.RUNNING[task["id"]]["owner_wait"] = {"state": "waiting", "reason": "owner_pause"}
+            with monkeypatch.context() as patch:
+                patch.setattr(review_operation, "task_has_live_review_operation",
+                              lambda root, task_id, sent_only=False: sent_only and task_id == task["id"])
+                assert gateway_state._chat_activities_snapshot_safe(tmp_path)[0]["finishing_reviews"] is True
+
+                def unreadable(root, task_id, sent_only=False):
+                    raise OSError("store busy")
+
+                patch.setattr(review_operation, "task_has_live_review_operation", unreadable)
+                [busy] = gateway_state._chat_activities_snapshot_safe(tmp_path)
+                assert busy["phase"] == "budget_pausing" and not busy.get("finishing_reviews")
+            supervisor_queue.RUNNING.get(task["id"], {}).pop("owner_wait", None)
             # One reviewer as the census records it: its task (delegated run or live
             # operation) and its own model send. Mixed ids are never a reviewer count.
             owner_pause.set_fence_state(tmp_path, task["id"], fence_id=fence["fence_id"],

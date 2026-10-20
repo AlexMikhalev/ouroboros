@@ -485,6 +485,17 @@ def _finishing_reviews(drive_root: Any, row: Dict[str, Any], task_id: str) -> bo
         return False
 
 
+def _sent_review(drive_root: Any, row: Dict[str, Any], task_id: str) -> bool:
+    """Whether a review this warm-parked member already sent still runs while its Pause settles."""
+    try:
+        from ouroboros.review_operation import task_has_live_review_operation
+
+        return bool(task_has_live_review_operation(pathlib.Path(row.get("budget_drive_root") or drive_root), task_id,
+                                                   sent_only=True))
+    except Exception:
+        return False  # an unreadable operation proves no review: the row reads as before
+
+
 def _raw_work_facts(row: dict) -> dict:
     """The queue facts a census row drops that the work projection reads (gateway/work_projection.py)."""
     metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
@@ -547,6 +558,8 @@ def _direct_activity_pause_projection(drive_root: Any, row: dict, availability: 
             activity.update(phase="budget_paused" if state == "paused" else "budget_pausing", pause_cause="owner")
             if state == "paused" and (finishing := _finishing_reviews(drive_root, row, task_id)):
                 activity["finishing_reviews"] = finishing
+            elif state == "requested" and _sent_review(drive_root, row, task_id):
+                activity["finishing_reviews"] = True  # its stack waits while the review it sent runs
     return activity
 
 
@@ -738,8 +751,7 @@ def _chat_activities_snapshot(drive_root, task_bindings, direct_rows, pending_ro
                 else:
                     phase = "finalizing" if _managed_task_finalizing(drive_root, task_id) else "working"
                 activities.append(_activity(task_id, row, phase, started_at, root=root))
-                if phase == "budget_pausing" and row.get("_owner_pause_warm") and task_has_live_review_operation(
-                        drive_root, task_id, sent_only=True):
+                if phase == "budget_pausing" and row.get("_owner_pause_warm") and _sent_review(drive_root, row, task_id):
                     activities[-1]["finishing_reviews"] = True  # its stack waits while the review it sent runs
                 if work_facts is not None:  # the one fact that a settling Pause's member still executes
                     work_facts[task_id] = {**_raw_work_facts(row), "running": not row.get("_owner_pause_warm")}
