@@ -208,11 +208,15 @@ _LOAD_FAILURES_SEEN: set = set()
 
 
 def _load_sections() -> Dict[str, Callable[[], Dict[str, Any]]]:
-    """The row's further sections: a name and a zero-argument drain of its own window, one line each."""
+    """The row's further sections: a name and a zero-argument drain of its own window, one line each
+    (``dialogue_retry`` answers its process-lifetime counters and current occupancy instead)."""
+    from ouroboros import dialogue_retry, store_timing
     from supervisor import queue
 
     return {
         "queue_lock": lambda: queue._queue_lock.drain(),
+        "store_locks": store_timing.drain,
+        "dialogue_retry": dialogue_retry.snapshot,
     }
 
 

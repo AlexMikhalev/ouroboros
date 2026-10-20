@@ -108,7 +108,11 @@ def test_the_row_reads_the_real_q_and_neither_it_nor_the_drain_waits_for_q(monke
     from supervisor import events as events_mod, queue
 
     sections = sl._load_sections()
-    assert set(sections) == {"queue_lock"}
+    assert set(sections) == {"queue_lock", "store_locks", "dialogue_retry"}
+    from ouroboros import dialogue_retry, store_timing
+
+    assert sections["store_locks"] is store_timing.drain and sections["dialogue_retry"] is dialogue_retry.snapshot
+    assert {"rows", "bytes", "evicted", "max_rows"} <= set(sections["dialogue_retry"]())
     queue._queue_lock.drain()
     with queue._queue_lock:
         time.sleep(0.05)
