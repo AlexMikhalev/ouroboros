@@ -121,6 +121,32 @@ def test_reconcile_uses_same_store_guard(tmp_path, identity):
     assert current.run(tmp_path, entry.run_id).settled is (identity == "store-a")
 
 
+@pytest.mark.parametrize("kind", ["same_store", "replaced_store", "legacy", "missing_identity", "timeout", "forbidden"])
+def test_requested_external_stop_requires_owning_store_absence(tmp_path, monkeypatch, kind):
+    from ouroboros import external_runs
+    from ouroboros.gateways import claudexor
+
+    entry = started(tmp_path, daemon_store_id="" if kind == "legacy" else "store-a")
+    status = 0 if kind == "timeout" else 403 if kind == "forbidden" else 404
+    def read(*_args, **_kwargs):
+        raise ClaudexorUnavailable("daemon_unreachable" if kind == "timeout" else "run_unavailable",
+                                   "controlled observation", status_code=status)
+    gateway = SimpleNamespace(store_identity="store-b" if kind == "replaced_store" else
+                              "" if kind == "missing_identity" else "store-a",
+                              get_run=read, handshake=lambda: None, close=lambda: None,
+                              cancel_run=lambda *_a, **_kw: pytest.fail("the stop was already issued"))
+    monkeypatch.setattr(claudexor, "ClaudexorGateway", lambda: gateway)
+    prior = {"runs": [{"run_id": entry.run_id, "stop_policy": "request_stop", "stop_outcome": "requested"}]}
+    observed = external_runs.observe_task_runs(tmp_path, entry.task_id, prior=prior)
+    row, = observed["runs"]
+    confirmed = kind == "same_store"
+    assert row["stop_outcome"] == (c.CANCEL_CONFIRMED if confirmed else "unverified")
+    assert row["state"] == (external_runs.EXTERNAL_STOP_CONFIRMED if confirmed else external_runs.EXTERNAL_STOP_UNKNOWN)
+    assert external_runs.task_owned_runs_open(observed) is not confirmed
+    assert current.run(tmp_path, entry.run_id).settled is confirmed
+    assert sum(event["type"] == c.CLOSED_ABSENT for event in c.custody_rows(tmp_path)) == int(confirmed)
+
+
 def test_absence_never_replaces_retained_terminal_evidence(tmp_path):
     entry = started(tmp_path, daemon_store_id="store-a")
     body.observe_run(tmp_path, entry, terminal())
