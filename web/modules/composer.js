@@ -165,10 +165,11 @@ export function createPlusMenu({ button, hostItems = [] }) {
  * resolves a namespaced id; `page` is the room (the drop target and the capsules' docking box); `ws` the shared
  * socket; `replies` the room's reply controller, whose reference rides the frame; `storeKey(base)` the room's
  * sessionStorage key. `refreshState()` re-reads the room's settings after a capsule saves, `onLayout()` re-measures
- * the room's dock, and `onSent({ text, frame, result, views })` shows an accepted send in the feed.
+ * the room's dock, `onSent({ text, frame, result, views })` shows an accepted send in the feed, and `following()` says
+ * whether the room still follows its newest row (the phone fold reads it: composer_fold.js).
  */
 export function createComposer({ page, byId, ws, replies, chatSessionId, isMain, chatId, projectId, storeKey,
-    refreshState, onLayout, onSent }) {
+    refreshState, onLayout, onSent, following }) {
     const input = byId('input');
     const sendBtn = byId('send');
     const plusBtn = byId('plus');
@@ -332,7 +333,7 @@ export function createComposer({ page, byId, ws, replies, chatSessionId, isMain,
 
     // Each composer owns its room's Context and Effort settings.
     const ownerControls = createComposerOwnerControls({ row: page.querySelector('.chat-toolbar-row'), box: page, byId, apiFetch, showToast,
-        projectId, saveEffortRange: apiClient.ownerEffortRange, refreshState, onLayout });
+        projectId, saveEffortRange: apiClient.ownerEffortRange, refreshState, onLayout, following });
 
     // Rooms outside the bounded sidebar still read their settings.
     async function refreshProjectCognition() {

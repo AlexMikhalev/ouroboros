@@ -2,7 +2,8 @@
 // a run of reading back folds it and ☰ lands at the field's middle, whatever the folded field's height and past a reply
 // staged above the field; the way down, the latest, the field's focus, an open capsule, another layout and the end of
 // the room bring it back; a focused field keeps it; history paged in or let go, rows arriving or growing and a hidden
-// typing row move nothing, and a press on another control is that control's.
+// typing row move nothing, and a press on another control is that control's. While the room still follows its newest
+// row (a swipe begun in a card's frame, which the feed never sees) no scroll is the owner reading back.
 // Real frames are in the browser lane (tests/test_composer_fold_browser.py).
 import assert from 'node:assert/strict';
 import test from 'node:test';
@@ -66,9 +67,9 @@ function rig({ stack = true } = {}) {
     };
     // A layout pass changed `el`'s size: its observers hear of it.
     const resize = (el) => { for (const o of observers) if (o.targets.has(el)) o.fn([{ target: el }]); };
-    const env = { stack, layout: null };
+    const env = { stack, layout: null, following: false };
     const fold = createComposerFold({ feed, wrap, row, win, doc, isStack: () => env.stack,
-        onLayout: (fn) => { env.layout = fn; return () => { env.layout = null; }; } });
+        onLayout: (fn) => { env.layout = fn; return () => { env.layout = null; }; }, following: () => env.following });
     // The owner's finger moves the feed: reading back brings every row further down and the scroll off its end.
     const scroll = (down, by = 30) => {
         for (const r of rows) r.bottom += down ? by : -by;
@@ -227,6 +228,22 @@ test('history paged in or let go, rows arriving or growing are not the owner\'s 
     assert.equal(r.fold.folded(), false, 'nor does a row growing (a live card, a long reply)');
     for (let i = 0; i < 3; i += 1) r.scroll(true);
     assert.equal(r.fold.folded(), true, 'and the owner reading back folds it again');
+});
+
+test('while the room still follows its newest row no scroll is the owner reading back; the owner\'s own gesture is', () => {
+    const r = rig();
+    // A swipe begun in a card's frame: the frame takes the touches, so the feed saw no gesture of the owner's and the
+    // room still follows its newest row (chat_reading_position.js), though the browser moves the feed.
+    r.env.following = true;
+    for (let i = 0; i < 4; i += 1) r.scroll(true);
+    assert.equal(r.fold.folded(), false, 'a run of 90px read back with the room still following folds nothing');
+    assert.equal('fold' in r.wrap.dataset, false, 'and holds no height for a resize to lay the feed out by');
+    r.env.following = false;  // the owner's own gesture on the feed ends following
+    for (let i = 0; i < 3; i += 1) r.scroll(true);
+    assert.equal(r.fold.folded(), true, 'the owner\'s own reading back folds it');
+    r.env.following = true;  // ↓ or a Send: the room follows its newest row again
+    r.scroll(true);
+    assert.equal(r.fold.folded(), false, 'following again brings the row back');
 });
 
 test('only on a phone; another layout brings the row back; the end of the room clears it', () => {
