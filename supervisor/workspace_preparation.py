@@ -158,17 +158,24 @@ class PreparationGeneration:
         self.owner = _process_owner()
         self._stop = stop
         self._closed = threading.Event()
+        self._paused = threading.Event()  # a process-ending stop is under way (``pause_admission``)
         self._lock = threading.Lock()
         self._idle = threading.Condition(self._lock)
         self._jobs = {lane: collections.deque() for lane in (COPY_LANE, VALIDATION_LANE)}
         self._threads: Dict[str, Optional[threading.Thread]] = dict.fromkeys(self._jobs)
 
     def closed(self) -> bool:
-        """Closed explicitly, or its server generation / process stop or restart was requested."""
-        return self._closed.is_set() or bool(self._stop is not None and self._stop())
+        """Closed explicitly, paused by a stop under way, or its server generation / process stop or
+        restart was requested."""
+        return self._closed.is_set() or self._paused.is_set() or bool(self._stop is not None and self._stop())
 
     def close(self) -> None:
         self._closed.set()
+
+    def lane_idle(self, lane: str, timeout: Optional[float] = None) -> bool:
+        """Wait until ``lane`` holds no job and runs none (a stop's bounded wait; never the lane itself)."""
+        with self._idle:
+            return self._idle.wait_for(lambda: self._threads[lane] is None and not self._jobs[lane], timeout)
 
     def submit(self, job: Callable[[], None], lane: str = COPY_LANE) -> bool:
         """Queue ``job`` behind earlier ones of its lane; False when no thread could start for it."""
@@ -278,6 +285,36 @@ def close_generation(generation: Optional[PreparationGeneration] = None) -> None
     target = generation if generation is not None else _CURRENT[0]
     if target is not None:
         target.close()
+
+
+def pause_admission(timeout: Optional[float] = None) -> bool:
+    """A process-ending stop's first step (owner Restart, planned restart, Update, Quit), before it reads
+    the queue: the open generation starts nothing new (``closed``), and the stop waits, at most
+    ``STOP_ADMISSION_DRAIN_SEC``, for the admission lane to empty, so a launch or Resume already writing
+    its marks hands over to the pool it reserved while that pool still runs (``worker_assignment``,
+    ``worker_owner_wait``). True when the lane emptied in time. ``resume_admission`` reopens it."""
+    from ouroboros.runtime_limits import STOP_ADMISSION_DRAIN_SEC
+    from supervisor import queue
+
+    generation = _CURRENT[0]
+    if generation is None:
+        return True
+    generation._paused.set()
+    if generation.on_executor() or queue._queue_lock._is_owned():
+        log.error("A stop paused admission from the admission lane or under Q; it cannot wait for the lane")
+        return False
+    if generation.lane_idle(ADMISSION_LANE, STOP_ADMISSION_DRAIN_SEC if timeout is None else timeout):
+        return True
+    log.warning("A stop proceeds while the admission lane still writes; a launch it commits after the pool "
+                "stops restores as possibly dispatched")
+    return False
+
+
+def resume_admission() -> None:
+    """The stop that paused admission did not end this process: the generation admits again."""
+    generation = _CURRENT[0]
+    if generation is not None:
+        generation._paused.clear()
 
 
 def current_generation() -> Optional[PreparationGeneration]:

@@ -258,9 +258,9 @@ def _deadline_refuses_launch(queue, candidate, *, unsubmitted=None) -> bool:
 # same queue row, attempt and marks re-read the result and may finish and put once in this
 # generation, only after this commit's own marks read back; entering the put retires it, and
 # so does its row leaving the queue. Until then budget and deadline stops read it as never
-# dispatched (the deadline with its pre-commit claim). A stop that retires the pool settles them as
-# never dispatched (``settle_unsent_launches``); a crash or an entered put leaves the durable
-# ``possible`` that restore and the occurrence reconcile never replay.
+# dispatched (the deadline with its pre-commit claim). A process-ending stop waits for them to hand
+# over (``workspace_preparation.pause_admission``); a crash, Panic, a stop that outwaits its bound or an
+# entered put leaves the durable ``possible`` that restore and the occurrence reconcile never replay.
 _COMMITTED_UNSENT: Dict[str, Dict[str, Any]] = {}
 
 
@@ -277,17 +277,6 @@ def _forget_departed_launches(pending) -> None:
     for task_id, witness in list(_COMMITTED_UNSENT.items()):
         if id(witness["row"]) not in live:
             _COMMITTED_UNSENT.pop(task_id, None)
-
-
-def settle_unsent_launches(rows: list) -> list:
-    """Under Q, once the pool is retired: every claim names a retired worker, so no committed-unsent
-    launch of these rows can be put by this process any more. Their snapshot says never dispatched;
-    a later launch commits fresh marks for the same attempt."""
-    for row in rows:
-        if _unsent(row) is not None:
-            row["admitted_dispatch"] = "none"
-            _COMMITTED_UNSENT.pop(str(row.get("id") or ""), None)
-    return rows
 
 
 def _commit_launch(queue, candidate, unsubmitted=None):
@@ -418,15 +407,25 @@ def _claim_worker_launch(queue, candidate, worker, *, deferred: Optional[set] = 
 
 def _launch_job(queue, candidate, worker, token: str, generation) -> None:
     """The admission-lane job of the reserving GENERATION: one attempt per acquisition slice until it
-    put or was refused."""
+    put or was refused. A closing generation withdraws a launch that wrote no marks; one whose marks
+    committed is finished here, unresolved attempts included: the stop that closed it waits for this
+    lane (``workspace_preparation.pause_admission``), and no later assignment pass would retry it."""
+    from ouroboros._usage_wait import ACQUISITION_SLICE_SEC
     from supervisor import workspace_preparation
     from supervisor.schedule_occurrence import contention
 
+    def attempt():
+        return generation.wait_store(
+            functools.partial(_launch_attempt, queue, candidate, worker, token, lane=True, generation=generation),
+            controls=lambda: ({"detail": "generation closed"}
+                              if generation.closed() and _unsent(candidate) is None else None), busy=contention)
+
     outcome = False
     try:
-        outcome = generation.wait_store(
-            functools.partial(_launch_attempt, queue, candidate, worker, token, lane=True, generation=generation),
-            controls=lambda: ({"detail": "generation closed"} if generation.closed() else None), busy=contention)
+        outcome = attempt()
+        while outcome is None and generation.closed() and _unsent(candidate) is not None:
+            time.sleep(ACQUISITION_SLICE_SEC)
+            outcome = attempt()
         if outcome is None:
             log.info("Worker start of %s unresolved; the next assignment pass retries it", candidate.get("id"))
     except workspace_preparation.PreparationStopped:

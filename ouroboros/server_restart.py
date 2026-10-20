@@ -142,8 +142,11 @@ def _stop_owned_work(ctx: Any) -> list:
     Runs AFTER the checkout gate and the durable no-resume flags, so nothing
     here can veto: an unconfirmed step is a critical diagnostic with custody
     retained, and the next generation's startup custody sweep reconciles the
-    remainder. First prepare the retained-return transaction: native saved
-    work returns only after its fresh acknowledgment, while prior holds stay.
+    remainder. First admission pauses: launches and Resumes already writing their
+    marks hand over to the still-running pool (``pause_admission``), so nothing is
+    left between its marks and its worker. Then prepare the retained-return
+    transaction: native saved work returns only after its fresh acknowledgment,
+    while prior holds stay.
     Record cancel intents for owned live ids outside that return set (saved
     pauses excluded), then ``kill_workers`` with ``retain_saved_work``,
     ``preserve_pending``, preserved owner waits and
@@ -165,9 +168,11 @@ def _stop_owned_work(ctx: Any) -> list:
     from ouroboros.claudexor_daemon import read_owned_gateway
     from ouroboros.delegate_custody import reconcile_orphaned_runs
     from ouroboros.owned_shutdown import begin_owned_stop
+    from supervisor.workspace_preparation import pause_admission
 
     _OWNER_STOP_BEGAN.set()  # owner Rollback/Apply Update also restart as the owner, but never get here
     begin_owned_stop(DATA_DIR)  # the grace starts here; every pending stop is recorded before any wait
+    pause_admission()  # reopened only by the raising path below (``reopen_queue_returns``)
     returning, owner_waits = _prepare_owner_restart_returns(ctx)
     _LAST_RETURNING.clear()
     _LAST_RETURNING.update(returning)
@@ -462,6 +467,16 @@ def _noticed_bootstrap(safe_restart_fn):
                 log.warning("Bootstrap failure notice was not delivered", exc_info=True)
         return ok, msg
     return run
+
+
+def _begin_task_teardown(restart_requested: bool) -> tuple[str, str]:
+    """The planned restart and Quit start tearing tasks down: admission pauses first, so a launch or
+    Resume already writing its marks hands over to the still-running pool (``pause_admission``);
+    returns ``_shutdown_task_cleanup_args``."""
+    from supervisor.workspace_preparation import pause_admission
+
+    pause_admission()
+    return _shutdown_task_cleanup_args(restart_requested)
 
 
 def _shutdown_task_cleanup_args(restart_requested: bool) -> tuple[str, str]:

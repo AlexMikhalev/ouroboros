@@ -117,17 +117,19 @@ def local_work_settled() -> bool:
     from ouroboros.tool_custody import local_producers_settled
 
     return (local_producers_settled() and local_reviews_settled() and local_producers_settled()
-            and _retained_rows_landed())
+            and _settle_retained_rows())
 
 
-def _retained_rows_landed() -> bool:
-    """An idle worker lands its retained dialogue rows before it may be retired: retirement kills
-    without finalizers, so a row still held would be lost uncounted."""
+def _settle_retained_rows() -> bool:
+    """An idle worker gives its retained dialogue rows the bounded exit attempt before it may be
+    retired, and counts what still cannot land as lost (``dialogue_retry.finish``): retirement kills
+    without finalizers, so its own exit drain would never count them, and a row that can never land
+    must not keep the worker from retiring."""
     from ouroboros import dialogue_retry
 
     if dialogue_retry.snapshot()["rows"]:
-        _drain_dialogue_retry()
-    return not dialogue_retry.snapshot()["rows"]
+        dialogue_retry.finish()
+    return True
 
 
 def _adopt_published_extensions(pool_drive_root: str) -> None:

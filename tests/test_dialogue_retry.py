@@ -251,3 +251,24 @@ def test_a_childs_terminal_row_waits_in_the_buffer_and_lands_once(tmp_path, monk
     assert retry.drain() == 1
     rows = [row for row in chat_rows(tmp_path) if row.get("task_id") == "child-1" and row.get("type") == "task_summary"]
     assert len(rows) == 1
+
+
+@pytest.mark.parametrize("mode", ["PERSIST", "WAL"])
+def test_idle_retirement_lands_what_it_can_and_counts_the_rest_lost(tmp_path, monkeypatch, mode):
+    """An idle worker answers settled either way: a row that can land lands first, and one that cannot is
+    counted lost instead of keeping the worker from ever retiring (retirement runs no exit drain)."""
+    from supervisor.worker_process import local_work_settled
+
+    monkeypatch.setattr("ouroboros.tool_custody.local_producers_settled", lambda: True)
+    monkeypatch.setattr("ouroboros.review_operation.local_reviews_settled", lambda: True)
+    seed(tmp_path, monkeypatch, mode)
+    blocked = {"chat_id": 1, "ts": "2026-10-20T00:00:01Z", "text": "cannot land now"}
+    retry.retain(tmp_path, "progress", blocked)
+    with pinned(tmp_path, writer=mode == "WAL"):
+        assert local_work_settled()
+    assert retry.snapshot()["rows"] == 0 and retry.snapshot()["lost_at_exit"] == 1
+    assert progress_rows(tmp_path) == []
+    landed = {"chat_id": 1, "ts": "2026-10-20T00:00:02Z", "text": "lands"}
+    retry.retain(tmp_path, "progress", landed)
+    assert local_work_settled()
+    assert retry.snapshot()["retried_ok"] == 1 and progress_rows(tmp_path) == [landed]

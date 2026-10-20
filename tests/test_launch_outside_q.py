@@ -278,60 +278,176 @@ def test_marks_committed_while_the_generation_was_open_finish_their_handoff(env,
     assert "launch-child" in queue.RUNNING and worker.busy_task_id == "launch-child"
 
 
-def test_a_stop_that_retires_the_pool_after_the_marks_leaves_the_row_never_started(env, monkeypatch):
-    """The owner's Restart or Quit retires the pool between a launch's committed marks and its put:
-    the claim can never be put any more, so the stop's snapshot says never dispatched and restore
-    keeps the row plainly resumable (not "may already have reached a worker")."""
-    import copy
-    import json
-
-    from supervisor.queue_snapshot import _retain_snapshot_pending
-    from supervisor.restart_retention import never_started
-
-    monkeypatch.setattr(queue, "QUEUE_SNAPSHOT_PATH", env.data / "state" / "queue_snapshot.json")
-    monkeypatch.setattr(worker_assignment, "_COMMITTED_UNSENT", {})
-    monkeypatch.setattr(workers, "_LAST_WORKER_EXIT_CENSUS", None)
-    worker, delivered = install_worker(env, monkeypatch)
-    alive = [True]
-    worker.proc.is_alive = lambda: alive[0]
-    worker.proc.join = lambda **_kw: None
-    monkeypatch.setattr(workers, "kill_worker_tree", lambda _pid: alive.__setitem__(0, False))
-    monkeypatch.setattr(workers, "_kill_survivors", lambda: None)
-    monkeypatch.setattr("supervisor.worker_process.close_worker_stop_channel", lambda _proc: None)
-    monkeypatch.setattr("supervisor.worker_health.retire_confirmed_worker_consumers", lambda *_a: None)
-    tid = "accepted-root"
+def accepted_root(env, tid="accepted-root"):
+    """An ordinary accepted root: every fresh non-Project admission carries the host-unscoped mark."""
     write_task_result(env.data, tid, "scheduled", chat_id=7, description="accepted owner work")
     with queue._queue_lock:
         row = queue.enqueue_task({"id": tid, "type": "task", "chat_id": 7, "text": "accepted owner work",
                                   "description": "accepted owner work", "budget_drive_root": str(env.data),
                                   "_project_scope_none": True})
-    committed, proceed = threading.Event(), threading.Event()
-    original = worker_assignment._commit_launch
+    assert not row.get("_admission_blocked"), row
+    return row
 
-    def after_marks(queue_module, candidate, unsubmitted=None):
-        projections = original(queue_module, candidate, unsubmitted)
-        if candidate.get("id") == tid and projections is not None and projections is not False:
-            committed.set()
+
+def hold_after(monkeypatch, owner, name, tid):
+    """Hold the lane right after ``owner.name`` returned for ``tid``: its durable step has landed."""
+    reached, proceed = threading.Event(), threading.Event()
+    original = getattr(owner, name)
+
+    def held(*args, **kwargs):
+        result = original(*args, **kwargs)
+        task = next(arg for arg in args if isinstance(arg, dict) and "id" in arg)
+        if task["id"] == tid and result is not None and result is not False:
+            reached.set()
             assert proceed.wait(_WAIT_SEC)
-        return projections
+        return result
 
-    monkeypatch.setattr(worker_assignment, "_commit_launch", after_marks)
+    monkeypatch.setattr(owner, name, held)
+    return reached, proceed
+
+
+def stop_door():
+    """A process-ending stop's first step, run as the door runs it: off the lane, outside Q."""
+    outcome = []
+    door = threading.Thread(target=lambda: outcome.append(prep.pause_admission(_WAIT_SEC)), name="stop-door")
+    door.start()
+    return door, outcome
+
+
+def delivered_ids(delivered):
+    return [task["id"] for task in delivered if "id" in task]
+
+
+@pytest.mark.parametrize("held_step", ["marks_committed", "commit_returning"])
+def test_a_stop_waits_for_a_committed_launch_to_reach_its_worker(env, monkeypatch, held_step):
+    """Restart, Update or Quit lands between a launch's committed marks and its put (or while that
+    commit is still returning): the stop pauses admission and waits for the lane, so the launch
+    reaches its worker before the pool retires and nothing is left between its marks and a worker."""
+    worker, delivered = install_worker(env, monkeypatch)
+    row = accepted_root(env)
+    owner, name = ((worker_assignment, "_commit_launch") if held_step == "marks_committed"
+                   else (task_admission, "commit_dispatch_marks"))
+    reached, proceed = hold_after(monkeypatch, owner, name, row["id"])
+    workers.assign_tasks()
+    assert reached.wait(_WAIT_SEC) and delivered == []
+    door, paused = stop_door()
+    time.sleep(0.2)
+    assert paused == [] and env.gen.closed()  # the stop waits; nothing new starts meanwhile
+    proceed.set()
+    door.join(_WAIT_SEC)
+    assert paused == [True]
+    assert delivered_ids(delivered) == [row["id"]] and row["id"] in queue.RUNNING
+    assert worker_assignment._unsent(row) is None and worker.busy_task_id == row["id"]
+
+
+def test_a_stop_waits_for_a_scheduled_launch_to_reach_its_worker(env, monkeypatch):
+    """The same for an occurrence a schedule fired: its receipt says ``possible`` only once the put
+    is certain to follow, so restore never holds a never-sent occurrence (and its schedule fires on)."""
+    from supervisor import queue_schedules, schedule_occurrence
+    from tests.test_schedule_occurrence import _row
+
+    worker, delivered = install_worker(env, monkeypatch)
+    monkeypatch.setattr(queue_schedules, "resync_skill_schedules", lambda *_a: {})
+    monkeypatch.setattr("ouroboros.config.get_bg_wakeup_min_sec", lambda: 0)
+    _row(SimpleNamespace(queue=queue, pending=queue.PENDING, root=env.data), intent={"kind": "system_repo"})
+    queue.check_scheduled_tasks()
+    [row] = queue.PENDING
+    assert schedule_occurrence.restore_verdict(row) == "replay"
+    reached, proceed = hold_after(monkeypatch, worker_assignment, "_commit_launch", row["id"])
+    workers.assign_tasks()
+    assert reached.wait(_WAIT_SEC)
+    door, paused = stop_door()
+    time.sleep(0.2)
+    assert paused == []
+    proceed.set()
+    door.join(_WAIT_SEC)
+    assert paused == [True] and delivered_ids(delivered) == [row["id"]] and row["id"] in queue.RUNNING
+
+
+def test_a_paused_lane_writes_no_marks_and_resume_reopens_it(env, monkeypatch):
+    """A launch still waiting on the lane when the stop pauses it refuses before any durable step
+    (the row is plainly never-started); a stop that does not end the process reopens admission."""
+    worker, delivered = install_worker(env, monkeypatch)
+    row = scheduled_child(env)
+    release = occupy_lane(env.gen)
+    workers.assign_tasks()  # the claim is taken; the job waits behind the occupying one
+    assert row.get("_launch_claim") and worker.busy_task_id == "launch-child"
+    door, paused = stop_door()
+    time.sleep(0.2)
+    assert paused == []
+    release.set()
+    door.join(_WAIT_SEC)
+    assert paused == [True] and delivered == [] and worker.busy_task_id is None and "_launch_claim" not in row
+    assert env.row("launch-child").get("admitted_dispatch") != "possible" and worker_assignment._unsent(row) is None
+    workers.assign_tasks()  # still paused: nothing starts
+    assert env.gen.wait_idle(_WAIT_SEC) and delivered == []
+    prep.resume_admission()
+    assert not env.gen.closed()
+    workers.assign_tasks()
+    assert env.gen.wait_idle(_WAIT_SEC) and delivered_ids(delivered) == ["launch-child"]
+
+
+def test_an_unresolved_committed_launch_is_finished_while_a_stop_waits(env, monkeypatch):
+    """No later assignment pass retries a launch once its stop began: the lane itself finishes a
+    committed launch whose last step stayed unresolved (here the occurrence-row mark, once)."""
+    worker, delivered = install_worker(env, monkeypatch)
+    row = accepted_root(env)
+    marks = []
+    original_mark = worker_assignment._mark_launch_row
+
+    def unresolved_once(candidate, projections):
+        marks.append(candidate["id"])
+        return None if len(marks) == 1 else original_mark(candidate, projections)
+
+    monkeypatch.setattr(worker_assignment, "_mark_launch_row", unresolved_once)
+    reached, proceed = hold_after(monkeypatch, worker_assignment, "_commit_launch", row["id"])
+    workers.assign_tasks()
+    assert reached.wait(_WAIT_SEC)
+    door, paused = stop_door()
+    time.sleep(0.2)
+    proceed.set()
+    door.join(_WAIT_SEC)
+    assert paused == [True] and marks == [row["id"], row["id"]]
+    assert delivered_ids(delivered) == [row["id"]] and row["id"] in queue.RUNNING
+
+
+def test_contention_after_the_marks_retries_while_a_stop_waits(env, monkeypatch):
+    """A closing generation withdraws only a launch that wrote nothing: contention met after the marks
+    committed (here the occurrence-row mark's table) is retried at the lane and the launch is put."""
+    worker, delivered = install_worker(env, monkeypatch)
+    row = accepted_root(env)
+    marks = []
+    original_mark = worker_assignment._mark_launch_row
+
+    def contended_once(candidate, projections):
+        marks.append(candidate["id"])
+        if len(marks) == 1:
+            raise store.StoreBusy("held occurrence table", reason="contention")
+        return original_mark(candidate, projections)
+
+    monkeypatch.setattr(worker_assignment, "_mark_launch_row", contended_once)
+    reached, proceed = hold_after(monkeypatch, worker_assignment, "_commit_launch", row["id"])
+    workers.assign_tasks()
+    assert reached.wait(_WAIT_SEC)
+    door, paused = stop_door()
+    time.sleep(0.2)
+    proceed.set()
+    door.join(_WAIT_SEC)
+    assert paused == [True] and marks == [row["id"], row["id"]]
+    assert delivered_ids(delivered) == [row["id"]] and row["id"] in queue.RUNNING
+
+
+def test_a_stop_proceeds_once_its_bound_passes(env, monkeypatch):
+    """The wait is a stop's hard bound, never an indefinite hold: a lane that does not empty in time
+    answers False and the stop goes on (such a launch then restores as possibly dispatched)."""
+    release = occupy_lane(env.gen)
     try:
-        workers.assign_tasks()
-        assert committed.wait(_WAIT_SEC) and row["admitted_dispatch"] == "possible"
-        assert workers.kill_workers(force=True, preserve_pending=True, retain_saved_work=True,
-                                    archive_service_logs=False, reconcile_delegate_custody=False,
-                                    reconcile_review_custody=False, stop_source="server_shutdown")
+        assert prep.pause_admission(0.2) is False and env.gen.closed()
     finally:
-        proceed.set()
-        assert env.gen.wait_idle(_WAIT_SEC)
-    assert delivered == [] and not queue.RUNNING
-    saved = next(entry["task"] for entry in json.loads(queue.QUEUE_SNAPSHOT_PATH.read_text(encoding="utf-8"))["pending"]
-                 if entry["task"]["id"] == tid)
-    assert saved["admitted_dispatch"] == "none"
-    worker_assignment._COMMITTED_UNSENT.clear()  # the next process has no memory witness
-    retained, _unseen, consumed, _roots = _retain_snapshot_pending([copy.deepcopy(saved)], [], stale=False)
-    assert not consumed and len(retained) == 1 and never_started(retained[0])
+        release.set()
+    assert env.gen.lane_idle(prep.ADMISSION_LANE, _WAIT_SEC)
+    prep.resume_admission()
+    assert not env.gen.closed()
 
 
 def test_a_launch_on_the_lane_counts_against_its_roots_cap_in_the_same_pass(env, monkeypatch):

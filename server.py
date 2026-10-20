@@ -107,7 +107,7 @@ from ouroboros.ui_translation import start_background as _start_ui_translation
 from supervisor.workspace_preparation import start_generation as _start_preparation_generation
 from supervisor.event_observation import pending_idle_observations
 from ouroboros.server_restart import (  # noqa: F401
-    _live_running_task_ids, _managed_update_pending_kwargs,
+    _begin_task_teardown, _live_running_task_ids, _managed_update_pending_kwargs,
     _perform_owner_restart, _safe_restart_serialized,
     _shutdown_supervisor_event_bus, _shutdown_task_cleanup_args,
     _stop_owned_daemon_for_new_pin, _stop_owned_work,
@@ -1112,7 +1112,7 @@ def _perform_supervisor_restart(
         if st.get("owner_chat_id"):
             ctx.send_with_budget(int(st["owner_chat_id"]), f"⚠️ Restart skipped: {msg}", role="system", system_type="restart_notice")
         return
-    cleanup_status, cleanup_reason = _shutdown_task_cleanup_args(restart_requested=True)
+    cleanup_status, cleanup_reason = _begin_task_teardown(restart_requested=True)
     global _planned_delegate_restart_transaction_id
     _planned_delegate_restart_transaction_id = ""
     planned_handoffs: set[str] = set()
@@ -1496,7 +1496,7 @@ async def lifespan(app):
         try:
             restart_requested = _restart_requested.is_set()
             from supervisor.workers import kill_workers
-            cleanup_status, cleanup_reason = _shutdown_task_cleanup_args(restart_requested)
+            cleanup_status, cleanup_reason = _begin_task_teardown(restart_requested)
             kill_workers(
                 force=True,
                 terminal_status=cleanup_status,

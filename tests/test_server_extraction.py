@@ -65,6 +65,7 @@ _MOVED_OWNERS = {
     "_run_startup_task_recovery": server_maintenance,
     "_startup_custody_sweep": server_maintenance,
     "_startup_prune_sweeps": server_maintenance,
+    "_begin_task_teardown": server_restart,
     "_live_running_task_ids": server_restart,
     "_managed_update_pending_kwargs": server_restart,
     "_perform_owner_restart": server_restart,

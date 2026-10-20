@@ -159,10 +159,13 @@ def name_queue_returns(pending: List[Dict[str, Any]], door: str) -> List[Dict[st
 
 
 def reopen_queue_returns(door: str) -> None:
-    """That door's stop raised before its exit: this generation goes on admitting."""
+    """That door's stop raised before its exit: this generation goes on admitting, its admission lane too."""
+    from supervisor.workspace_preparation import resume_admission
+
     with _queue_lock:
         if RETURNS_NAMED.get("door") == door:
             RETURNS_NAMED.clear()
+    resume_admission()
 from supervisor.task_admission import (  # noqa: E402,F401 - public queue API
     coerce_queue_order, enqueue_with_admission_receipt, prefer_terminalization_retry_rows,
     reject_invalid_task_depth, release_task_admission, restore_invalid_depth_admission,
