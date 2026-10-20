@@ -81,7 +81,7 @@ from ouroboros.server_liveness import (  # noqa: F401
     _chat_turn_wedged,
     _start_supervisor_liveness_watchdog,
     _supervisor_loop_stalled,
-    drain_worker_events, flush_budget_projection,
+    drain_worker_events, flush_budget_projection, publish_supervisor_load,
 )
 from ouroboros.server_liveness import BOOT, start_boot_coordinator, wait_event
 from ouroboros.server_maintenance import (  # noqa: F401
@@ -938,6 +938,7 @@ def _run_supervisor(settings: dict) -> None:
                     log.warning("Consciousness alarm tick failed", exc_info=True)
 
             crash_count = 0
+            publish_supervisor_load(get_event_q(), DATA_DIR)  # one row a minute, never under Q; never raises
             if not backlog:
                 time.sleep(0.5)  # a turn that hit its events bound drains the backlog at full speed
 

@@ -3,11 +3,13 @@
 The supervisor has one consumer thread (the ``server.py`` loop) and one process-wide
 queue lock Q (``supervisor.queue._queue_lock``). These windows let the one compact
 ``supervisor_load`` row per minute (``ouroboros/server_liveness.py``) say where the
-consumer's time went: for Q, how long its outermost acquisitions waited and held it and
-from which code site the window's longest hold came. Each window is a measurement only:
-nothing here touches disk, a store or the event bus, decides anything or can raise into
-the code it measures, and its one reader drains it (returns it and starts the next).
-Stdlib only, so the queue module builds Q from it at import.
+consumer's time went: per event type, how many events its handlers served and their total
+and longest service time; per bus lane, the worst producer-stamp lag the drain saw; for Q,
+how long its outermost acquisitions waited and held it and from which code site the
+window's longest hold came. Each window is a measurement only: nothing here touches disk,
+a store or the event bus, decides anything or can raise into the code it measures, and its
+one reader drains it (returns it and starts the next). Stdlib and the event taxonomy only,
+so the queue module builds Q from it at import.
 """
 
 from __future__ import annotations
@@ -17,6 +19,8 @@ import sys
 import threading
 import time
 from typing import Any, Dict, Optional, Tuple
+
+from supervisor.event_taxonomy import disposition_for
 
 _REPO_PREFIX = os.path.dirname(os.path.dirname(os.path.abspath(__file__))) + os.sep
 
@@ -132,3 +136,46 @@ class MeasuredRLock:
 
     def __repr__(self) -> str:
         return f"<MeasuredRLock {self._lock!r}>"
+
+
+class ConsumerWindow:
+    """The consumer's handler service time per event type and worst lag per lane.
+
+    ``drain_worker_events`` writes it and the row reads it, both on the loop thread, so it
+    takes no lock. The type key is bounded by the declared taxonomy: a kind without a
+    disposition folds into ``undeclared``, so a producer cannot grow the row.
+    """
+
+    def __init__(self) -> None:
+        self.started = time.monotonic()
+        self._handlers: Dict[str, list] = {}
+        self._lag: Dict[str, float] = {}
+
+    def note(self, kind: str, lane: str, seconds: float, lag: Optional[float]) -> None:
+        key = kind if disposition_for(kind) is not None else "undeclared"
+        stat = self._handlers.get(key)
+        if stat is None:
+            stat = self._handlers[key] = [0, 0.0, 0.0]
+        stat[0] += 1
+        stat[1] += seconds
+        stat[2] = max(stat[2], seconds)
+        if lag is not None and lag > self._lag.get(lane, float("-inf")):
+            self._lag[lane] = lag
+
+    def served(self) -> bool:
+        """Whether the consumer served any event since the last drain."""
+        return bool(self._handlers)
+
+    def drain(self, now: float) -> Dict[str, Any]:
+        """``window_sec``, ``handlers`` and ``lag`` (lane -> worst seconds) since the last drain."""
+        facts = {
+            "window_sec": round(now - self.started, 1),
+            "handlers": {kind: {"count": count, "total_sec": round(total, 3), "max_sec": round(longest, 3)}
+                         for kind, (count, total, longest) in sorted(self._handlers.items())},
+            "lag": {lane: round(lag, 1) for lane, lag in self._lag.items()},
+        }
+        self.started, self._handlers, self._lag = now, {}, {}
+        return facts
+
+
+CONSUMER = ConsumerWindow()

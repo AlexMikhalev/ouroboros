@@ -17,7 +17,7 @@ import pytest
 
 pytestmark = pytest.mark.serial
 
-CONTRACT_KEYS = {"phase", "since", "dialogue_ready", "tasks_ready", "steps", "jobs", "error"}
+CONTRACT_KEYS = {"phase", "since", "dialogue_ready", "tasks_ready", "steps", "jobs", "error", "supervisor_load"}
 
 
 def _wait(predicate, timeout=20.0, *, what="condition"):
