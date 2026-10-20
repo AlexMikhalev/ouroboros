@@ -1367,7 +1367,7 @@ textarea:not(.ui-control):not(.ui-checkbox):focus {
    heavy shadow); the step's body is the object on the rest shadow; cards, the collapse and the summary inside it are
    trays, and a tray inside a tray drops its fill; the step rail is trays with the chosen step in the crimson tone and
    a done step's chip in green; choices and pills are neutral capsules standing on the rest shadow, the chosen one
-   crimson and still standing. Fields keep their hairline. States change colour, never height. */
+   in the soft crimson and still standing. Fields keep their hairline. States change colour, never height. */
 :root[data-theme] .wizard-shell {
   border-color: transparent;
   background: transparent;
@@ -1416,8 +1416,8 @@ textarea:not(.ui-control):not(.ui-checkbox):focus {
 }
 :root[data-theme] :is(.wizard-choice, .selection-pill).active {
   border-color: transparent;
-  background: var(--tone-crimson);
-  color: var(--tone-crimson-ink);
+  background: var(--tone-crimson-soft);
+  color: var(--tone-crimson-soft-ink);
   box-shadow: var(--elev-rest);
 }
 :root[data-theme] :is(.wizard-choice, .selection-pill):active { transform: none; filter: var(--press); }
@@ -1493,7 +1493,7 @@ textarea:not(.ui-control):not(.ui-checkbox):focus {
   display: inline-flex;
   align-items: center;
   gap: var(--space-1);
-  color: var(--tone-crimson-ink);
+  color: var(--accent-light);
   font-size: var(--type-meta);
   line-height: var(--line-meta);
   font-weight: 500;

@@ -119,9 +119,10 @@ data | web/style.css | .md-code-block .hljs-type | color
 data | web/style.css | :is(.storage-bar-seg, .storage-key)[data-group="temporary"] | background
 data | web/style.css | :root[data-theme="light"] .md-code-block .hljs-class .hljs-title | color
 # The palette that defines the amber tokens and their aliases.
-palette | web/ui.css | :root | --amber, --amber-dim, --mark-owner, --status-warn-bg, --status-warn-border, --status-warn-fg
-palette | web/ui.css | :root | --system-border, --system-bubble-bg, --system-sender, --tone-amber, --tone-amber-hover
-palette | web/ui.css | :root[data-theme="light"] | --status-warn-fg, --system-sender, --system-text, --tone-amber, --tone-amber-hover
+palette | web/ui.css | :root | --amber, --mark-owner, --status-warn-fg, --system-border, --system-sender
+palette | web/ui.css | :root[data-theme="light"] | --amber, --amber-dim, --status-warn-bg, --status-warn-border, --status-warn-fg
+palette | web/ui.css | :root[data-theme="light"] | --system-border, --system-bubble-bg, --system-sender, --system-text, --tone-amber
+palette | web/ui.css | :root[data-theme="light"] | --tone-amber-hover
 """
 
 # How many amber references each first-party script may hold, all data categories: a chart series colour (Evolution's

@@ -1551,7 +1551,7 @@ def main(argv=()):
         width=1100,
         height=750,
         min_size=(800, 500),
-        background_color="#0d0b0f",
+        background_color="#0f0f11",
         text_select=True, hidden=background.start_hidden(options.launch_intent),
     )
     _webview_window = attach_media_permissions(background.attach(window), url)  # Persist cookies and website data (ouroboros.theme); rebuild/limits: ARCHITECTURE §3.
