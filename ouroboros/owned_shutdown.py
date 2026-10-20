@@ -75,8 +75,9 @@ def installation_root(drive_root: Any) -> pathlib.Path:
     root), an own child drive maps to its parent by the host layout of
     ``task_custody.own_child_drives``; any other drive is its own root."""
     from ouroboros.config import resolve_data_dir
+    from ouroboros.install_identity import require_owned_root
 
-    drive = pathlib.Path(drive_root).resolve(strict=False)
+    drive = require_owned_root(drive_root)
     data = resolve_data_dir().resolve(strict=False)
     if drive == data or data in drive.parents:
         return data
@@ -444,6 +445,10 @@ def _stop_ledgered(root: Any, entry: Dict[str, Any], deadline: float, retained: 
 def _stop_entry(root: Any, entry: Dict[str, Any], deadline: float, retained: set,
                 skip_paths: frozenset = frozenset()) -> bool:
     """One record's bounded stop: True once its exit is confirmed and it left the set."""
+    from ouroboros.install_identity import require_owned_root
+    require_owned_root(entry.get("drive_root") or root)
+    if entry.get("record_path"):
+        require_owned_root(pathlib.Path(entry["record_path"]).resolve(strict=False).parent)
     if entry.get("kind") in _EXECUTOR_KINDS:
         if entry.get("record_path") in skip_paths:
             return False  # its in-memory owner holds the Popen/backend handle and settles it

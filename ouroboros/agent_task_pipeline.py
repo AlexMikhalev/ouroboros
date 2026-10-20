@@ -395,6 +395,7 @@ def recover_pending_root_post_task_synthesis(
     from ouroboros.post_task_synthesis import end_saved_late_phase_pause
     from ouroboros.post_task_checkpoint import post_task_synthesis_in_flight
     from ouroboros.obligations import DutyRest, result_rows
+    from ouroboros.install_identity import StoreForeign, require_task_roots, rest_foreign_member
     from ouroboros.terminal_projection import delivery_registry_stamp, rest_deferral, terminal_projection_owed
 
     root = pathlib.Path(drive_root).resolve(strict=False)
@@ -411,6 +412,7 @@ def recover_pending_root_post_task_synthesis(
         try:
             task = {**stored, "id": task_id, "root_task_id": str(stored.get("root_task_id") or task_id)}
             task.setdefault("budget_drive_root", str(root))
+            require_task_roots(task)
             env = SimpleNamespace(repo_dir=pathlib.Path(repo_dir or task.get("repo_dir") or root.parent),
                                   drive_root=root, drive_path=lambda rel, _root=root: _root / rel)
             governing_root = _root_checkpoint_roots(env, task)[0]
@@ -467,6 +469,8 @@ def recover_pending_root_post_task_synthesis(
                 stop_requested=stop_requested, event_queue=event_queue)
             fresh = load_task_result(governing_root, task_id, strict=True) or {}
             recovered += int((fresh.get("root_phase_checkpoint") or {}).get("post_task_synthesis") != phase)
+        except StoreForeign as exc:
+            rest_foreign_member(rest, task_id, stored, exc)
         except PostTaskCheckpointChanged:
             continue  # A newer Pause, completed result or task attempt owns the phase.
         except Exception:

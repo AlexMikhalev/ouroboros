@@ -168,7 +168,9 @@ def canonical_owner_root(drive_root: Any) -> pathlib.Path:
 @contextlib.contextmanager
 def _task_lock(drive_root: Any, task_id: str, suffix: str, timeout_sec: float) -> Iterator[bool]:
     from ouroboros.platform_layer import acquire_exclusive_file_lock, release_exclusive_file_lock
+    from ouroboros.install_identity import require_owned_root
 
+    require_owned_root(drive_root)
     tid = validate_task_id(task_id)
     path = custody_anchor(drive_root, tid) / "task_results" / f"{tid}.{suffix}.lock"
     fd = acquire_exclusive_file_lock(path, timeout_sec=timeout_sec, stale_sec=120.0, poll_sec=0.01,

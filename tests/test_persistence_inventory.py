@@ -814,7 +814,7 @@ def scan_data_paths(root: pathlib.Path = REPO) -> frozenset[str]:
 # ``state/cards/<card_id>.json`` records and content-addressed ``state/cards/apps/<sha256>.html``
 # app bytes (one section-4 row), and the Keep-on-Widgets pins ``state/pinned_cards.json`` (its
 # own section-2 row; ``ouroboros/card_store.py`` writes all four).
-EXPECTED_SCAN_PATHS = 406
+EXPECTED_SCAN_PATHS = 407
 
 # Scanned paths that must always be present — guards the scanner itself
 # against a silent regression that would shrink coverage while keeping counts

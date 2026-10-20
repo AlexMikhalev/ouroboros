@@ -613,11 +613,14 @@ def prepare_terminal_task_files(canonical_root: pathlib.Path, task: Dict[str, An
     task_id = str(task.get("id") or task.get("task_id") or "")
     report: Dict[str, Any] = {"task_id": task_id, "result": None, "error": "", "terminal_source_present": None}
     from ouroboros.task_custody import CustodyBusy
+    from ouroboros.install_identity import StoreForeign, require_owned_root
 
     try:
-        root = pathlib.Path(canonical_root)
-        current = load_task_result(root, task_id, strict=True) or {}
+        root = require_owned_root(canonical_root)
         child = _child_drive_from_task(task)
+        if child is not None:
+            require_owned_root(child)
+        current = load_task_result(root, task_id, strict=True) or {}
         cancelled = cancellation_blocks_child_result(current)
         adopted = not cancelled and child is not None and _child_result_adopted(child, current)
         source = current
@@ -638,6 +641,9 @@ def prepare_terminal_task_files(canonical_root: pathlib.Path, task: Dict[str, An
         # Derived inventories need not outlive terminal file adoption.
         if child is not None and child.resolve(strict=False) != root.resolve(strict=False):
             shutil.rmtree(child / "state" / "code_intel", ignore_errors=True)
+    except StoreForeign as exc:
+        report.update(error=str(exc), reason_code=exc.reason, reason_detail=str(exc))
+        log.warning("Terminal file preparation for %s refused: %s", task_id, exc)
     except CustodyBusy as exc:
         # Another publisher (a settlement or copy-back) holds the store: the next attempt
         # completes the same work; nothing failed and no failure is stamped.
