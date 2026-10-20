@@ -339,7 +339,7 @@ def register_pending_delivery(drive_root: Any, event: Dict[str, Any]) -> bool:
     token = event.get("terminal_projection_token")
     if token and already_delivered(drive_root, did, task_id=str(event.get("task_id") or ""), publication_token=token):
         return True
-    event.setdefault("ts", utc_now_iso())
+    event = {**event, "ts": event.get("ts") or utc_now_iso()}
     evicted: List[Dict[str, Any]] = []
 
     def _mutate(current: Dict[str, Any]) -> Optional[Dict[str, Any]]:
