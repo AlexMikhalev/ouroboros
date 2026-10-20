@@ -102,9 +102,8 @@ def initialize_install() -> dict:
     if record and record["root"] == str(root):
         _INITIALIZED[root] = record
         return record
-    from ouroboros.store import _ADMISSION_NO_WAIT, _WAIT_BUDGET
-    budget = _WAIT_BUDGET.get()
-    wait = 0.0 if _ADMISSION_NO_WAIT.get() else min(5.0, budget if budget is not None else 5.0)
+    from ouroboros.store import bounded_wait
+    wait = bounded_wait(5.0)
     with name_lock(root, "install.lock", timeout_sec=wait):
         record = _read(root)
         if record and record["root"] == str(root):

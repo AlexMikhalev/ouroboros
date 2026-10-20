@@ -6,8 +6,9 @@ streams have separate coordinate spaces, so existing history ids, cursors, wake
 boundaries and exports retain their meaning. ``length`` includes the exact physical
 newline, including imported CRLF; ``seq + length`` is the next boundary.
 
-``ordinal`` counts stored objects, ``pos`` counts chat objects outside A2A. Both are
-relative to their import segment or live unit. ``import_ledger`` settles absolute
+``ordinal`` counts stored objects, ``pos`` counts chat objects outside A2A (the counts task-events
+v1 ``line``, the logs tail ``_line``, ``chat_chain._stream_rows``, the consolidation cursor and
+chronicle ``raw_range`` keep). Both are relative to their import segment or live unit. ``import_ledger`` settles absolute
 bases after the newest-first archive import completes; earlier answers are importing,
 never guessed. Skipped intervals and every legacy (gen, line) alias remain indexed.
 Room revision continues the project's visible_revision at cutover.
@@ -303,11 +304,7 @@ def transaction(root: Any, *, write: bool, wait_sec: float = WAIT_SEC) -> Iterat
     lock around a name-tier access, ``StoreBusy`` on contention, the cutover for a root whose
     chain files were never cut over (its own files; unknown is never answered empty), an empty
     in-memory schema for a read of a root that holds no dialogue at all."""
-    budget = store._WAIT_BUDGET.get()
-    if store._ADMISSION_NO_WAIT.get():
-        wait_sec = 0.0
-    elif budget is not None:
-        wait_sec = min(wait_sec, budget)
+    wait_sec = store.bounded_wait(wait_sec)
     root = pathlib.Path(root)
     if not present(root):
         if write or holds_dialogue_files(root):

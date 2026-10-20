@@ -131,6 +131,14 @@ def acquisition_budget(seconds: float):
         _WAIT_BUDGET.reset(token)
 
 
+def bounded_wait(wait_sec: float) -> float:
+    """The wait one acquisition may spend: none under ``admission_acquisition``, else narrowed by ``acquisition_budget``."""
+    if _ADMISSION_NO_WAIT.get():
+        return 0.0
+    budget = _WAIT_BUDGET.get()
+    return wait_sec if budget is None else min(wait_sec, budget)
+
+
 @contextlib.contextmanager
 def admission_acquisition():
     """Probe/claim without waiting; this temporary guard is not the body's IO policy."""
@@ -1172,10 +1180,7 @@ def open_store(root: Any, *, write: bool, wait_sec: float = STORE_WAIT_SEC, serv
     in ROLLBACK, so its release never waits for readers to drain as a COMMIT would."""
     from ouroboros.install_identity import check_store_root
     check_store_root(root, write=write)
-    if _ADMISSION_NO_WAIT.get():
-        wait_sec = 0.0
-    elif _WAIT_BUDGET.get() is not None:
-        wait_sec = min(wait_sec, _WAIT_BUDGET.get())
+    wait_sec = bounded_wait(wait_sec)
     root = pathlib.Path(root)
     service = service or bool(getattr(_SERVICE, "active", False))
     if write and not service and _in_window(root):
