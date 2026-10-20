@@ -377,6 +377,22 @@ def test_a_paused_episode_keeps_its_word_whatever_still_runs_beside_it(tail):
     assert (quiet["tails"], quiet["live"], ws.roll_up_room([quiet])["mark"]) == ([], False, "pause")
 
 
+@pytest.mark.parametrize("source, owner, typed", [
+    ("review_substrate", {"status": "failed"}, ("review", "live")),  # a review finishes whatever its task did
+    ("review_substrate_plan", None, ("review", "live")),
+    ("delegated_subagent", {"status": "failed"}, ("run", "unknown")),
+    ("delegated_subagent", {"status": "running", "outcome_axes": {"lifecycle": {"status": "cancelled"}}},
+     ("run", "unknown")),
+    ("delegated_subagent", {"status": "completed"}, ("run", "live")),  # a task that answered: Stop still reaches it
+    ("delegated_subagent", None, ("run", "live")),
+])
+def test_one_rule_types_an_open_run_for_the_card_and_for_ouroboros(source, owner, typed):
+    assert ws.run_tail(source, owner) == typed
+    entry = SimpleNamespace(run_id="r", task_id="h" if owner is not None else "", source=source)
+    obs = SimpleNamespace(result=lambda task_id: owner if task_id == "h" else None)
+    assert wp._typed_run(entry, obs) == {"run_id": "r", "kind": typed[0], "state": typed[1]}
+
+
 def test_a_review_the_pause_lets_finish_is_one_review_tail_from_either_source(stored, monkeypatch, tmp_path):
     monkeypatch.setattr(wp, "_open_runs", lambda drive_root: {"t": [_run("run-rv", "t", source="review_substrate")]})
     owners = [row("t", "budget_paused", pause_cause="owner", finishing_reviews=True)]

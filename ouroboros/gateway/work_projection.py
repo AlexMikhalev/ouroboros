@@ -169,22 +169,12 @@ def _open_runs(drive_root: Any) -> Dict[str, List[Any]]:
     return held
 
 
-# A run whose own task ended this way may outlive it unobserved: its liveness is unconfirmed, not running.
-_FAILED_OWNER = frozenset({"failed", "cancelled"})
-
-
 def _typed_run(entry: Any, obs: _Observations) -> Dict[str, Any]:
-    """One open run as a work tail: a review the Pause lets finish, a live run, or a run nobody can confirm.
-
-    Facts the projection already holds, no new probe: the run's ``source`` and its own task's stored outcome."""
-    from ouroboros.delegate_registration_policy import review_owned_source
-
-    run_id = str(entry.run_id)
-    if review_owned_source(getattr(entry, "source", "")):
-        return {"run_id": run_id, "kind": "review", "state": "live"}
+    """One open run as a work tail (``work_status.run_tail``): a review the Pause lets finish, a live run, or a run
+    nobody can confirm, from the run's ``source`` and its own task's stored outcome."""
     owner = obs.result(str(entry.task_id or "")) if entry.task_id else None
-    failed = ws._outcome(owner or {}) in _FAILED_OWNER
-    return {"run_id": run_id, "kind": "run", "state": "unknown" if failed else "live"}
+    kind, state = ws.run_tail(getattr(entry, "source", ""), owner)
+    return {"run_id": str(entry.run_id), "kind": kind, "state": state}
 
 
 def _since(row: Mapping[str, Any]) -> Optional[float]:

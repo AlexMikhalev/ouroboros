@@ -345,6 +345,20 @@ def mark_of(activity: str, confirmed: bool, *, live: bool = False, unknown: bool
 # Tail kinds: what still runs beside (or after) the current episode, each said by one REASON_TEXT sentence.
 RUN_KINDS = ("run", "review")
 TAIL_STATES = ("live", "unknown")
+# A run whose own task ended this way may outlive it unobserved: its liveness is unconfirmed, not running.
+_FAILED_OWNER = frozenset({"failed", "cancelled"})
+
+
+def run_tail(source: Any, owner: Optional[Mapping[str, Any]]) -> tuple:
+    """How one open delegated run is said beside its work, ``(kind, state)``: the one typing the server's work
+    projection and Ouroboros's own roster share. A review-owned ``source`` is the review a Pause lets finish; a run
+    whose own task (``owner``, its stored result) ended failed or cancelled is one nobody can confirm; every other
+    open run is live. Facts both readers already hold, never a new probe."""
+    from ouroboros.delegate_registration_policy import review_owned_source
+
+    if review_owned_source(source):
+        return "review", "live"
+    return "run", "unknown" if _outcome(owner or {}) in _FAILED_OWNER else "live"
 
 
 def _tail(kind: str, code: str, ids: List[str], *, state: str = "live", count: Optional[int] = None) -> Dict[str, Any]:
@@ -353,6 +367,27 @@ def _tail(kind: str, code: str, ids: List[str], *, state: str = "live", count: O
     if code == "review_work_finishing":
         entry.pop("count", None)  # the fence names reviewed tasks, never a reviewer count
     return entry
+
+
+def work_tails(helper_ids: List[str], runs: Iterable[Mapping[str, Any]], *, reviewing: bool = False,
+               named: Iterable[str] = ()) -> List[Dict[str, Any]]:
+    """What still runs beside an episode, in the order and words every reader says it: working helpers, live
+    external runs, review work a Pause lets finish, runs nobody can confirm. ``runs`` are typed by ``run_tail``;
+    ``named`` holds the kinds the episode's own sentence already says (a Continue held for its earlier attempt)."""
+    runs = [run for run in runs if run.get("kind") in RUN_KINDS and run.get("state") in TAIL_STATES]
+    live = [str(run["run_id"]) for run in runs if run["kind"] == "run" and run["state"] == "live"]
+    reviews = [str(run["run_id"]) for run in runs if run["kind"] == "review" and run["state"] == "live"]
+    unknown = [str(run["run_id"]) for run in runs if run["state"] == "unknown"]
+    tails: List[Dict[str, Any]] = []
+    if helper_ids and "helper" not in named:
+        tails.append(_tail("helper", "helpers_running", list(helper_ids)))
+    if live and "run" not in named:
+        tails.append(_tail("run", "delegated_running", live))
+    if reviewing or reviews:
+        tails.append(_tail("review", "review_work_finishing", reviews))
+    if unknown:
+        tails.append(_tail("run", "external_runs_unconfirmed", unknown, state="unknown"))
+    return tails
 
 
 def roll_up_work(work_id: str, members: List[Dict[str, Any]], *, episode: Mapping[str, Any],
@@ -403,15 +438,7 @@ def roll_up_work(work_id: str, members: List[Dict[str, Any]], *, episode: Mappin
     else:
         # Only runs nobody can confirm remain: the work stays listed (its Stop reaches them), its word unconfirmed.
         reasons, activity, transition, call, release = [], "unknown", "none", "", "none"
-    tails: List[Dict[str, Any]] = []
-    if helper_ids and "helper" not in named:
-        tails.append(_tail("helper", "helpers_running", helper_ids))
-    if live_runs and "run" not in named:
-        tails.append(_tail("run", "delegated_running", live_runs))
-    if reviewing:
-        tails.append(_tail("review", "review_work_finishing", review_runs))
-    if unknown_runs:
-        tails.append(_tail("run", "external_runs_unconfirmed", unknown_runs, state="unknown"))
+    tails = work_tails(helper_ids, runs, reviewing=reviewing, named=named)
     episode_live = bool(current is not None and current.get("live"))
     live = episode_live or bool(working_helpers or live_runs or reviewing)
     if turn:
