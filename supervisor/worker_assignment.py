@@ -502,7 +502,7 @@ def _launch_attempt(queue, candidate, worker, token: str, *, lane: bool, generat
                 root_resume=resume if not latch or selected_child else None, wait=False):
             unsubmitted = None if witness is None else witness["unsubmitted"]
             with queue._queue_lock:
-                if generation is not None and generation.closed():
+                if generation is not None and generation.closed() and witness is None:
                     return False  # a stopping generation writes no marks: the row stays never-started
                 if unsubmitted is not None and _deadline_refuses_launch(queue, candidate, unsubmitted=unsubmitted):
                     return False  # a committed, never-put launch expires on its own pre-commit claim
