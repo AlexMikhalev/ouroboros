@@ -174,22 +174,14 @@ def test_an_unobservable_membership_is_unknown_not_absent(endpoint):
     assert delivery_outstanding(ObservedEventQueue(), "final:x:0123456789abcdef") is False
 
 
-def test_a_contended_schedule_deferral_lands_in_the_control_lane_ahead_of_older_telemetry():
-    """ADM-1: ``workspace_preparation.defer_schedule_event`` re-puts a contended
-    ``schedule_subagent`` on the same transport; with the lanes that put is served
-    before every telemetry frame that was queued earlier, so a contention bounce
-    no longer costs a lap of the telemetry backlog. One transport, no second
-    deferral mechanism."""
-    from supervisor.workspace_preparation import defer_schedule_event
+def test_a_contended_schedule_admission_is_never_re_put_on_the_bus():
+    """Producers keep one put and the consumer never re-puts (the bus docstring): a contended
+    schedule_subagent is retried by its claim at the head of the preparation generation's own
+    lane, so the bus holds no second copy and no deferral owner exists beside the lane."""
+    from supervisor import workspace_preparation
 
+    assert not hasattr(workspace_preparation, "defer_schedule_event")
     bus = ObservedEventQueue()
-    for n in range(100):
-        bus.put(_telemetry(n))
-    event = {"type": "schedule_subagent", "task_id": "child", "parent_task_id": "root",
-             "root_task_id": "root", "chat_id": 1, "delegation_role": "subagent"}
-    assert defer_schedule_event(SimpleNamespace(event_queue=bus), event) is True
-    assert bus.qsize() == 101
-    served = bus.get_nowait()
-    assert served["type"] == "schedule_subagent" and served["task_id"] == "child"
-    assert "child" not in pending_idle_observations(bus) and "root" not in pending_idle_observations(bus)
-    assert bus.get_nowait()["n"] == 0
+    bus.put({"type": "schedule_subagent", "task_id": "child", "parent_task_id": "root",
+             "root_task_id": "root", "chat_id": 1, "delegation_role": "subagent"})
+    assert bus.get_nowait()["task_id"] == "child" and bus.qsize() == 0
