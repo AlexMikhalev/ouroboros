@@ -1168,9 +1168,14 @@ incomplete read has not confirmed (shown unknown, without controls). A Project
 with nothing else keeps its latest represented root card. A row names its work (its
 coined name or the request's title, never `Continue: …`, else the owner's
 message) in two lines that keyboard focus or open details show whole, with the
-state under the name and one quiet reason beside it, the row's mark before it (an
+state under the name and its quiet line beside it, the row's mark before it (an
 outcome is a dot in its tone: Done and Done with warnings green, Stopped neutral,
-Failed red); an outcome stays beside `Finalizing…`; `Paused` says who or what paused it and stays until Resume;
+Failed red). The word is the current episode's alone; the line says its reason, then
+what still runs beside it (helpers, external runs, review work a Pause lets finish,
+a run nobody can confirm); a work card's chip says the same word with the same line
+beside it, and the sidebar's name says both. An outcome stays beside `Finalizing…`; `Paused` stays until Resume, its
+line saying who or what paused it (the owner's press with its time, Ouroboros in its
+own sentence, nobody when a press declared no one);
 `Waiting` says what it waits for and goes on by itself when that happens;
 helpers an earlier attempt left running read as `Working`, with their count; an
 access wait is not an answer wait, and unknown stays unknown. Under the state a

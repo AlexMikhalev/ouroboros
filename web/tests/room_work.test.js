@@ -400,7 +400,7 @@ test('an unloaded row reads the page around its task and lands on its card; one 
         const records = new Map(), asked = [];
         const turn = (id, extra = {}, row = {}) => work_({ activity_id: id, kind: 'direct_chat', chat_id: 1, ...row },
             { controls: [{ action: 'stop', target: id }], ...extra });
-        const paused = { activity: 'paused', because: [{ code: 'paused_by_owner', text: 'Paused by you' }] };
+        const paused = { activity: 'paused', because: [{ code: 'paused_by_owner', text: 'You paused it' }] };
         const works = new Map([['t-old', turn('t-old', paused)], ['t-wake', turn('t-wake')],
             ['t-own', turn('t-own', {}, { client_message_id: 'msg-1' })]]);
         const historyPager = {

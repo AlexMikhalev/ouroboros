@@ -957,22 +957,23 @@ test('Activity shows a row\'s own known outcome first and its unfinished finaliz
         'chip words come from the translation seam, so the overlay leaves them alone');
 });
 
-test('Activity says who paused only where the work projection names it', async (t) => {
+test('Activity says a pause in its word alone, with or without a work; reviews it lets finish stand beside it', async (t) => {
     const { mount, routes, ws } = setup(t);
     emptyActivity(routes);
-    const paused = (id) => outcomeRow(id, 'completed', 'ok', 'budget_paused', 'paused', { pause_cause: 'owner' });
-    const pausedWork = (id, code, extra = {}) => ({ work_id: id, room: 1, activity: 'paused', confirmed: true,
-        episode: { task_id: id, live: true }, because: [{ code, text: 'Paused' }], controls: [], ...extra });
+    const paused = (id, extra = {}) => outcomeRow(id, 'completed', 'ok', 'budget_paused', 'paused', { pause_cause: 'owner', ...extra });
+    const pausedWork = (id, code, text, extra = {}) => ({ work_id: id, room: 1, activity: 'paused', confirmed: true,
+        episode: { task_id: id, live: true }, because: [{ code, text }], tails: [], controls: [], ...extra });
     routes.set(backgroundUrl, response({ bg_consciousness_enabled: false, active_chat_activities_complete: true,
-        active_chat_activities: ['by-owner', 'by-mind', 'unnamed', 'unconfirmed'].map(paused),
-        works: [pausedWork('by-owner', 'paused_by_owner'), pausedWork('by-mind', 'paused_by_mind'),
-            pausedWork('unconfirmed', 'paused_by_owner', { confirmed: false })], works_complete: true }));
+        active_chat_activities: [...['by-owner', 'by-mind', 'unnamed', 'unconfirmed'].map((id) => paused(id)),
+            paused('reviewed', { finishing_reviews: true })],
+        works: [pausedWork('by-owner', 'paused_by_owner', 'You paused it'),
+            pausedWork('by-mind', 'paused_by_mind', 'Ouroboros: pause before the update'),
+            pausedWork('unconfirmed', 'paused_by_owner', 'You paused it', { confirmed: false })], works_complete: true }));
     await initActivity({ mount, ws }).refresh();
-    assert.equal(chip(rowOf(mount, 'by-owner')).secondary, 'Paused · by you');
-    assert.equal(chip(rowOf(mount, 'by-mind')).secondary, 'Paused · by Ouroboros');
-    // No work, or a work the server could not confirm: the census alone never names who paused.
-    assert.equal(chip(rowOf(mount, 'unnamed')).secondary, 'Paused');
-    assert.equal(chip(rowOf(mount, 'unconfirmed')).secondary, 'Paused');
+    // Who paused is the work's line on its card, its row and the sidebar; a chip says the word alone.
+    for (const id of ['by-owner', 'by-mind', 'unnamed', 'unconfirmed']) assert.equal(chip(rowOf(mount, id)).secondary, 'Paused', id);
+    assert.doesNotMatch(section(mount, 'queue').textContent, /by you|by Ouroboros|You paused it/);
+    assert.equal(chip(rowOf(mount, 'reviewed')).secondary, 'Paused · Review work finishing');
 });
 
 test('Activity keeps pause words for members and paints a host hold beside a known outcome as text', async (t) => {
