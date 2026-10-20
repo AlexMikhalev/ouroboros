@@ -186,6 +186,34 @@ def require_task_roots(task: dict) -> None:
             require_owned_root(task[key])
 
 
+def foreign_task_refusal(task: dict) -> StoreError | None:
+    """The typed refusal when a stored task names another install's root, else None; an unreadable
+    identity is returned too: unknown authority grants no launch here."""
+    try:
+        require_task_roots(task)
+    except StoreError as error:
+        return error
+    return None
+
+
+def disclose_foreign_task(root: Any, task_id: str, error: StoreError) -> None:
+    """Name the refusal once on this install's own task row, status unchanged (best effort, off the queue lock)."""
+    from ouroboros.task_results import write_task_result
+
+    fields = {"reason_code": getattr(error, "reason_code", None) or "install_identity_unreadable",
+              "reason_detail": str(error)}
+
+    def disclose(current: dict, _patch: dict) -> dict | None:
+        if not current or all(current.get(key) == value for key, value in fields.items()):
+            return None
+        return {"status": current["status"], **fields}
+
+    try:
+        write_task_result(root, task_id, "", strict_existing_dict=True, _field_projector=disclose)
+    except Exception:
+        log.debug("Foreign-root reason for %s not recorded; the row stays unlaunched", task_id, exc_info=True)
+
+
 def rest_foreign_member(rest: Any, task_id: str, stored: dict, error: StoreForeign) -> None:
     """Disclose on this install's task, then rest its unchanged pointer until an explicit move.
 

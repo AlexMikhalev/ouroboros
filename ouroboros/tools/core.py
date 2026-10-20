@@ -1229,16 +1229,22 @@ def _forward_to_worker(
     # The recipient drains ITS recorded drive, else the canonical status root — never
     # the sender's ``ctx.drive_root`` (a forked sender's private execution drive).
     mailbox_drive = pathlib.Path(child_drive) if child_drive else status_drive_root
-    written = write_task_message(
-        mailbox_drive,
-        message,
-        task_id=tid,
-        source_task_id=current_task_id,
-        provenance=provenance,
-        relayed_from_task_id=relayed_from,
-        msg_id=uuid.uuid4().hex,
-        relation=relation,
-    )
+    from ouroboros.install_identity import StoreForeign
+
+    try:
+        written = write_task_message(
+            mailbox_drive,
+            message,
+            task_id=tid,
+            source_task_id=current_task_id,
+            provenance=provenance,
+            relayed_from_task_id=relayed_from,
+            msg_id=uuid.uuid4().hex,
+            relation=relation,
+        )
+    except StoreForeign as exc:
+        return _publish_tool_result(ctx, ToolResult(status="blocked", code="LEGACY_BLOCKED", text=(
+            f"⚠️ TASK_FOREIGN_INSTALL: task {tid}'s mailbox {exc}; the message was NOT delivered.")))
     if not written:
         return _publish_tool_result(ctx, ToolResult(status="error", code="TOOL_ERROR", text=(f"⚠️ TASK_MESSAGE_UNWRITTEN: message to task {tid} was not persisted.")))
     from ouroboros.owner_mailbox import MAIL_QUEUED, MAIL_RETAINED_UNREAD, mail_write_receipt, mailbox_drain_ended

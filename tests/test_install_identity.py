@@ -338,3 +338,51 @@ def test_terminal_money_never_reaches_a_foreign_ledger_root(installs, monkeypatc
     assert not current.run(b, "run-a").ledger_recorded
     assert current.run(b, "run-b").ledger_recorded
     assert not (a / "state" / "usage.sqlite").exists()
+
+
+def test_a_restored_row_pointing_at_another_install_never_launches_and_says_why(installs, monkeypatch):
+    """B's queue may hold a copied row whose stored roots are A's: B never launches it, and B's own
+    row for that task names A (status unchanged); a row on B's own roots stays eligible."""
+    from supervisor import workers, worker_assignment as assignment
+    from supervisor import workspace_preparation
+
+    a, b = installs
+    write_task_result(b, "copied", "queued", result="Queued in the copy", drive_root=str(a))
+    write_task_result(b, "own", "queued", result="Queued here", drive_root=str(b))
+    monkeypatch.setattr(workers, "DRIVE_ROOT", b, raising=False)
+    submitted = []
+    generation = SimpleNamespace(closed=lambda: False, submit=lambda job, lane: submitted.append((job, lane)) or True)
+    monkeypatch.setattr(workspace_preparation, "current_generation", lambda: generation)
+    copied = {"id": "copied", "drive_root": str(a), "budget_drive_root": str(a)}
+    own = {"id": "own", "drive_root": str(b)}
+    assert assignment._foreign_roots_refused(copied) is True
+    assert assignment._foreign_roots_refused(copied) is True  # the reason is written once, not per pass
+    assert assignment._foreign_roots_refused(own) is False
+    assert [lane for _job, lane in submitted] == [workspace_preparation.ADMISSION_LANE]
+    submitted[0][0]()
+    row = load_task_result(b, "copied")
+    assert row["status"] == "queued" and row["reason_code"] == "foreign_install_root"
+    assert str(a) in row["reason_detail"]
+    assert "reason_code" not in (load_task_result(b, "own") or {})
+
+
+def test_forward_to_worker_names_a_foreign_child_mailbox_and_writes_nothing_there(installs):
+    """A parent in B whose copied child row records A's drive gets a typed refusal; A gains no file."""
+    from ouroboros.task_results import STATUS_RUNNING
+    from ouroboros.tools.core import _forward_to_worker
+
+    a, b = installs
+    write_task_result(b, "parent1", STATUS_RUNNING, root_task_id="parent1", result="running")
+    write_task_result(b, "copied-child", STATUS_RUNNING, child_drive_root=str(a), parent_task_id="parent1",
+                      root_task_id="parent1", result="running")
+    own_child = b / "state" / "headless_tasks" / "own-child" / "data"
+    write_task_result(b, "own-child", STATUS_RUNNING, child_drive_root=str(own_child), parent_task_id="parent1",
+                      root_task_id="parent1", result="running")
+    ctx = SimpleNamespace(drive_root=b, task_id="parent1")
+    before = {path.relative_to(a) for path in a.rglob("*")}
+    refused = _forward_to_worker(ctx, "copied-child", "do not cross installs")
+    assert "TASK_FOREIGN_INSTALL" in refused and "NOT delivered" in refused and str(a) in refused
+    assert {path.relative_to(a) for path in a.rglob("*")} == before
+    delivered = _forward_to_worker(ctx, "own-child", "stay here")
+    assert "Message forwarded" in delivered
+    assert "stay here" in (own_child / "memory" / "owner_mailbox" / "own-child.jsonl").read_text(encoding="utf-8")

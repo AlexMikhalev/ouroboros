@@ -1034,8 +1034,13 @@ def effective_task_result(
     child_result: Dict[str, Any] = {}
     child_text = ""
     if not cancellation_blocks_child_result(result):
+        from ouroboros.install_identity import StoreForeign
+
         for child_drive in _child_drive_candidates(result):
-            child_result = load(child_drive, task_id) or {}
+            try:
+                child_result = load(child_drive, task_id) or {}
+            except StoreForeign:  # another install's drive: this install keeps only its own row
+                child_result = {}
             if child_result:
                 child_text = str(child_drive)
                 break

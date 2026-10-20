@@ -566,6 +566,27 @@ def _bind_running(queue, task, worker) -> None:
     queue.persist_queue_snapshot(reason="assign_task")
 
 
+def _foreign_roots_refused(candidate) -> bool:
+    """A restored row whose stored roots name another install never launches here (an explicit move
+    makes it ours); its own task row names the other install once, written on the admission lane."""
+    from ouroboros.install_identity import disclose_foreign_task, foreign_task_refusal
+
+    refusal = foreign_task_refusal(candidate)
+    if refusal is None:
+        candidate.pop("_foreign_root_disclosed", None)
+        return False
+    if candidate.get("_foreign_root_disclosed") != str(refusal):
+        candidate["_foreign_root_disclosed"] = str(refusal)
+        from supervisor import workspace_preparation
+
+        generation = workspace_preparation.current_generation()
+        if generation is not None and not generation.closed():
+            generation.submit(functools.partial(disclose_foreign_task, _pool().DRIVE_ROOT,
+                                                str(candidate.get("id") or ""), refusal),
+                              workspace_preparation.ADMISSION_LANE)
+    return True
+
+
 def _candidate_ineligible(queue, candidate, remaining, running, *, selected=(), refused=(), cold_holders=None,
                           leased=None, unresolved_invalid_id_set=(), own_claim: str = "") -> bool:
     """The chooser's side-effect-free gates over one queued row; also the launch's revalidation under Q
@@ -582,6 +603,8 @@ def _candidate_ineligible(queue, candidate, remaining, running, *, selected=(), 
     claim = candidate.get(_LAUNCH_CLAIM) or {}
     if (task_id in set(refused) | set(selected) or candidate.get("_owner_hold")
             or candidate.get("_project_admission_restore_hold") or claim and claim.get("token") != own_claim):
+        return True
+    if _foreign_roots_refused(candidate):
         return True
     if remaining <= 0 and not candidate.get("_owner_wait_resume"):
         return True
