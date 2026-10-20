@@ -215,13 +215,6 @@ def _resume_authority_allowed(task_id: str, meta: dict) -> bool:
     return _owner_pause_wake_still_authorized(task_id, meta)
 
 
-def _resume_allowed(task_id: str, meta: dict, worker: Any) -> bool:
-    with _queue_lock:
-        if not _resume_memory_allowed(task_id, meta, worker):
-            return False
-    return _resume_authority_allowed(task_id, meta)
-
-
 def _owner_pause_wake_still_authorized(task_id: str, meta: dict) -> bool:
     """A warm owner-Pause park woken by the Resume needs that Resume still standing
     at the grant: a newer Pause of the root keeps the stack parked. A control

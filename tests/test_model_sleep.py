@@ -166,7 +166,8 @@ def test_the_pooled_park_excludes_the_sleep_live_and_the_grant_folds_it(tmp_path
     meta["sleep_parked_at"] -= 30.0
     parked_at = meta["sleep_parked_at"]
     meta["owner_wait_resume_requested"] = True
-    monkeypatch.setattr(worker_owner_wait, "_resume_allowed", lambda *_a: True)
+    monkeypatch.setattr(worker_owner_wait, "_resume_memory_allowed", lambda *_a: True)
+    monkeypatch.setattr(worker_owner_wait, "_resume_authority_allowed", lambda *_a: True)
     before_grant = time.time()
     assert worker_owner_wait._grant_resume("sleeper", meta, worker) is True
     after_grant = time.time()

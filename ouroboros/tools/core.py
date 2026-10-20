@@ -1243,8 +1243,9 @@ def _forward_to_worker(
             relation=relation,
         )
     except StoreForeign as exc:
-        return _publish_tool_result(ctx, ToolResult(status="blocked", code="LEGACY_BLOCKED", text=(
-            f"⚠️ TASK_FOREIGN_INSTALL: task {tid}'s mailbox {exc}; the message was NOT delivered.")))
+        return _publish_tool_result(ctx, ToolResult(status="blocked", code="ACCESS_BLOCKED", text=(
+            f"⚠️ TASK_FOREIGN_INSTALL: task {tid}'s mailbox {exc}; the message was NOT delivered."),
+            meta={"reason": exc.reason, "path": str(exc.path)}))
     if not written:
         return _publish_tool_result(ctx, ToolResult(status="error", code="TOOL_ERROR", text=(f"⚠️ TASK_MESSAGE_UNWRITTEN: message to task {tid} was not persisted.")))
     from ouroboros.owner_mailbox import MAIL_QUEUED, MAIL_RETAINED_UNREAD, mail_write_receipt, mailbox_drain_ended
@@ -1470,7 +1471,7 @@ def get_tools() -> List[ToolEntry]:
         ToolEntry("forward_to_worker", {
             "name": "forward_to_worker",
             "description": (
-                "Write an addressed task-tree message into a running or queued task's mailbox: a child "
+                "Write an addressed task-tree message into a running, queued or requested task's mailbox: a child "
                 "or descendant of yours (delivered as the ancestor's message), any other task in your "
                 "tree — your parent, a sibling, or any task sharing your root (delivered as a message "
                 "from a peer task naming the relation — a contribution it weighs, never steering; relay "
@@ -1484,7 +1485,7 @@ def get_tools() -> List[ToolEntry]:
                 "result. To wait for a reply without spending model rounds, call await_messages."
             ),
             "parameters": {"type": "object", "properties": {
-                "task_id": {"type": "string", "description": "ID of the running or queued task to forward to"},
+                "task_id": {"type": "string", "description": "ID of the running, queued or requested task to forward to"},
                 "message": {"type": "string", "description": "Message text to forward (at most 8000 chars)"},
                 "relayed_from_task_id": {"type": "string", "description":
                     "Optional sibling/descendant task whose output this ancestor relays. "

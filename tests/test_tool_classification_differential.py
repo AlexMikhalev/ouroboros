@@ -414,6 +414,12 @@ CURRENT_PRODUCER_CONTRACTS = {
     # tools/vision.py `_no_image_route`: no configured model could take the image at all,
     # told apart from VLM_NO_VISION_MODEL (every candidate confirmed unable); same VLM family answer.
     "VLM_NO_MODEL": (True, "vlm_error"),
+    # Foreign-install refusals (copied data folder, owner Q3): a parent escalation keeps its
+    # approved plain delta and a forward names the foreign mailbox; both publish ACCESS_BLOCKED.
+    "ESCALATE_UNWRITTEN": (True, "error"),
+    "native:ACCESS_BLOCKED:ESCALATE_UNWRITTEN": (True, "blocked"),
+    "TASK_FOREIGN_INSTALL": (False, "ok"),
+    "native:ACCESS_BLOCKED:TASK_FOREIGN_INSTALL": (True, "blocked"),
     # imagegen.py adds its typed markers after the retired golden source.
     # Same contract shape as the VLM family: rate limit is a soft window
     # (text lane unaffected), unknown outcome and provider failure are errors.

@@ -633,9 +633,9 @@ def test_an_isolated_review_without_attach_never_starts_an_engine(owned, tmp_pat
         prepared.append("runtime")
         raise AssertionError("an isolated review must never prepare an engine runtime")
 
-    def gateway_refusals(real=owned.ensure_owned_gateway):
+    def gateway_refusals(*args, real=owned.ensure_owned_gateway, **kwargs):
         try:
-            return real()
+            return real(*args, **kwargs)
         except ClaudexorUnavailable as exc:
             refusals.append(exc.code)
             raise

@@ -268,8 +268,7 @@ def _index_rows(conn: sqlite3.Connection, pack_path: pathlib.Path, sidecar: Dict
 
 
 def _index_wait(wait_sec: float = INDEX_WAIT_SEC) -> float:
-    budget = store._WAIT_BUDGET.get()
-    return min(wait_sec, INDEX_WAIT_SEC, budget) if budget is not None else min(wait_sec, INDEX_WAIT_SEC)
+    return store.bounded_wait(min(wait_sec, INDEX_WAIT_SEC))
 
 
 def _rebuild_index(root: pathlib.Path, path: pathlib.Path, tier: str, *, wait_sec: float = INDEX_WAIT_SEC) -> None:
