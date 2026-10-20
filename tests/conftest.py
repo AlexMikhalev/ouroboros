@@ -774,6 +774,38 @@ def _restore_the_live_log_sink_between_tests(monkeypatch):
     monkeypatch.setattr(utils, "_log_sink", None)
 
 
+_HOST_LAUNCHING_MARKERS = ("ui_browser", "browser", "ui_browser_docker")
+
+
+@pytest.fixture(autouse=True)
+def _act_as_the_installs_a_browser_or_e2e_test_launched(request, monkeypatch, tmp_path_factory):
+    """Browser and system-E2E tests boot real hosts on roots under this session's temporary tree, then seed
+    and read those hosts' stores from this process. A root a host booted carries its own install identity,
+    which every other install refuses (install_identity.py, the copied-folder rule), so here the test acts
+    as the install it launched, as ``install_identity.acting_as`` lets tooling do: only for a root that
+    already carries an identity, and never minting one. The rule's own tests run in the default lane."""
+    node = request.node
+    path = pathlib.Path(node.path)
+    if not (any(node.get_closest_marker(name) for name in _HOST_LAUNCHING_MARKERS)
+            or "system_e2e" in path.parts or path.name == "test_e2e_cancellation_scenarios.py"):
+        yield
+        return
+    from ouroboros import install_identity
+
+    base = pathlib.Path(tmp_path_factory.getbasetemp()).resolve()
+    ownership = install_identity._ownership
+
+    def as_its_launcher(target, *, initialize=True):
+        root = install_identity.layout_root(target)
+        if base in root.parents and (root / install_identity.IDENTITY_PATH).is_file():
+            with install_identity.acting_as(root):
+                return ownership(target, initialize=False)
+        return ownership(target, initialize=initialize)
+
+    monkeypatch.setattr(install_identity, "_ownership", as_its_launcher)
+    yield
+
+
 @pytest.fixture(autouse=True)
 def _release_server_admission_between_tests():
     """``server.main()`` and an in-process lifespan hold their data root's admission lock
