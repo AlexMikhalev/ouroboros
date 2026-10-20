@@ -145,9 +145,11 @@ export function taskActivityPresentation({ phase = 'working', outcome = '', ende
     let current;
     const modelPhase = modelActivityPresentation(modelActivity);
     if (phase === 'unknown') current = phaseView('unknown', CHIP.unconfirmed(), 'warn', { mark: CENSUS_MARKS.unknown });
-    // The card of a work's current episode says the work's word and reason (work_status.cardWorkView).
+    // The card of a work's current episode says the work's word and its line (work_status.cardWorkView).
     else if (workView) current = { ...phaseView(workView.phase, workView.text, workView.classes, { mark: work?.mark,
-        tone: workView.tone, waiting: workView.waiting }), ...(workView.secondary ? { secondary: workView.secondary } : {}) };
+        tone: workView.tone, waiting: workView.waiting }), ...(workView.secondary ? { secondary: workView.secondary } : {}),
+        // The exact call still explains the work's word in the card's details where both say the same word.
+        ...(modelPhase?.detail && modelPhase.text === workView.text ? { detail: modelPhase.detail } : {}) };
     else if (['budget_paused', 'budget_pausing'].includes(phase)) {
         // The chip says the word; a hold and the reviews a settled Pause lets finish are its quieter second fact.
         const beside = [hold, phase === 'budget_paused' && finishingReviews ? reviewsFinishing() : ''].filter(Boolean);

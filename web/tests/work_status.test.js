@@ -440,6 +440,11 @@ test('a work card says its work\'s word alone, its line beside it; plain running
     const helper = { kind: 'helper', state: 'live', code: 'helpers_running', text: '1 helper still working', count: 1, ids: ['h'] };
     const busy = cardWorkView({ ...work('working_call'), tails: [helper] });
     assert.deepEqual([busy.text, busy.secondary, busy.tone, busy.waiting], ['Sending', '1 helper still working', 'live', false]);
+    // Its exact model call still explains that word in the card's details, never another word.
+    const sending = { groupId: 'w', censusPhase: 'working', modelActivity: { phase: 'awaiting_response' }, workView: busy,
+        workLook: { mark: 'moving', owner: false } };
+    assert.equal(desiredLiveCardPhase(sending).detail, 'Sending request / waiting for response');
+    assert.equal(desiredLiveCardPhase({ ...sending, modelActivity: { phase: 'queued' } }).detail, undefined);
     // The chip presenter takes the view, but a disconnected card still says Activity unconfirmed.
     const workView = view('paused_by_owner');
     assert.deepEqual(['text', 'secondary', 'className'].map((key) => taskActivityPresentation({ phase: 'budget_paused', workView })[key]),
