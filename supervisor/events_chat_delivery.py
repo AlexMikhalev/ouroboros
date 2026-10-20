@@ -494,8 +494,6 @@ def _send_message(evt: Dict[str, Any], ctx: Any) -> Any:
                 role=str(evt.get("role") or ""),
                 system_type=system_type,
                 **({"require_write": True} if delivery_id else {}),
-                **({"require_receipt": False, "narration": evt.get("narration")}
-                   if evt.get("delivery_write_only") else {}),
             )
         # Register only after send; a failed first copy must not suppress retry.
         if delivery_id:

@@ -1277,8 +1277,7 @@ def send_with_budget(chat_id: int, text: str, log_text: Optional[str] = None,
                      role: str = "", system_type: str = "",
                      narration: Optional[bool] = None,
                      require_write: bool = False,
-                     ensure_record_boundary: bool = False,
-                     require_receipt: bool = True) -> None:
+                     ensure_record_boundary: bool = False) -> None:
     """Send an owner-visible row with one voice and timestamp for history and live.
 
     Narration True means model speech, False host speech; absent legacy rows keep
@@ -1374,7 +1373,7 @@ def send_with_budget(chat_id: int, text: str, log_text: Optional[str] = None,
                 receipt = _send_markdown(chat_id, full, **transport, role=role, system_type=system_type)
             else:
                 receipt = get_bridge().send_message(chat_id, full, **transport, role=role, system_type=system_type)
-            if meta.get("delivery_id") and require_receipt:
+            if meta.get("delivery_id"):
                 ok, err = receipt
                 if not ok:
                     raise MessageTransportError(f"message transport refused: {err}")

@@ -715,8 +715,8 @@ def replay_pending_deliveries(drive_root: Any, *, event_queue: Any = None) -> Li
     for task_id in sorted({str(r.get("task_id") or "") for r in rows if r.get("terminal_projection_token")} - {""}):
         try:
             settle_terminal_projection(drive_root, task_id, event_queue=event_queue)
-        except StoreForeign as exc:  # another install's copied debt never stops this install's replay
-            log.warning("Main delivery of %s retained: %s", task_id, exc)
+        except StoreForeign as exc:  # a copy's debt never stops this replay; the room shows it foreign
+            log.debug("Main delivery of %s retained: %s", task_id, exc)
     owed = [row for row in rows if not row.get("terminal_projection_token") and _replay_due(row)]
     if not owed:
         return continued

@@ -273,7 +273,8 @@ def start_generation(*, stop: Optional[Callable[[], bool]] = None) -> Preparatio
 
 
 def close_generation(generation: Optional[PreparationGeneration] = None) -> None:
-    """Close without waiting: queued claims never start; a running copy keeps its custody."""
+    """Close without waiting: queued launches and Resumes refuse before any durable step; a running
+    copy keeps its custody."""
     target = generation if generation is not None else _CURRENT[0]
     if target is not None:
         target.close()
