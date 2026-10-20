@@ -1,7 +1,10 @@
 """Every queue budget hold has a named exit and keeps its locator on disk."""
 import ast
+import copy
 import importlib
 from pathlib import Path
+
+import pytest
 
 from ouroboros.queue_observation import load_queue_document
 from supervisor import events_budget as eb
@@ -91,3 +94,31 @@ def test_tick_redecides_spent_hold_without_reissuing_resume(tmp_path, monkeypatc
     assert not has_active_intent(tmp_path, "continuing") and has_active_intent(tmp_path, "duplicate")
     assert all("_budget_pause_resume" not in task for task in workers.PENDING)
     assert load_queue_document(tmp_path)["pending"][0]["task"][eb.BUDGET_HOLD_KEY] is None
+
+
+@pytest.mark.parametrize("populated", [False, True])
+def test_tick_without_spent_holds_does_no_store_work(tmp_path, monkeypatch, populated):
+    from ouroboros import budget_pause, delegate_recovery, store
+    from supervisor.budget_resume import revalidate_consumed_resume_holds
+
+    q, _state, workers = _install_queue(tmp_path, monkeypatch)
+    if populated:
+        workers.PENDING.extend([
+            {"id": "ordinary", "_attempt": 2},
+            {"id": "other-hold", eb.BUDGET_HOLD_KEY: {"reason": eb.HOLD_OWNER_RESTART}},
+            {"id": "exact-pause", "_budget_pause": {"exact_continuation": True},
+             eb.BUDGET_HOLD_KEY: {"reason": eb.HOLD_STALE_GRANT_SUPERSEDED}},
+        ])
+    before = copy.deepcopy(workers.PENDING)
+
+    def unexpected(*_args, **_kwargs):
+        pytest.fail("a tick without spent holds must not read/write durable state")
+
+    monkeypatch.setattr(store, "open_store", unexpected)
+    monkeypatch.setattr(budget_pause, "budget_pause_row", unexpected)
+    monkeypatch.setattr(delegate_recovery, "_read", unexpected)
+    monkeypatch.setattr(q, "persist_queue_snapshot", unexpected)
+    with q._queue_lock:
+        revalidate_consumed_resume_holds()
+        revalidate_consumed_resume_holds()
+    assert workers.PENDING == before

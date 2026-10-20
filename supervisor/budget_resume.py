@@ -681,7 +681,12 @@ def resume_hold_requires_fence(task: Dict[str, Any], drive_root: Any) -> bool:
 
 
 def revalidate_consumed_resume_holds() -> None:
-    """Queue-locked tick seam: re-decide old holds before normal admission."""
+    """Call first in ``supervisor.task_admission.revalidate_project_holds()`` under Q,
+    before its empty-project-holds early return and before normal admission.
+
+    Safe every tick: without consumed or marker-less superseded holds, the queue
+    scan is in-memory only, with no store reads/writes or snapshot publication.
+    """
     from supervisor import queue as q
     from supervisor.events_budget import BUDGET_HOLD_KEY
     from supervisor.queue_snapshot import _fence_snapshot_running_rows
