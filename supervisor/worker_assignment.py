@@ -258,8 +258,9 @@ def _deadline_refuses_launch(queue, candidate, *, unsubmitted=None) -> bool:
 # same queue row, attempt and marks re-read the result and may finish and put once in this
 # generation, only after this commit's own marks read back; entering the put retires it, and
 # so does its row leaving the queue. Until then budget and deadline stops read it as never
-# dispatched (the deadline with its pre-commit claim). A crash or an entered put leaves the
-# durable ``possible`` that restore and the occurrence reconcile never replay.
+# dispatched (the deadline with its pre-commit claim). A stop that retires the pool settles them as
+# never dispatched (``settle_unsent_launches``); a crash or an entered put leaves the durable
+# ``possible`` that restore and the occurrence reconcile never replay.
 _COMMITTED_UNSENT: Dict[str, Dict[str, Any]] = {}
 
 
@@ -276,6 +277,17 @@ def _forget_departed_launches(pending) -> None:
     for task_id, witness in list(_COMMITTED_UNSENT.items()):
         if id(witness["row"]) not in live:
             _COMMITTED_UNSENT.pop(task_id, None)
+
+
+def settle_unsent_launches(rows: list) -> list:
+    """Under Q, once the pool is retired: every claim names a retired worker, so no committed-unsent
+    launch of these rows can be put by this process any more. Their snapshot says never dispatched;
+    a later launch commits fresh marks for the same attempt."""
+    for row in rows:
+        if _unsent(row) is not None:
+            row["admitted_dispatch"] = "none"
+            _COMMITTED_UNSENT.pop(str(row.get("id") or ""), None)
+    return rows
 
 
 def _commit_launch(queue, candidate, unsubmitted=None):

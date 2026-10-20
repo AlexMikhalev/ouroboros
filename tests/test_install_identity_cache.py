@@ -30,6 +30,7 @@ def test_steady_ownership_check_cost(tmp_path, monkeypatch, case, write):
 
 
 def test_warm_checks_only_stat_the_canonical_identity(tmp_path, monkeypatch):
+    """The own canonical root needs no identity read at all; every other warm check stats it once."""
     foreign, own, bare = (tmp_path / name for name in ("foreign", "own", "bare"))
     for root in (foreign, own):
         monkeypatch.setenv("OUROBOROS_DATA_DIR", str(root))
@@ -62,7 +63,7 @@ def test_warm_checks_only_stat_the_canonical_identity(tmp_path, monkeypatch):
         for write in (False, True):
             for path in paths:
                 check(path, write)
-    assert calls == [str(own / identity.IDENTITY_PATH)] * 8
+    assert calls == [str(own / identity.IDENTITY_PATH)] * 6  # three non-root paths, read and write
     assert not bare.exists()
 
 
@@ -117,7 +118,8 @@ def test_identity_record_reloads_only_when_stat_witness_changes(tmp_path, monkey
     assert calls == [path]
     path.write_text("broken")
     with pytest.raises(store.StoreError, match="identity unreadable"):
-        identity.check_store_root(root, write=False)
+        identity.check_store_root(root / "task_drives" / "task", write=False)
+    identity.check_store_root(root, write=False)  # the own canonical root stays usable
 
 
 def test_move_mints_identity_and_invalidates_preboot_verdict(tmp_path, monkeypatch):

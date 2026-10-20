@@ -183,7 +183,8 @@ def _ownership(path: Any, *, initialize: bool = True) -> tuple[pathlib.Path, pat
 
 
 def owned_root(path: Any) -> bool:
-    """Whether this process may mutate PATH (unreadable identity raises, never grants)."""
+    """Whether this process may mutate PATH. An unreadable identity raises, never grants, for every
+    path but this install's own canonical root, which needs no identity read."""
     return _ownership(path)[1] is None
 
 

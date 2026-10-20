@@ -951,10 +951,11 @@ def canonical_task_summary_receipt(result: Dict[str, Any]) -> Dict[str, Any]:
 def canonical_task_summary_reached_chat(result: Dict[str, Any], chat_id: Any) -> bool:
     """Did this task's own terminal row already reach THAT chat?
 
-    Every settled task gets a receipt, so "a receipt exists" answers nothing: it
-    is true of every completed, failed and cancelled child alike. The question a
-    second writer actually has is whether the reader it is about to address has
-    already been told, and only the row's own chat answers that. A receipt
+    A settled task whose row landed inline gets a receipt, so "a receipt exists" answers
+    nothing: it is true of every completed, failed and cancelled child alike. A child's row
+    the retry buffer lands later carries no receipt, so a composer may name that child once
+    more. The question a second writer actually has is whether the reader it is about to
+    address has already been told, and only the row's own chat answers that. A receipt
     written before the chat was recorded says nothing either, so it never
     silences anybody.
     """

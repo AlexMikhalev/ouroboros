@@ -218,18 +218,14 @@ def test_a_grant_on_the_lane_counts_as_the_slot_it_will_take(pool, generation):
     assert len(parked) == 1 and parked[0].get("owner_wait_resume_requested")  # still asked, not refused
 
 
-@pytest.mark.parametrize("change", ["generation_closed", "slot_taken"])
-def test_a_change_between_the_grant_and_the_put_rolls_the_wait_back(pool, generation, monkeypatch, change):
+def test_a_slot_taken_between_the_grant_and_the_put_rolls_the_wait_back(pool, generation, monkeypatch):
     request_resume(pool)
     original = worker_owner_wait.set_owner_wait
 
     def resumed_write(root, task_id, wait, **kwargs):
         result = original(root, task_id, wait, **kwargs)
         if wait.get("state") == "resumed":  # durable grant written, put not yet entered
-            if change == "generation_closed":
-                prep.close_generation(generation)
-            else:
-                monkeypatch.setattr(workers, "MAX_WORKERS", 0)  # the owner shrank the pool meanwhile
+            monkeypatch.setattr(workers, "MAX_WORKERS", 0)  # the owner shrank the pool meanwhile
         return result
 
     monkeypatch.setattr(worker_owner_wait, "set_owner_wait", resumed_write)
@@ -263,3 +259,23 @@ def test_a_generation_closed_before_the_grant_writes_nothing(pool, generation, m
     assert "resumed" not in writes and pool.original.in_q.empty()
     assert load_task_result(pool.root, "owner")["owner_wait"]["state"] == "waiting"
     assert pool.meta.get("owner_wait_resume_requested")
+
+
+def test_a_grant_written_while_open_finishes_its_put_after_closure(pool, generation, monkeypatch):
+    """Closure after the durable grant no longer refuses the put: a refusal there would rest on a
+    single-shot rollback, while the stop's saved-work path owns a granted, running stack."""
+    request_resume(pool)
+    original = worker_owner_wait.set_owner_wait
+
+    def resumed_write(root, task_id, wait, **kwargs):
+        result = original(root, task_id, wait, **kwargs)
+        if wait.get("state") == "resumed":
+            prep.close_generation(generation)
+        return result
+
+    monkeypatch.setattr(worker_owner_wait, "set_owner_wait", resumed_write)
+    maintain_capacity()
+    assert generation.wait_idle(_WAIT_SEC)
+    assert not pool.original.in_q.empty() and pool.original.active_capacity
+    assert pool.meta["owner_wait"]["state"] == "resumed"
+    assert load_task_result(pool.root, "owner")["owner_wait"]["state"] == "resumed"

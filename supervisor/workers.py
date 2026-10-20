@@ -1422,7 +1422,7 @@ def kill_workers(
                     terminalization_retry_ids.append(str(task_id))
             # Every pending row follows the same custody/retention ordering.
             # Only ordinary unretained rows differ between preserve and drain.
-            drained = queue.drain_all_pending(persist=False)
+            drained = settle_unsent_launches(queue.drain_all_pending(persist=False))
             for task in drained:
                 tid = str(task.get("id") or "").strip()
                 retry_outcome = _settle_existing_retry(task)
@@ -2233,7 +2233,7 @@ def _worker_crash_storm_detected(
 from supervisor.worker_assignment import (  # noqa: E402, F401 -- intentional public re-exports
     _cancel_unauthorized_evolution,
     _evolution_assignment_error,
-    assign_tasks,
+    assign_tasks, settle_unsent_launches,
 )
 from supervisor.worker_chat_lane import (  # noqa: E402, F401 -- intentional public re-exports
     _broadcast_task_named,

@@ -315,8 +315,9 @@ def _resume_attempt(task_id: str, meta: dict, worker: Any, token: str, replaceme
                     generation: Any = None) -> bool:
     """One grant attempt: authorities and the durable ``resumed`` wait outside Q, then the put under Q.
 
-    On the lane the put also needs its generation open and, without a replacement, a free active
-    slot: the reservation lent nothing, so a slot taken meanwhile leaves the park standing.
+    On the lane a closed generation refuses before the durable write; a grant written while it was
+    open finishes its put, which without a replacement needs a free active slot: the reservation lent
+    nothing, so a slot taken meanwhile leaves the park standing.
     """
     from ouroboros.owner_wait import OwnerWaitSuperseded
     from supervisor import queue
@@ -349,10 +350,8 @@ def _resume_attempt(task_id: str, meta: dict, worker: Any, token: str, replaceme
                 log.info("Owner wait resume of %s refused after its durable grant: the stack, its worker "
                          "or the replacement slot changed; the park stands", task_id)
                 return False
-            if generation is not None and (generation.closed() or (
-                    replacement is None and _active_slots() >= _pool().MAX_WORKERS)):
-                log.info("Owner wait resume of %s waits: its generation closed or no active slot is free; "
-                         "the park stands", task_id)
+            if generation is not None and replacement is None and _active_slots() >= _pool().MAX_WORKERS:
+                log.info("Owner wait resume of %s waits: no active slot is free; the park stands", task_id)
                 return False
             if replacement is not None:
                 replacement.active_capacity = False

@@ -278,6 +278,62 @@ def test_marks_committed_while_the_generation_was_open_finish_their_handoff(env,
     assert "launch-child" in queue.RUNNING and worker.busy_task_id == "launch-child"
 
 
+def test_a_stop_that_retires_the_pool_after_the_marks_leaves_the_row_never_started(env, monkeypatch):
+    """The owner's Restart or Quit retires the pool between a launch's committed marks and its put:
+    the claim can never be put any more, so the stop's snapshot says never dispatched and restore
+    keeps the row plainly resumable (not "may already have reached a worker")."""
+    import copy
+    import json
+
+    from supervisor.queue_snapshot import _retain_snapshot_pending
+    from supervisor.restart_retention import never_started
+
+    monkeypatch.setattr(queue, "QUEUE_SNAPSHOT_PATH", env.data / "state" / "queue_snapshot.json")
+    monkeypatch.setattr(worker_assignment, "_COMMITTED_UNSENT", {})
+    monkeypatch.setattr(workers, "_LAST_WORKER_EXIT_CENSUS", None)
+    worker, delivered = install_worker(env, monkeypatch)
+    alive = [True]
+    worker.proc.is_alive = lambda: alive[0]
+    worker.proc.join = lambda **_kw: None
+    monkeypatch.setattr(workers, "kill_worker_tree", lambda _pid: alive.__setitem__(0, False))
+    monkeypatch.setattr(workers, "_kill_survivors", lambda: None)
+    monkeypatch.setattr("supervisor.worker_process.close_worker_stop_channel", lambda _proc: None)
+    monkeypatch.setattr("supervisor.worker_health.retire_confirmed_worker_consumers", lambda *_a: None)
+    tid = "accepted-root"
+    write_task_result(env.data, tid, "scheduled", chat_id=7, description="accepted owner work")
+    with queue._queue_lock:
+        row = queue.enqueue_task({"id": tid, "type": "task", "chat_id": 7, "text": "accepted owner work",
+                                  "description": "accepted owner work", "budget_drive_root": str(env.data),
+                                  "_project_scope_none": True})
+    committed, proceed = threading.Event(), threading.Event()
+    original = worker_assignment._commit_launch
+
+    def after_marks(queue_module, candidate, unsubmitted=None):
+        projections = original(queue_module, candidate, unsubmitted)
+        if candidate.get("id") == tid and projections is not None and projections is not False:
+            committed.set()
+            assert proceed.wait(_WAIT_SEC)
+        return projections
+
+    monkeypatch.setattr(worker_assignment, "_commit_launch", after_marks)
+    try:
+        workers.assign_tasks()
+        assert committed.wait(_WAIT_SEC) and row["admitted_dispatch"] == "possible"
+        assert workers.kill_workers(force=True, preserve_pending=True, retain_saved_work=True,
+                                    archive_service_logs=False, reconcile_delegate_custody=False,
+                                    reconcile_review_custody=False, stop_source="server_shutdown")
+    finally:
+        proceed.set()
+        assert env.gen.wait_idle(_WAIT_SEC)
+    assert delivered == [] and not queue.RUNNING
+    saved = next(entry["task"] for entry in json.loads(queue.QUEUE_SNAPSHOT_PATH.read_text(encoding="utf-8"))["pending"]
+                 if entry["task"]["id"] == tid)
+    assert saved["admitted_dispatch"] == "none"
+    worker_assignment._COMMITTED_UNSENT.clear()  # the next process has no memory witness
+    retained, _unseen, consumed, _roots = _retain_snapshot_pending([copy.deepcopy(saved)], [], stale=False)
+    assert not consumed and len(retained) == 1 and never_started(retained[0])
+
+
 def test_a_launch_on_the_lane_counts_against_its_roots_cap_in_the_same_pass(env, monkeypatch):
     worker, delivered = install_worker(env, monkeypatch)
     second = affirm_ready(SimpleNamespace(wid=1, busy_task_id=None,
