@@ -150,7 +150,8 @@ def test_a_failed_preflight_keeps_a_trusted_release_off(drive, hub, monkeypatch)
     result = installer.install_item(drive, "ouroboros/weather", rows=rows)
     assert result["acceptance"] == {"accepted": False, "granted_keys": [], "granted_permissions": [],
                                     "deps_status": "", "turn_on": "not_ready",
-                                    "preflight_error": "controlled preflight failure"}
+                                    "preflight_error": "controlled preflight failure",
+                                    "setup_error": "Its files did not pass the check; it remains off."}
     assert not (skill_state_dir(drive, "weather") / "enabled.json").exists()
 
 

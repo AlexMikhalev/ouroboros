@@ -664,7 +664,9 @@ def load_extension(
     if auto_specs:
         deps_reason = _deps_block_reason(pathlib.Path(drive_root), skill)
         if deps_reason:
-            return f"skill {skill.name!r} cannot load until isolated dependencies are ready: {deps_reason}"
+            from ouroboros.skill_dependencies import dependency_sentence
+
+            return dependency_sentence(deps_reason)  # the same sentence liveness shows for this code
 
     # Core settings and privileged host capabilities require hash-bound grants.
     grant_status = grant_status_for_skill(pathlib.Path(drive_root), skill)

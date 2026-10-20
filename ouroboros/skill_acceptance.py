@@ -73,33 +73,6 @@ def admitted_acceptance(facts: Dict[str, Any], manifest: Any) -> Dict[str, Any]:
     return kept
 
 
-# Gate reasons that admit the current bytes without a review row (``_acceptance_reason``).
-_ACCEPTED_WITHOUT_REVIEW = frozenset({"trusted_source", "self_check", "owner_skip", "owner_edit"})
-
-
-def accepted_without_review(skill: Any) -> bool:
-    """Whether an acceptance fact, not a review, admits the current bytes: no review job
-    will run the post-PASS dependency step for them, and replaying a review would buy a
-    paid panel just for it."""
-    review = getattr(skill, "review", None)
-    current = str(getattr(skill, "content_hash", "") or "")
-    if review is None or not current:
-        return False
-    gate = review.gate_for(current)
-    return bool(gate.get("executable_review")) and gate.get("blocking_reason") in _ACCEPTED_WITHOUT_REVIEW
-
-
-def accepted_release_dependencies(drive_root: pathlib.Path, skill: Any, *,
-                                  repo_path: Optional[str] = None) -> tuple[str, str]:
-    """Install the declared isolated dependencies of bytes accepted without a review (the
-    step a review's PASS would run); ``(status, error)``, or ``("", "")`` for any other skill."""
-    if not accepted_without_review(skill):
-        return "", ""
-    from ouroboros.skill_review_runner import _reconcile_deps_after_pass_review
-
-    return _reconcile_deps_after_pass_review(pathlib.Path(drive_root), skill.name, repo_path=repo_path)
-
-
 def carry_grants_to_current(drive_root: pathlib.Path, skill: Any) -> bool:
     """Re-bind the owner's grants to the current digest when the skill still requests
     exactly the same keys and permissions; a changed request keeps the ordinary
@@ -175,8 +148,6 @@ def record_owner_edit(
 
 __all__ = [
     "OWNER_EDIT_FILENAME",
-    "accepted_release_dependencies",
-    "accepted_without_review",
     "admitted_acceptance",
     "carry_grants_to_current",
     "load_acceptance_facts",

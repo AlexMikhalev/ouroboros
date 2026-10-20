@@ -974,6 +974,8 @@
  * @property {string=} error
  * @property {boolean=} ok  // attest only
  * @property {number=} status_code  // attest refusal only
+ * @property {boolean=} pending  // attest only: the job outlasted the answer bound; job_id and message name it
+ * @property {string=} message  // attest only, with pending
  * @property {string[]=} reviewer_models
  * @property {string=} review_profile
  * @property {Object[]=} findings
@@ -1013,13 +1015,19 @@
  */
 
 /**
- * `POST /api/skills/{skill}/grants`; a refusal answers `SkillActionRefusal`.
+ * `POST /api/skills/{skill}/grants`; refusals use `SkillActionRefusal`, slow setup {ok, pending: true, job_id, message}.
  * @typedef {Object} SkillGrantResponse
  * @property {boolean} ok
- * @property {string} skill
+ * @property {boolean=} pending
+ * @property {string=} job_id
+ * @property {string=} message
+ * @property {string=} skill
+ * @property {boolean=} enabled
  * @property {string=} content_hash
  * @property {string[]=} granted_keys
  * @property {string[]=} granted_permissions
+ * @property {string=} turn_on_when_ready
+ * @property {string=} setup_error
  * @property {string=} extension_action
  * @property {string=} extension_reason
  * @property {string=} load_error
@@ -1442,6 +1450,9 @@
  * `POST /api/skills/{skill}/delete`; a refusal carries only ok, error and status_code.
  * @typedef {Object} SkillDeleteResponse
  * @property {boolean} ok
+ * @property {boolean=} pending  // queued behind a long job past the answer bound: {ok, pending, job_id, message}
+ * @property {string=} job_id
+ * @property {string=} message
  * @property {string=} skill
  * @property {string=} source
  * @property {string=} content_hash

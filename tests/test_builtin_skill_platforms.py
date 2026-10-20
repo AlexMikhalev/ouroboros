@@ -401,26 +401,24 @@ def test_the_trust_opt_out_installs_without_acceptance_or_dependencies(data, mon
     assert _dependency_pass(data, [WINDOWS], log) == [] and installs == []
 
 
-def test_bytes_a_review_admits_keep_the_review_route_for_dependencies(windows_installed):
-    from ouroboros.skill_acceptance import accepted_release_dependencies, accepted_without_review
+def test_bytes_a_review_admits_get_their_packages_at_enable_like_accepted_ones(windows_installed):
+    """Inverted pin: review-admitted bytes used to be sent to a paid review for packages while accepted
+    bytes got them at Enable; whatever admits the bytes admits their packages (one owner, one next action)."""
+    from ouroboros import skill_lifecycle_actions
     from ouroboros.skill_install_record import write_install_record, read_install_record
-    from ouroboros.skill_readiness import _dependency_action
+    from ouroboros.skill_readiness import _DEPENDENCY_ACTION
 
     data, installs, _reconciles = windows_installed
     accepted = find_skill(data, WINDOWS)
-    assert accepted_without_review(accepted)
-    assert _dependency_action(accepted, "review it")["tool"] == "toggle_skill"
     # The same bytes admitted by a review row instead of an acceptance fact.
-    record = read_install_record(data, WINDOWS)
-    write_install_record(data, WINDOWS, {**record, "basis": "review"})
+    write_install_record(data, WINDOWS, {**read_install_record(data, WINDOWS), "basis": "review"})
     save_review_state(data, WINDOWS, SkillReviewState(status="clean", content_hash=accepted.content_hash,
                                                       findings=[{"item": "x", "verdict": "PASS"}]))
     reviewed = find_skill(data, WINDOWS)
-    assert reviewed.review.gate_for(reviewed.content_hash)["executable_review"]
-    assert not accepted_without_review(reviewed)
-    assert accepted_release_dependencies(data, reviewed) == ("", "") and installs == []
-    assert _dependency_action(reviewed, "review it") == {"phase": "dependencies", "tool": "skill_review",
-                                                         "reason": "review it"}
+    assert reviewed.review.gate_for(reviewed.content_hash)["blocking_reason"] == "ready"
+    assert _DEPENDENCY_ACTION["tool"] == "toggle_skill" and "skill_review" not in _DEPENDENCY_ACTION["reason"]
+    result = skill_lifecycle_actions._toggle(reviewed, data, "", True, "owner_ui", "test")
+    assert result["ok"] is True and installs == [["comtypes==1.4.17"]] and load_enabled(data, WINDOWS) is True
 
 
 # ── the startup receipt: an unchanged committed tree costs no payload work ──
@@ -470,7 +468,7 @@ def test_an_unchanged_committed_tree_needs_no_payload_work(seed_repo, monkeypatc
     repo, drive = seed_repo
     assert ensure(repo, drive) == 0
     first = receipt(drive)
-    assert first["schema_version"] == 3 and first["seed_tree"]
+    assert first["schema_version"] == 4 and first["seed_tree"]
 
     def forbidden(*args, **kwargs):
         raise AssertionError("an unchanged bundled tree must not be reconciled again")
@@ -530,14 +528,15 @@ def test_a_failed_phase_writes_no_receipt_and_the_next_boot_retries(seed_repo, m
 
 
 @pytest.mark.parametrize("pending", [["first"], None])
-def test_dependency_work_left_or_unknown_writes_no_receipt(seed_repo, monkeypatch, pending):
+def test_pending_packages_do_not_invalidate_the_bundle_receipt(seed_repo, monkeypatch, pending):
+    """Inverted contract: package retries no longer require repeating bundle reconciliation."""
     repo, drive = seed_repo
-    monkeypatch.setattr(skill_builtin, "_builtins_needing_dependencies", lambda *args: pending)
+    monkeypatch.setattr(skill_builtin, "_skills_needing_work", lambda *args: pending)
     ensure(repo, drive)
-    assert receipt(drive) is None
+    assert receipt(drive) is not None
 
 
-@pytest.mark.parametrize("schema", [1, 2])
+@pytest.mark.parametrize("schema", [1, 2, 3])
 def test_an_earlier_launcher_receipt_reruns_the_pass_once(seed_repo, monkeypatch, schema):
     repo, drive = seed_repo
     tree = subprocess.run(["git", "rev-parse", "HEAD:skills"], cwd=repo, capture_output=True, text=True,
@@ -553,7 +552,7 @@ def test_an_earlier_launcher_receipt_reruns_the_pass_once(seed_repo, monkeypatch
     ensure(repo, drive)
     ensure(repo, drive)
 
-    assert calls == [1] and receipt(drive)["schema_version"] == 3
+    assert calls == [1] and receipt(drive)["schema_version"] == 4
 
 
 def test_the_pass_starts_the_dependency_step_off_the_boot_path(seed_repo, monkeypatch):
@@ -570,11 +569,13 @@ def test_the_pass_starts_the_dependency_step_off_the_boot_path(seed_repo, monkey
     monkeypatch.setattr(skill_builtin, "threading", SimpleNamespace(Thread=Thread))  # this module's threads only
     skill_builtin.ensure_builtin_skills(drive, repo_dir=repo, log_obj=log)
     assert [(name, daemon, target) for name, daemon, target, _names in started] == [
-        ("builtin-dependencies", True, skill_builtin._dependency_pass)]
-    assert started[0][3] == ["first", "second"]
+        ("skill-dependencies", True, skill_builtin._dependency_pass)]
+    assert started[0][3] is None  # every installed skill, not only the bundle (owner decision D2 = A)
     started.clear()
-    skill_builtin.ensure_builtin_skills(drive, repo_dir=repo, log_obj=log)  # receipt matches: nothing to do
-    assert started == []
+    skill_builtin.ensure_builtin_skills(drive, repo_dir=repo, log_obj=log)  # receipt matches: no payload work...
+    # ...but the package pass still starts (inverted pin: it used to stop at the matching receipt, so a failed
+    # install of a built-in was never retried at the next boot once the receipt was written).
+    assert [name for name, *_ in started] == ["skill-dependencies"]
 
 
 # ── work a later startup pass must still see ──
@@ -633,33 +634,30 @@ def test_a_builtin_installed_after_the_receipt_retries_its_dependencies_at_the_n
                         lambda packages, *args, **kwargs: installs.append(list(packages)) or [])
     skill_builtin.ensure_builtin_skills(drive, repo_dir=repo, log_obj=log)  # the network is back
     assert installs == [["comtypes==1.4.17"]] and load_enabled(drive, WINDOWS) is True
-    assert receipt(drive) is None  # this pass still saw the dependency work
+    assert receipt(drive) is not None  # the seed receipt certifies the bundle, not package work
     skill_builtin.ensure_builtin_skills(drive, repo_dir=repo, log_obj=log)
     assert receipt(drive) is not None and len(installs) == 1
 
 
 def test_the_boot_pass_finishes_a_requested_turn_on_whose_dependencies_were_ready(windows_installed):
     """The install prepared the dependencies, then the process stopped before it turned the skill on."""
-    from ouroboros.skill_acceptance import accepted_release_dependencies
+    from ouroboros.skill_dependencies import ensure_skill_dependencies
 
     data, installs, reconciles = windows_installed
-    assert accepted_release_dependencies(data, find_skill(data, WINDOWS))[0] == "installed"
+    assert ensure_skill_dependencies(data, find_skill(data, WINDOWS))[0] == "installed"
     assert skill_deps_not_ready(data, find_skill(data, WINDOWS)) == ("", "") and not load_enabled(data, WINDOWS)
-    assert skill_builtin._builtins_needing_dependencies(data, [WINDOWS], log) == []  # nothing holds the receipt
-
     assert _dependency_pass(data, [WINDOWS], log) == [WINDOWS]
 
     assert load_enabled(data, WINDOWS) is True
     assert installs == [["comtypes==1.4.17"]]  # prepared once, never again
 
 
-def test_a_turn_on_waiting_for_grants_never_holds_the_receipt(data, monkeypatch):
+def test_a_turn_on_waiting_for_grants_stays_off(data, monkeypatch):
     monkeypatch.setenv("OUROBOROS_AUTO_GRANT_REVIEWED_SKILLS", "false")
     on(monkeypatch, "darwin")
     assert install_builtin_skill("telegram", drive_root=data, seed_dir=SEEDS, turn_on_when_ready=True)["ok"]
     _stub_lifecycle_effects(monkeypatch)
 
-    assert skill_builtin._builtins_needing_dependencies(data, ["telegram"], log) == []
     assert _dependency_pass(data, ["telegram"], log) == ["telegram"]  # tried at a slow start
     assert load_enabled(data, "telegram") is False  # still waits for the owner's grants
 
@@ -686,7 +684,7 @@ def test_the_dependency_job_carries_a_kind_the_skills_card_labels(windows_instal
     assert _dependency_pass(data, [WINDOWS], log) == [WINDOWS]
 
     job = [event for event in queue_snapshot()["events"]
-           if event["target"] == WINDOWS and event["source"] == "builtin"][-1]
+           if event["target"] == WINDOWS and event["source"] == "startup"][-1]
     card = (REPO / "web" / "modules" / "skill_card_renderer.js").read_text(encoding="utf-8")
     labels = re.search(r"const LIFECYCLE_PENDING_LABELS = \{(.*?)\};", card, re.S).group(1)
     assert job["kind"] in re.findall(r"^\s*(\w+):", labels, re.M)  # else the card says only "Working…"
@@ -712,7 +710,7 @@ def test_os_declarations_parse_as_platform_lists():
     assert windows.raw_extra["install"] == [{"kind": "pip", "package": "comtypes==1.4.17"}]
 
 
-def test_unknown_dependency_readiness_never_certifies_the_pass(windows_installed, monkeypatch):
+def test_unknown_dependency_readiness_stays_unknown_beside_source_receipt(windows_installed, monkeypatch):
     data, installs, _reconciles = windows_installed
     assert _dependency_pass(data, [WINDOWS], log) == [WINDOWS] and len(installs) == 1  # ready and on
     identity = {"schema_version": skill_builtin.RECEIPT_SCHEMA_VERSION, "seed_tree": "fixed"}
@@ -732,11 +730,9 @@ def test_unknown_dependency_readiness_never_certifies_the_pass(windows_installed
     with monkeypatch.context() as broken:
         broken.setattr(deps, "auto_install_specs_for_skill", unreadable)
         assert deps.skill_deps_not_ready(data, find_skill(data, WINDOWS)) == ("", "")  # execution readers
-        assert boot() is None  # completion never reads an unknown as ready
-    with monkeypatch.context() as broken:
-        broken.setattr(skill_builtin, "_bundled_names", lambda seed_root: None)
-        assert boot() is None
-    assert skill_builtin._bundled_names(data / "no-such-seed-tree") is None
+        assert skill_builtin._skills_needing_work(data, [WINDOWS], log) is None
+        assert boot() == identity  # source completion never certifies package readiness
+        assert len(installs) == 1
     assert boot() == identity
 
 
@@ -929,9 +925,9 @@ def test_upgrade_turns_on_a_new_default_instruction_without_review_or_extension_
     skill = find_skill(drive, "new_instruction")
     assert skill.enabled and skill.review.gate_for(skill.content_hash)["blocking_reason"] == "trusted_source"
     assert not (drive / "state/skills/new_instruction/review.json").exists()
-    assert receipt(drive) is None  # work was still outstanding when the receipt was inspected
+    assert receipt(drive) is not None  # package/turn-on work is independent of this source receipt
     skill_builtin.ensure_builtin_skills(drive, repo_dir=repo, log_obj=log)
-    assert receipt(drive)["schema_version"] == 3
+    assert receipt(drive)["schema_version"] == 4
 
 
 def test_fresh_instruction_starter_needs_no_review_or_extension_load(instruction_upgrade, monkeypatch):
@@ -990,11 +986,11 @@ def test_instruction_turn_on_is_retried_after_interrupted_startup(instruction_up
                 Thread=lambda **kwargs: SimpleNamespace(start=lambda: None)))
         skill_builtin.ensure_builtin_skills(drive, repo_dir=repo, log_obj=log,
                                             dependency_pass=interruption == "thread_never_ran")
-    assert not load_enabled(drive, "new_instruction") and receipt(drive) is None
+    assert not load_enabled(drive, "new_instruction") and receipt(drive) is not None
     if interruption == "old_receipt":
         identity = {**skill_builtin._seed_identity(repo), "schema_version": 2}
         (drive / "state/native_seed.json").write_text(json.dumps(identity), encoding="utf-8")
     skill_builtin.ensure_builtin_skills(drive, repo_dir=repo, log_obj=log)
     assert load_enabled(drive, "new_instruction") is True
     skill_builtin.ensure_builtin_skills(drive, repo_dir=repo, log_obj=log)
-    assert receipt(drive)["schema_version"] == 3
+    assert receipt(drive)["schema_version"] == 4

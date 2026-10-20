@@ -18,6 +18,7 @@
  * @property {string} content_hash
  * @property {string} payload_root
  * @property {string} installed_at
+ * @property {string=} removal  // uninstall | delete | ''
  * @property {string=} review_status
  * @property {boolean=} review_stale
  * @property {{status: string, stale: boolean, executable_review: boolean, blocking_reason: string, review_enforcement: string, summary: string, author_accepted: (boolean|undefined), reviewed_content_hash: (string|undefined), author_disposition: (Object|undefined), preflight_failed: (boolean|undefined), preflight_failed_stale: (boolean|undefined)}=} review_gate
@@ -92,6 +93,7 @@
  * @property {Array<string|Object>=} keys
  * @property {Array<string|Object>=} granted_keys
  * @property {string=} expected_content_hash
+ * @property {boolean=} enable_after_grant
  */
 
 /**
@@ -103,7 +105,11 @@
 /**
  * @typedef {Object} SkillToggleResponse
  * @property {string} skill
- * @property {boolean} enabled
+ * @property {boolean=} ok
+ * @property {boolean=} pending  // enabling still installs packages: follow job_id on the lifecycle queue; no enabled yet
+ * @property {string=} job_id
+ * @property {string=} message
+ * @property {boolean=} enabled
  * @property {string=} review_status
  * @property {boolean=} review_stale
  * @property {Object=} review_gate
@@ -120,6 +126,8 @@
  * @typedef {Object} SkillActionRefusal
  * @property {boolean=} ok
  * @property {string} error
+ * @property {string=} code
+ * @property {string=} detail
  * @property {number=} status_code
  * @property {string=} skill
  * @property {string=} source
