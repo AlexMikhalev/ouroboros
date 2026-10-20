@@ -364,6 +364,41 @@ def test_the_wake_control_is_never_dialogue_and_wakes_a_warm_owner_wait(tmp_path
     assert classify_wake([{"kind": KIND_OWNER_PAUSE, "msg_id": "owner_pause:f"}], "q") == "control:owner_pause"
 
 
+def test_a_fence_keeps_its_first_declared_author_and_a_press_that_declared_nobody_claims_none(tmp_path, monkeypatch):
+    from ouroboros.control_actor import mind_control, pause_author
+    from ouroboros.owner_pause import read_fence
+    from ouroboros.task_results import STATUS_RUNNING, write_task_result
+    from supervisor.owner_pause_control import request_owner_pause
+
+    _queue, _state, workers = _install_queue(tmp_path, monkeypatch)
+    _live_tree(tmp_path, workers)
+    owner = {"actor": "owner", "text": "", "at": "2026-10-20T00:43:00+00:00"}
+    mind = {"actor": "ouroboros", "text": "Updating to the latest version", "at": "2026-10-20T00:44:00+00:00"}
+    assert request_owner_pause("root-1", request_id="bare")["ok"]
+    fence = read_fence(tmp_path, "root-1")
+    assert "by" not in fence and pause_author(fence)["actor"] == "", "an anonymous press names nobody"
+    # A later declared press on the same closed fence fills the author it lacked...
+    assert request_owner_pause("root-1", request_id="owner-press", by=owner)["duplicate"] is True
+    fence = read_fence(tmp_path, "root-1")
+    assert fence["by"] == owner and pause_author(fence) == owner
+    # ...and a declared author is never overwritten; every press keeps its own record.
+    assert request_owner_pause("root-1", request_id="mind-press", by=mind)["duplicate"] is True
+    fence = read_fence(tmp_path, "root-1")
+    assert pause_author(fence) == owner
+    assert fence["requests"]["mind-press"]["by"] == mind and fence["requests"]["owner-press"]["by"] == owner
+    assert "by" not in fence["requests"]["bare"]
+    # A fence an earlier body wrote for a mind keeps that mind as its author.
+    write_task_result(tmp_path, "solo", STATUS_RUNNING, chat_id=0)
+    workers.RUNNING["solo"] = {"task": {"id": "solo", "type": "task", "chat_id": 0, "root_task_id": "solo"},
+                               "worker_id": 2, "attempt": 1}
+    with mind_control("mind-root", "Freeing the worker for the update"):
+        assert request_owner_pause("solo", request_id="legacy-mind")["ok"]
+    assert request_owner_pause("solo", request_id="owner-later", by=owner)["ok"]
+    fence = read_fence(tmp_path, "solo")
+    assert "by" not in fence and pause_author(fence)["actor"] == "ouroboros"
+    assert pause_author(fence)["text"] == "Freeing the worker for the update"
+
+
 def test_the_pause_endpoint_is_text_free_and_typed(tmp_path, monkeypatch):
     from starlette.applications import Starlette
     from starlette.routing import Route
