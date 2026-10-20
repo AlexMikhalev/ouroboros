@@ -24,9 +24,11 @@ def test_catalog_and_model_handshake_cache_follow_descriptor(tmp_path, monkeypat
     def answer(request):
         calls.append(request.url.path)
         if request.url.path == "/v2/handshake":
+            # The engine names its store only to a client that opts in (older strict clients keep the old shape).
+            opted_in = request.headers.get("X-Claudexor-Store-Identity") == "1"
             return httpx.Response(200, json={"compatible": True, "protocolMajor": wire.CLAUDEXOR_PROTOCOL_MAJOR,
                 "engine": {"version": wire.CLAUDEXOR_MIN_VERSION, "sha": str(state["generation"])},
-                "storeId": state["store"], "servingMode": "normal"})
+                **({"storeId": state["store"]} if opted_in else {}), "servingMode": "normal"})
         return httpx.Response(200, json={"operations": [{"id": str(state["generation"])}]})
 
     client = httpx.Client

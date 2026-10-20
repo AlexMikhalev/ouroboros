@@ -588,8 +588,8 @@ class ClaudexorGateway(ClaudexorMaintenanceGateway):
         holding a clamped window pays for the OPENING round trip out of that window,
         so an unbounded handshake could spend it before the window began.
         """
-        body = self._request(
-            "POST", "/v2/handshake", timeout_sec=timeout_sec,
+        body = self._request(  # the store identity is an opt-in extension of the handshake
+            "POST", "/v2/handshake", timeout_sec=timeout_sec, headers={"X-Claudexor-Store-Identity": "1"},
             json_body={"protocolMajor": CLAUDEXOR_PROTOCOL_MAJOR, "client": "ouroboros"},
         )
         if not isinstance(body, dict):
