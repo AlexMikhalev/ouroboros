@@ -116,6 +116,9 @@ def record_terminal_money(root, entry, detail: dict, *, failures=None) -> dict:
     profile, access = observed.get("profile_id", ""), str(summary.get("effectiveAccess") or "")
     if not entry.ledger_recorded:
         try:
+            from ouroboros.install_identity import require_owned_root
+
+            require_owned_root(entry.ledger_root or root)  # the usage store is not behind ``open_store``'s check
             record_subscription_session(entry.run_id, drive_root=pathlib.Path(entry.ledger_root or root),
                 route=entry.route_id, model=observed.get("model", ""), task_id=entry.task_id,
                 root_task_id=entry.root_task_id, parent_task_id=entry.parent_task_id,

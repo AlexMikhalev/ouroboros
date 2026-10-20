@@ -314,3 +314,27 @@ def test_unreadable_identity_never_becomes_an_isolated_root(installs):
     with pytest.raises(store.StoreError, match="identity unreadable"):
         identity.owned_root(a / "task_drives" / "task")
     assert identity.owned_root(b)
+
+
+def test_terminal_money_never_reaches_a_foreign_ledger_root(installs, monkeypatch):
+    """A copied custody row whose ledger root is the original install keeps its money owed here."""
+    from ouroboros import delegate_collection as body
+    from ouroboros import delegate_custody as custody
+    from ouroboros import delegate_custody_current as current
+    from ouroboros import usage_accounting
+
+    a, b = installs
+    calls = []
+    monkeypatch.setattr(usage_accounting, "record_subscription_session", lambda *args, **kw: calls.append(kw))
+    detail = {"summary": {"runId": "run-a", "state": "succeeded", "spendUsd": 0.1, "spendEstimated": False,
+                          "effectiveAccess": "readonly"}, "lastSeq": 4,
+              "primaryOutput": {"text": "answer", "bytes": 6, "truncated": False}}
+    for rid, ledger in (("run-a", a), ("run-b", b)):
+        entry = custody.RunCustody(run_id=rid, task_id="task-" + rid, invocation_id="inv-" + rid, route_id="test",
+                                   model="test", access="readonly", mode="ask", ledger_root=str(ledger))
+        assert custody.record_started(b, entry)
+        body.collect_terminal(b, rid, detail={**detail, "summary": {**detail["summary"], "runId": rid}})
+    assert [kw["drive_root"] for kw in calls] == [b]  # only this install's own ledger
+    assert not current.run(b, "run-a").ledger_recorded
+    assert current.run(b, "run-b").ledger_recorded
+    assert not (a / "state" / "usage.sqlite").exists()
