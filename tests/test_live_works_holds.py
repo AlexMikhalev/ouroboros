@@ -1,5 +1,7 @@
-"""Ouroboros sees what holds its rooms: queue holds, an owner Pause by its recorded actor, and live work whose
+"""Ouroboros sees what holds its rooms: queue holds, a Pause by its declared author, and live work whose
 own root has ended (helpers, retained runs) — beside the unchanged tell_task address book."""
+import pytest
+
 from ouroboros.live_works import live_works_present
 from ouroboros.peer_roster import independent_roots, render_roster_note, unlisted_live_work
 from ouroboros.task_results import write_task_result
@@ -30,13 +32,24 @@ def test_a_writer_held_continue_reads_as_held_for_the_earlier_attempt(tmp_path):
     assert "waiting" not in independent_roots(tmp_path)["roots"][0]
 
 
-def test_an_owner_pause_names_the_actor_the_fence_recorded(tmp_path):
+@pytest.mark.parametrize("declared, by", [
+    ({"by": {"actor": "owner", "text": "", "at": "2026-10-13T12:40:00Z"}}, "owner"),
+    ({"by": {"actor": "ouroboros", "text": "pausing for the update", "at": "2026-10-13T12:40:00Z"}},
+     "Ouroboros: pausing for the update"),
+    ({"actor": "mind", "actor_task_id": "m1"}, "Ouroboros"),  # a fence written before the declaration existed
+    ({}, ""),  # requested_by=owner alone is the door a press came through: it names nobody
+])
+def test_an_owner_pause_names_the_author_its_fence_declared(tmp_path, declared, by):
     write_task_result(tmp_path, "t", "running", title="Work", owner_pause={
-        "state": "paused", "requested_by": "owner", "actor": "mind", "actor_task_id": "m1",
-        "paused_at": "2026-10-13T12:50:00Z", "fence_id": "f1"})
+        "state": "paused", "requested_by": "owner", "requested_at": "2026-10-13T12:40:00Z",
+        "paused_at": "2026-10-13T12:50:00Z", "fence_id": "f1", **declared})
     _snapshot(tmp_path, running=[{"id": "t", "attempt": 1, "task": {"id": "t", "chat_id": 1}}])
-    waits = independent_roots(tmp_path)["roots"][0]["waiting"]
-    assert {"kind": "owner_pause", "state": "paused", "by": "mind", "since": "2026-10-13T12:50:00Z"} in waits
+    [wait] = independent_roots(tmp_path)["roots"][0]["waiting"]
+    # Dated by the press, as the owner's card dates it: a settling fence restamps paused_at.
+    assert wait == {"kind": "owner_pause", "state": "paused", "since": "2026-10-13T12:40:00Z",
+                    **({"by": by} if by else {})}
+    note = render_roster_note(independent_roots(tmp_path))
+    assert (f"owner Pause (by={by}, state=paused" if by else "owner Pause (state=paused, since=") in note
     write_task_result(tmp_path, "t", "running", owner_pause={"state": "released", "requested_by": "owner",
                                                             "fence_id": "f1"})
     assert "waiting" not in independent_roots(tmp_path)["roots"][0]

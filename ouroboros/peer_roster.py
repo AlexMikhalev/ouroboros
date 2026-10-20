@@ -36,6 +36,7 @@ import pathlib
 from typing import Any, Dict, List, Optional
 
 from ouroboros.context_budget import bound_host_row
+from ouroboros.control_actor import pause_author
 from ouroboros.dialogue_provenance import is_presence_task, presence_caller_binding
 from ouroboros.focus import compact_focus, focus_fingerprint
 from ouroboros.task_status import SETTLED_STATUSES, _load_queue_snapshot, queue_snapshot_observation
@@ -177,14 +178,24 @@ def _owner_wait_fact(wait: Dict[str, Any]) -> Dict[str, Any]:
     return fact
 
 
-def _pause_fact(pause: Dict[str, Any]) -> Dict[str, Any]:
+def _pause_by(fence: Any) -> str:
+    """Who declared the tree's Pause, in words, read as the owner's card reads it (``control_actor.pause_author``):
+    ``owner`` for the owner's press, Ouroboros's own sentence for its ``pause_task``, ``""`` when it declared nobody."""
+    author = pause_author(fence)
+    if author["actor"] == "ouroboros":
+        return f"Ouroboros: {author['text']}" if author["text"] else "Ouroboros"
+    return author["actor"]
+
+
+def _pause_fact(pause: Dict[str, Any], fence: Any) -> Dict[str, Any]:
     """Name an exact-pause record by its ``reason`` (``budget_pause._RAIL_REASONS``).
 
     One carrier parks three different things: the model's cold or retained
     sleep (``sleep``, whose recorded mode is shown as recorded, never inferred
-    from the carrier), the owner's Pause (``owner``) and a monetary rail
-    (``budget``, also every row written before the field existed). A newer
-    stated reason is ``unknown`` with that reason, never silently money.
+    from the carrier), the owner's Pause (``owner``, with the author its tree's
+    ``fence`` declared) and a monetary rail (``budget``, also every row written
+    before the field existed). A newer stated reason is ``unknown`` with that
+    reason, never silently money.
     """
     reason = _recorded_reason(pause)
     kind = {"sleep": "sleep", "owner": "owner_pause", "budget": "budget", "": "budget"}.get(reason, "unknown")
@@ -196,6 +207,8 @@ def _pause_fact(pause: Dict[str, Any]) -> Dict[str, Any]:
             # explicit Resume precedes any automatic wake (``restart_retention``).
             fact["retained"] = True
     elif kind == "owner_pause":
+        if by := _pause_by(fence):
+            fact["by"] = by
         if str(pause.get("settlement") or "").strip():
             fact["settlement"] = str(pause["settlement"])
     else:
@@ -232,7 +245,7 @@ def _waiting_facts(stored: Dict[str, Any], attempt: Any) -> List[Dict[str, Any]]
     pause = stored.get("budget_pause")
     if (isinstance(pause, dict) and pause.get("state") in LIVE_PAUSE_STATES
             and _same_attempt(pause.get("task_attempt"), attempt)):
-        facts.append(_pause_fact(pause))
+        facts.append(_pause_fact(pause, stored.get("owner_pause")))
     return facts
 
 
@@ -245,7 +258,8 @@ _HOLD_CODES = {"continuation_writer_unsettled": "earlier_work_unconfirmed", "sav
 def _queue_hold_facts(task: Dict[str, Any], stored: Dict[str, Any], waiting: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """What holds a listed root that its own result records do not say: the queue row's typed hold
     (a Continue waiting for the earlier attempt's writers, work saved by a stop, a Panic, a member awaiting
-    selection) and an owner Pause over its tree, named by the actor the fence recorded (gateway/work_status.py)."""
+    selection) and a Pause over its tree still settling or parked warm, named by its declared author and dated
+    by its press, as the owner's card says it (gateway/work_status.py)."""
     from ouroboros.gateway.work_status import REASON_TEXT  # D01->D11 is lazy-only
 
     facts: List[Dict[str, Any]] = []
@@ -262,10 +276,12 @@ def _queue_hold_facts(task: Dict[str, Any], stored: Dict[str, Any], waiting: Lis
         facts.append(fact)
     fence = stored.get("owner_pause") if isinstance(stored.get("owner_pause"), dict) else {}
     if fence.get("state") in {"requested", "paused"} and not any(wait.get("kind") == "owner_pause" for wait in waiting):
-        by = "mind" if fence.get("actor") == "mind" else "owner" if str(fence.get("requested_by") or "owner") == "owner" \
-            else "host"
-        facts.append({"kind": "owner_pause", "state": str(fence["state"]), "by": by,
-                      "since": _iso_text(fence.get("paused_at") or fence.get("requested_at")) or None})
+        fact = {"kind": "owner_pause", "state": str(fence["state"]),
+                # A settling fence restamps ``paused_at``; the Pause began at its press.
+                "since": _iso_text(fence.get("requested_at")) or _iso_text(fence.get("paused_at")) or None}
+        if by := _pause_by(fence):
+            fact["by"] = by
+        facts.append(fact)
     return facts
 
 
