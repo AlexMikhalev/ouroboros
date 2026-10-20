@@ -167,10 +167,13 @@ def nav_pages(page):
 def open_nav(page, name):
     row = page.locator(f'[data-nav-page="{name}"]')
     toggle = page.locator('[data-mobile-nav-toggle]:visible').first
-    if toggle.count() and toggle.get_attribute('aria-expanded') != 'true':
+    drawer = bool(toggle.count())
+    if drawer and toggle.get_attribute('aria-expanded') != 'true':
         toggle.click()
     row.click()
     page.locator(f'#page-{name}').wait_for(state='visible')
+    if drawer:  # the room slides back over the closing drawer: measure it once it rests at the left edge
+        setup_browser.wait_drawer_closed(page)
     settle(page)
 
 

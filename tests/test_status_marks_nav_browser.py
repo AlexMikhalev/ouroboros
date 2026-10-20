@@ -134,6 +134,7 @@ def test_the_menu_button_says_what_waits_behind_it_in_both_places(nav_ui, tmp_pa
         page.locator('#page-chat [data-mobile-nav-toggle]').click()
         page.locator('#primary-sidebar [data-nav-page="files"]').click()
         page.locator('#page-files.active').wait_for()
+        setup_browser.wait_drawer_closed(page)  # the room slides back over the drawer before its ☰ is measured
         settle(page)
         facts['header_owner'] = toggle(header)
         # Main's own new messages (its room revision past the shared cursor), away from Main, light the ☰ too.
