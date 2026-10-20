@@ -165,9 +165,11 @@ def drain_worker_events(event_q: Any, ctx: Any, liveness: list, *, on_restart: C
     stays queued for the next turn, so a producer that keeps the queue non-empty
     can never starve owner-message intake. A dequeued event carrying a
     ``delivery_id`` is released from the bus's outstanding-delivery membership after
-    its handler returned or raised, whichever path it took. Returns True when the
-    pass stopped at its bound (a backlog may remain: the caller skips its idle sleep
-    and polls intake without its wait)."""
+    its handler returned or raised, whichever path it took. A live final answer is
+    stamped as dequeued the moment it is taken (``finalization_timing``). Returns True
+    when the pass stopped at its bound (a backlog may remain: the caller skips its idle
+    sleep and polls intake without its wait)."""
+    from ouroboros.finalization_timing import stamp_finalization_dequeue
     from supervisor.events import dispatch_event
 
     deadline = time.monotonic() + SUPERVISOR_EVENT_BATCH_MAX_SEC
@@ -179,6 +181,7 @@ def drain_worker_events(event_q: Any, ctx: Any, liveness: list, *, on_restart: C
             return False
         drained += 1
         try:
+            stamp_finalization_dequeue(evt)
             if evt.get("type") == "restart_request":
                 on_restart(evt, ctx)
                 continue

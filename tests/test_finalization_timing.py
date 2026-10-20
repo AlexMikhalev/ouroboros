@@ -6,12 +6,13 @@ import json
 import os
 import queue
 import threading
+import time
 from collections import deque
 from types import SimpleNamespace
 
 import pytest
 
-from ouroboros import agent_task_pipeline as pipeline, delegate_custody, delegate_terminal, loop
+from ouroboros import agent_task_pipeline as pipeline, delegate_custody, delegate_terminal, loop, server_liveness
 from ouroboros.tools.registry import ToolRegistry
 from ouroboros.utils import append_jsonl
 from supervisor import events_chat_delivery as delivery
@@ -97,7 +98,15 @@ def completed_turn(tmp_path, monkeypatch, request):
         sent.append((chat_id, body, kwargs))
 
     host = SimpleNamespace(DRIVE_ROOT=root, RUNNING={}, append_jsonl=append_jsonl, send_with_budget=send)
-    for event in queued + pending:
+    # The live copies leave the bus through the supervisor's real drain (which stamps the
+    # dequeue); a buffered copy reaches the handler directly.
+    bus = queue.Queue()
+    for event in queued:
+        if event["type"] == "send_message":
+            bus.put(event)
+    assert server_liveness.drain_worker_events(bus, host, [time.monotonic(), {}, time.thread_time(), None],
+                                               on_restart=lambda *_args: None) is False
+    for event in pending:
         if event["type"] == "send_message":
             delivery._handle_send_message(event, host)
     return SimpleNamespace(kind=kind, root=root, drive=drive, task=task, usage=usage,
@@ -162,6 +171,12 @@ def test_finalization_records_one_ordered_tail_on_every_task_surface(completed_t
         assert "result_store" not in phases and "custody_annotation" not in phases
         assert phases["cleanup"]["finished_sec"] <= row["enqueued_sec"] <= phases["sender"]["started_sec"]
         assert row["enqueue_to_sender_sec"] >= 0
+        # The consumer stamped its take: the bus wait and the handler's pre-send work split.
+        assert row["enqueued_sec"] <= row["dequeued_sec"] <= phases["sender"]["started_sec"]
+        assert row["enqueued_at"] <= row["dequeued_at"] <= phases["sender"]["started_at"]
+        assert row["enqueue_to_dequeue_sec"] == pytest.approx(row["dequeued_sec"] - row["enqueued_sec"])
+        assert row["dequeue_to_sender_sec"] == pytest.approx(phases["sender"]["started_sec"] - row["dequeued_sec"])
+        assert row["enqueue_to_sender_sec"] == pytest.approx(row["enqueue_to_dequeue_sec"] + row["dequeue_to_sender_sec"])
         # The packaging that ran after the answer left is journaled as its own
         # correlated row (same task, same delivery id), internally ordered.
         store_row, = timing_rows(turn.root, "post_answer_store")
@@ -177,6 +192,7 @@ def test_finalization_records_one_ordered_tail_on_every_task_surface(completed_t
         assert phases["cleanup"]["finished_sec"] <= phases["result_store"]["started_sec"]
         assert phases["result_store"]["finished_sec"] <= phases["sender"]["started_sec"]
         assert row["enqueue_to_sender_sec"] is None  # this fixture calls the buffered handler directly
+        assert "dequeued_sec" not in row and row["enqueue_to_dequeue_sec"] is row["dequeue_to_sender_sec"] is None
         assert timing_rows(turn.root, "post_answer_store") == []
 
 
@@ -356,6 +372,22 @@ def test_failed_sender_keeps_retry_and_timing_write_cannot_block_receipt(tmp_pat
     assert td.already_delivered(tmp_path, event["delivery_id"])
     delivery._handle_send_message(event, host)
     assert calls == ["send", "send"]
+
+
+def test_the_dequeue_stamp_is_taken_only_from_a_live_final_and_never_raises():
+    from ouroboros.finalization_timing import stamp_finalization_dequeue
+
+    live = {"type": "send_message", "_finalization_timing": {"_origin": time.monotonic() - 2.0, "phases": {}}}
+    sidecar = live["_finalization_timing"]
+    stamp_finalization_dequeue(live)
+    assert live["_finalization_timing"]["dequeued_sec"] >= 2.0 and live["_finalization_timing"]["dequeued_at"]
+    assert "dequeued_sec" not in sidecar, "the event's sidecar is replaced, not mutated"
+    replayed = {"type": "send_message", "_finalization_timing": {"phases": {}}}  # no live origin
+    malformed = {"type": "send_message", "_finalization_timing": {"_origin": "yesterday", "phases": {}}}
+    for event in (replayed, malformed, {"type": "task_heartbeat"}, "not an event"):
+        before = json.dumps(event)
+        stamp_finalization_dequeue(event)
+        assert json.dumps(event) == before
 
 
 def test_custody_notice_progress_and_durable_replay_do_not_add_timing_rows(tmp_path, monkeypatch):
