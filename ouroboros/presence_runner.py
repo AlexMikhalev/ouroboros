@@ -1034,7 +1034,6 @@ def _log_dialogue(
             SimpleNamespace(drive_root=drive_root, task_id=task_id), "presence-event",
             json.dumps(source, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8"), "json")
     from ouroboros import dialogue_store
-    from ouroboros.store import StoreError
 
     # An inbound row is a named acceptance (its source event id): a re-run that logs again rejoins
     # the row it landed, never a second one. It is a required acceptance, so it waits for the store
@@ -1043,6 +1042,7 @@ def _log_dialogue(
         try:
             written = dialogue_store.append(drive_root, "chat", row)
         except (StoreError, OSError, ValueError):
+            log.warning("Presence inbound row not stored in %s", drive_root, exc_info=True)
             written = None
     else:
         written = dialogue_store.append_quietly(drive_root, "chat", row)
