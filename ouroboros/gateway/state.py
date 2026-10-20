@@ -267,6 +267,9 @@ def _state_snapshot(request: Request) -> Dict[str, Any]:
         project_chat_ids = sorted(reserved_project_chat_ids(request_drive_root(request)))
     except Exception:
         project_chat_ids = []
+    from ouroboros.gateway.ui_preferences import main_room_revision
+
+    main_visible_revision = main_room_revision(request_drive_root(request))
     return {
         "st": st,
         # Resolved here so the checkout file reads stay on the snapshot thread.
@@ -288,6 +291,7 @@ def _state_snapshot(request: Request) -> Dict[str, Any]:
         "github_token_configured": bool(github_token_from_env_or_settings()),
         "projects": projects,
         "project_chat_ids": project_chat_ids,
+        "main_visible_revision": main_visible_revision,
         "task_bindings": task_bindings,
         "active_direct_turns": direct_turns,
         "active_chat_activities": activities,
@@ -996,6 +1000,7 @@ async def api_state(request: Request) -> JSONResponse:
             },
             "projects": snap["projects"],
             "project_chat_ids": snap["project_chat_ids"],
+            "main_visible_revision": snap.get("main_visible_revision"),
             "task_bindings": snap["task_bindings"],
             "active_direct_turns": snap.get("active_direct_turns") or [],
             "active_chat_activities": snap.get("active_chat_activities") or [],

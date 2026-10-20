@@ -6,7 +6,7 @@ from collections.abc import Iterable
 from typing import Any, Optional
 
 OWNER_DELIVERY_TOOL_NAMES: frozenset[str] = frozenset({
-    "send_user_message", "send_photo", "send_video", "send_file", "send_links",
+    "send_user_message", "send_photo", "send_video", "send_file", "send_links", "show_card",
 })
 
 # One class: an actor's own memory. Reading and revising what I know about my

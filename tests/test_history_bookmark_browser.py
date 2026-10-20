@@ -208,12 +208,12 @@ def test_main_coverage_status_remains_readable_away_from_history_control(direct_
 
 @pytest.mark.parametrize('browser_engine', ['chromium', 'webkit'])
 def test_late_latest_cannot_erase_newer_physical_coverage(direct_server_with_data, browser_engine, tmp_path):
-    """A late re-anchoring read cannot erase a newer one's coverage. The reader follows the newest
-    message, so a shifted window re-anchors the chain; that read is answered after a newer one, and
-    the gap between them stays disclosed, readable in the narrow panel too. The newest read has moved
-    past the chain, so Load more history shows; one press re-anchors on the newest page and reads on
-    into the missing older rows, and reading on goes only older, to the beginning (owner decisions
-    2026-09-14, 2026-10-05)."""
+    """A late newest read cannot erase a newer one's coverage. A room reads its newest page one read at
+    a time (#1954): a reconnect that comes while that read is unanswered waits for it, so the late answer
+    lands first and the newer page then moves the window past it. The reader follows the newest message,
+    so the window re-anchors on that page with nothing between two chains to disclose; Load more history
+    goes on from the newer page through the rows the late read never covered, only older, to the
+    beginning (owner decisions 2026-09-14, 2026-10-05)."""
     from datetime import datetime, timedelta, timezone
     from ouroboros.projects_registry import create_project
     from playwright.sync_api import sync_playwright
@@ -232,26 +232,38 @@ def test_late_latest_cannot_erase_newer_physical_coverage(direct_server_with_dat
         browser = getattr(pw, browser_engine).launch(headless=True)
         try:
             page = browser.new_page(viewport={'width':1280, 'height':850})
+            # The watched room's newest reads, each with when it was asked and when its answer reached the room;
+            # the one armed is held until released. Preference reads are counted: a reconnect reads them first.
             page.add_init_script('''(() => {
                 const fetch = window.fetch.bind(window);
+                window.__prefs = {asked: 0, answered: 0};
+                window.__roomLatest = [];
                 window.fetch = async (input, init) => {
                     const url = new URL(typeof input === 'string' ? input : input.url, location.href);
-                    const arm = window.__holdLatest;
-                    const hold = arm && url.pathname === '/api/chat/history' && !url.searchParams.has('cursor')
-                        && Number(url.searchParams.get('chat_id')) === arm.chatId && arm.skip-- === 0;
-                    if (hold) window.__holdLatest = null;
-                    const response = await fetch(input, init);
-                    if (hold) {
-                        window.__heldLatestBody = await response.clone().json();
-                        await new Promise(resolve => { window.__releaseLatest = resolve; });
+                    if (url.pathname === '/api/ui/preferences') {
+                        window.__prefs.asked += 1;
+                        try { return await fetch(input, init); } finally { window.__prefs.answered += 1; }
                     }
-                    return response;
+                    const watched = url.pathname === '/api/chat/history' && !url.searchParams.has('cursor')
+                        && Number(url.searchParams.get('chat_id')) === window.__watchRoom;
+                    const read = watched ? {asked: performance.now(), answered: null} : null;
+                    if (read) window.__roomLatest.push(read);
+                    const hold = watched && window.__holdLatest;
+                    if (hold) window.__holdLatest = false;
+                    try {
+                        const response = await fetch(input, init);
+                        if (hold) {
+                            window.__heldLatestBody = await response.clone().json();
+                            await new Promise(resolve => { window.__releaseLatest = resolve; });
+                        }
+                        return response;
+                    } finally { if (read) read.answered = performance.now(); }
                 };
             })()''')
             _open(page, direct_server_with_data['url'])
             feed = _open_project(page, project)
             append(150, 151)
-            page.evaluate('chatId => { window.__holdLatest = {chatId, skip:1}; }', project['chat_id'])
+            page.evaluate('chatId => { window.__watchRoom = chatId; window.__holdLatest = true; }', project['chat_id'])
 
             def reconnect():
                 page.evaluate('''() => {
@@ -265,37 +277,36 @@ def test_late_latest_cannot_erase_newer_physical_coverage(direct_server_with_dat
             held = page.evaluate('() => window.__heldLatestBody')
             assert held['messages'][-1]['client_message_id'] == 'race-150'
             append(151, 451)
+            sockets, prefs = page.evaluate('() => [window.__testSockets.length, window.__prefs.asked]')
+            rooms = page.evaluate("() => document.querySelectorAll('#chat-messages, .chat-messages').length")
             reconnect()
+            # Each room reads its preferences on the open, then its newest page (chat.js, the socket's open): once
+            # every room's preference read is answered, a room that read anew at once has asked by now.
+            page.wait_for_function('''([n, p, rooms]) => window.__testSockets.length > n
+                && window.__testSockets.at(-1).readyState === 1 && window.__prefs.asked >= p + rooms
+                && window.__prefs.answered === window.__prefs.asked''', arg=[sockets, prefs, rooms])
+            page.evaluate(_FRAMES)
+            asked_while_held = page.evaluate('() => window.__roomLatest.length')
+            page.evaluate('() => window.__releaseLatest()')
             newest = page.locator(f'{feed} [data-client-message-id="race-450"]')
             newest.wait_for(state='attached')
-            page.evaluate('() => window.__releaseLatest()')
             _idle(page, feed)
+            latest_reads = page.evaluate('() => window.__roomLatest')
+            reads = page.evaluate('id => window.__historyReads.filter(r => r.chatId === id)', project['chat_id'])
+            assert asked_while_held == 1, ('the newer reconnect asked nothing while the late read was unanswered',
+                                           latest_reads)
+            late, *later = latest_reads
+            assert later and all(read['asked'] >= late['answered'] for read in later), \
+                ('the newer read was asked only after the late one was answered', latest_reads)
+            latest = [read for read in reads if not read['cursor']][-1]
+            assert latest['body']['messages'][-1]['client_message_id'] == 'race-450', 'the newer read landed last'
             assert newest.count() == 1
             note = page.locator(feed).locator('..').locator('.chat-load-older-note')
-            assert 'Shown messages may have gaps' in note.inner_text()
-            assert 'Beginning' not in note.inner_text()
-            _screenshot(page, tmp_path, f'latest-race-gap-{browser_engine}')
-            # The gap note stays readable in the narrow panel's persistent chrome.
-            page.set_viewport_size({'width': 390, 'height': 844})
-            page.evaluate(_FRAMES)
-            status = page.locator(feed).locator('..').locator('.chat-history-status')
-            assert status.is_visible() and 'Shown messages may have gaps' in status.inner_text()
-            box = status.bounding_box()
-            assert box['x'] >= 0 and box['x'] + box['width'] <= 391 and box['y'] >= 0 and box['y'] + box['height'] < 844, box
-            _screenshot(page, tmp_path, f'latest-race-gap-narrow-{browser_engine}')
-            page.set_viewport_size({'width': 1280, 'height': 850})
-            page.evaluate(_FRAMES)
+            assert 'Shown messages may have gaps' not in note.inner_text() and 'Beginning' not in note.inner_text()
+            _screenshot(page, tmp_path, f'latest-race-newest-{browser_engine}')
             button = page.locator(f'{feed} .chat-load-older button')
             assert not button.evaluate('node => node.hidden'), 'the rows behind the newest read are older history'
             walked = page.evaluate('() => window.__historyReads.length')
-            _step(page, feed)
-            # One press: the latest read re-anchors the chain, and the same press reads the
-            # next older page by its cursor, landing the missing rows.
-            press = page.evaluate('([n, id]) => window.__historyReads.slice(n).filter(r => r.chatId === id)',
-                                  [walked, project['chat_id']])
-            assert [read['cursor'] for read in press][:1] == [None] and len(press) == 2, [read['cursor'] for read in press]
-            assert press[1]['cursor'] == press[0]['body']['next_cursor'] and press[1]['body']['messages']
-            assert page.locator(f'{feed} [data-client-message-id="race-300"]').count() == 1
             for _ in range(6):  # reading on at the top edge goes only older
                 if note.inner_text() == 'Beginning of saved history':
                     break
@@ -304,10 +315,12 @@ def test_late_latest_cannot_erase_newer_physical_coverage(direct_server_with_dat
             assert newest.count() == 1 and button.evaluate('node => node.hidden')
             walk = page.evaluate('([n, id]) => window.__historyReads.slice(n).filter(r => r.chatId === id)',
                                  [walked, project['chat_id']])
+            assert walk and walk[0]['cursor'] == latest['body']['next_cursor'], ('reading on starts at the newer page',
+                                                                               [read['cursor'] for read in walk])
             assert all(read['cursor'] == prior['body']['next_cursor'] for prior, read in zip(walk, walk[1:])), \
                 ('every later read is the next older page', [read['cursor'] for read in walk])
             delivered = {row.get('client_message_id') for read in walk for row in read['body']['messages']}
-            assert {'race-151', 'race-300'} <= delivered, 'the gap is read'
+            assert {'race-151', 'race-300'} <= delivered, 'the rows the late read never covered are read'
             _screenshot(page, tmp_path, f'latest-race-filled-{browser_engine}')
             (tmp_path / f'latest-race-reads-{browser_engine}.json').write_text(json.dumps(
                 {'held': held, 'reads': page.evaluate('() => window.__historyReads')}, indent=2))

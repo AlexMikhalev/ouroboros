@@ -120,7 +120,7 @@ EXPECTED_TOOLS = [
     "delegate_message",
     "read_file", "list_files", "write_file", "edit_text",
     "apply_patch", "edit_batch",
-    "send_photo", "send_video", "send_file", "send_links", "search_code", "query_code", "query_data", "escalate",
+    "send_photo", "send_video", "send_file", "send_links", "show_card", "search_code", "query_code", "query_data", "escalate",
         "forward_to_worker",
     "generate_image", "list_image_models", "recover_image", "generate_evolution_stats",
     "commit_reviewed", "vcs_commit_reviewed", "vcs_status", "vcs_diff",

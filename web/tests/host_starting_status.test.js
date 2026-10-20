@@ -19,8 +19,7 @@ import { projection, room, work } from './work_fixture.js';
 test('the room says Starting… only where it would say Online', () => {
     const idle = emptyWorkState();
     assert.deepEqual(roomStatusView(idle, { ready: false }),
-        { kind: 'starting', text: 'Starting…', tone: 'starting', showDots: false, dots: 'one', amber: '', mark: '',
-            title: '' });
+        { kind: 'starting', text: 'Starting…', tone: 'starting', mark: 'none', owner: false, amber: '', title: '' });
     assert.equal(roomStatusView(idle, { ready: true }).text, 'Online');
     assert.equal(roomStatusView(idle).text, 'Online', 'callers that state nothing keep Online');
     const inRoom = (activity, extra) => ({ ...idle, room: room(activity, extra) });
@@ -111,7 +110,7 @@ test('Main: Starting… until supervisor_ready is true, error or not, then Onlin
     try {
         chat.snapshot({ supervisor_ready: false, supervisor_error: null });
         assert.equal(chat.status(), 'Starting…');
-        assert.equal(chat.kind(), 'status-badge starting', 'the existing amber starting tone, not the green one');
+        assert.equal(chat.kind(), 'status-badge starting', 'the starting tone, not the green one');
         chat.snapshot({ supervisor_ready: true });
         assert.equal(chat.status(), 'Online');
         assert.equal(chat.kind(), 'status-badge online');
@@ -250,14 +249,14 @@ test('bootPhase reads the typed object alone', () => {
 });
 
 test('the Starting… header follows the phase: starting, chat ready, failed', () => {
-    assert.deepEqual(startingStatus(null), { kind: 'starting', text: 'Starting…', title: '', showDots: false });
-    assert.deepEqual(startingStatus(SERVING), { kind: 'starting', text: 'Starting…', title: '', showDots: false });
+    assert.deepEqual(startingStatus(null), { kind: 'starting', text: 'Starting…', title: '' });
+    assert.deepEqual(startingStatus(SERVING), { kind: 'starting', text: 'Starting…', title: '' });
     assert.deepEqual(startingStatus(CHAT_READY),
-        { kind: 'starting', text: 'Chat ready, restoring background tasks', title: '', showDots: false });
+        { kind: 'starting', text: 'Chat ready, restoring background tasks', title: '' });
     assert.deepEqual(startingStatus(FAILED),
-        { kind: 'starting', text: 'Start failed', title: 'current-facts store not published: failed', showDots: false });
+        { kind: 'starting', text: 'Start failed', title: 'current-facts store not published: failed' });
     assert.deepEqual(startingStatus(SOFT_FAILED),
-        { kind: 'starting', text: 'Chat ready, restoring background tasks', title: 'extensions: ValueError: bad manifest', showDots: false },
+        { kind: 'starting', text: 'Chat ready, restoring background tasks', title: 'extensions: ValueError: bad manifest' },
         'a fail-soft step shows its error while the start goes on');
     const idle = emptyWorkState();
     assert.equal(roomStatusView(idle, { ready: false, boot: CHAT_READY }).text, 'Chat ready, restoring background tasks');
@@ -274,7 +273,7 @@ test('Main: the header paints the phase from the snapshot and forgets it on disc
         assert.equal(chat.status(), 'Starting…');
         chat.snapshot({ supervisor_ready: false, boot: CHAT_READY });
         assert.equal(chat.status(), 'Chat ready, restoring background tasks');
-        assert.equal(chat.kind(), 'status-badge starting', 'still the amber starting tone: tasks are not admitted yet');
+        assert.equal(chat.kind(), 'status-badge starting', 'still the starting tone: tasks are not admitted yet');
         chat.instance.hydrateStateSnapshot({ supervisor_ready: false }, Infinity, 50);
         assert.equal(chat.status(), 'Chat ready, restoring background tasks', 'a body without the phase changes nothing');
         chat.snapshot({ supervisor_ready: false, boot: FAILED });

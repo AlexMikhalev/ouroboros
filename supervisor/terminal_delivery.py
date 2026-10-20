@@ -1127,6 +1127,7 @@ def deliver_miss_lane_outcome(
             )
             return owed
         from ouroboros.observability import preserved_salvage_path
+        from supervisor.cancel_publication import stop_notice_outcome
 
         _note, text, path = salvage_cancelled_output(
             pathlib.Path(drive_root), task_drive, task_id,
@@ -1141,16 +1142,15 @@ def deliver_miss_lane_outcome(
         # GR4-1: the owed registration happens FIRST so its result is
         # observable; the shared seam below re-registers idempotently (and
         # records the typed handoff row when there is no lineage chat).
+        outcome = stop_notice_outcome(row.get("cancel_origin"))
         event = build_unreviewed_salvage_event(
-            pathlib.Path(drive_root), row, task_id, outcome="stopped",
+            pathlib.Path(drive_root), row, task_id, outcome=outcome,
             salvaged_text=text, preserved_path=path, settled_status="cancelled",
             unreconciled_runs=list(unreconciled_runs or []),
         )
-        owed = True
-        if event is not None:
-            owed = register_pending_delivery(pathlib.Path(drive_root), event)
+        owed = True if event is None else register_pending_delivery(pathlib.Path(drive_root), event)
         deliver_unreviewed_salvage(
-            pathlib.Path(drive_root), row, task_id, outcome="stopped",
+            pathlib.Path(drive_root), row, task_id, outcome=outcome,
             salvaged_text=text, preserved_path=path,
             settled_status="cancelled", event_queue=event_queue,
             unreconciled_runs=list(unreconciled_runs or []),

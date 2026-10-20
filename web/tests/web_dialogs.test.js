@@ -87,6 +87,20 @@ test('/panic confirm-and-send flow sends exactly one /panic command', async () =
     assert.equal(seenOptions[0].confirmLabel, 'Kill all workers');
 });
 
+test('/panic goes out first; only then does the page hear ouro:panic (its page modules stop with it)', async () => {
+    const order = [];
+    const prior = Object.getOwnPropertyDescriptor(globalThis, 'dispatchEvent');
+    globalThis.dispatchEvent = (event) => { order.push(`event:${event.type}`); return true; };
+    try {
+        await confirmAndSendPanic({ openConfirmDialog: async () => true, ws: { send: (msg) => order.push(msg.cmd) } });
+        await confirmAndSendPanic({ openConfirmDialog: async () => false, ws: { send: (msg) => order.push(msg.cmd) } });
+    } finally {
+        if (prior) Object.defineProperty(globalThis, 'dispatchEvent', prior);
+        else delete globalThis.dispatchEvent;
+    }
+    assert.deepEqual(order, ['/panic', 'event:ouro:panic'], 'a cancelled confirm raises nothing');
+});
+
 test('/panic cancel/backdrop/Escape resolutions send NOTHING', async () => {
     for (const resolution of [false, undefined, null, 'true', 1, { confirmed: true, value: '' }]) {
         const sent = [];

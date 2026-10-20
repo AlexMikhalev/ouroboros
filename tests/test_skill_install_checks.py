@@ -8,7 +8,6 @@ import pytest
 
 from ouroboros import config
 from ouroboros import skill_source_install as installer
-from ouroboros.skill_acceptance import accepted_without_review
 from ouroboros.skill_install_record import read_install_record, update_install_record
 from ouroboros.skill_loader import auto_grant_if_enabled, find_skill
 from ouroboros.skill_review_status import acceptance_in_force
@@ -79,12 +78,13 @@ def test_cyber_pro_self_check_records_reason_accepts_exact_release_and_obeys_aut
     assert result["acceptance"]["granted_keys"] == (["GITHUB_TOKEN"] if grants else [])
     loaded = find_skill(drive, "demo")
     assert loaded.review.gate_for(loaded.content_hash)["blocking_reason"] == "self_check"
-    assert accepted_without_review(loaded)
     (loaded.skill_dir / "added.txt").write_text("edit", encoding="utf-8")
     edited = find_skill(drive, "demo")
     assert edited.review.gate_for(edited.content_hash)["blocking_reason"] == "cyber_authority"
     assert acceptance_in_force(edited.review.acceptance, edited.content_hash) == ""
-    assert not accepted_without_review(edited)
+    # Inverted pin: the edited bytes are no acceptance, yet Cyber Pro admits them, and whatever admits
+    # the bytes admits their packages (test_skill_enable_dependencies covers the install at Enable).
+    assert edited.review.gate_for(edited.content_hash)["executable_review"]
 
 
 @pytest.mark.parametrize("access", ["light", "advanced", "pro"])
@@ -129,7 +129,6 @@ def test_a_cyber_pro_self_check_admits_nothing_after_cyber_pro_ends(release, mon
     gate = loaded.review.gate_for(loaded.content_hash)
     assert not gate["executable_review"] and gate["blocking_reason"] == "review_pending"
     assert acceptance_in_force(loaded.review.acceptance, loaded.content_hash) == ""
-    assert not accepted_without_review(loaded)
     assert not auto_grant_if_enabled(drive, loaded).granted
 
 
@@ -144,7 +143,6 @@ def test_cyber_pro_keeps_a_trusted_install_basis_for_keys_and_dependencies(relea
     assert result["acceptance"]["granted_keys"] == (["GITHUB_TOKEN"] if grants else [])
     loaded = find_skill(drive, "demo")
     assert loaded.review.gate_for(loaded.content_hash)["blocking_reason"] == "trusted_source"
-    assert accepted_without_review(loaded)
 
 
 def test_cyber_pro_alone_grants_nothing(release, monkeypatch, set_mode):
@@ -155,8 +153,7 @@ def test_cyber_pro_alone_grants_nothing(release, monkeypatch, set_mode):
     loaded = find_skill(drive, "demo")
     gate = loaded.review.gate_for(loaded.content_hash)
     assert gate["executable_review"] and gate["blocking_reason"] == "cyber_authority"
-    assert not auto_grant_if_enabled(drive, loaded).granted
-    assert not accepted_without_review(loaded)
+    assert not auto_grant_if_enabled(drive, loaded).granted  # keys stay basis-bound; packages do not
 
 
 @pytest.mark.parametrize("notes", ["", "   ", "x" * 2001], ids=["empty", "whitespace", "too_long"])
@@ -282,7 +279,7 @@ def registry_release(tmp_path, monkeypatch):
         manifest = staged.staging_dir / "SKILL.md"
         text = manifest.read_text(encoding="utf-8").replace("1.0.0", version)
         if version != "1.0.0":
-            text = text.replace("type: skill", "env_from_settings: [GITHUB_TOKEN]\ntype: skill")
+            text = text.replace("type: instruction", "env_from_settings: [GITHUB_TOKEN]\ntype: instruction")
         manifest.write_text(text + ("changed release" if registry["changed"] else ""), encoding="utf-8")
         return staged
     monkeypatch.setattr(storage, "_stage_archive", stage)

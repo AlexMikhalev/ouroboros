@@ -7,6 +7,7 @@ import pytest
 
 from tests._work_projection_shared import with_work_fields
 from tests.test_project_work_card_browser import project_chat as project_chat, _evidence_dir
+from tests.ui_chat_viewport_smoke import set_viewport
 
 pytestmark = [pytest.mark.ui_browser, pytest.mark.serial]
 
@@ -82,7 +83,9 @@ def test_model_phase_card_header_reconnect_and_terminal(project_chat, chat_id, t
             details(exact)
 
     show("queued", "Queued", "Request accepted · waiting for admission")
-    expect(chip).to_have_attribute("data-motion", "0")
+    # A call waiting for admission goes on by itself: still dots on a neutral chip (status marks).
+    expect(chip.locator(":scope > .status-mark")).to_have_attribute("data-shape", "still")
+    expect(chip).to_have_attribute("data-chip-tone", "neutral")
     pausing = {"activity_id": "settling-other", "chat_id": chat_id, "kind": "managed_task", "phase": "budget_pausing"}
     ui["state"]["active_chat_activities"].append(pausing)
     page.evaluate("state => window.chat.hydrateStateSnapshot(state)", with_work_fields(ui["state"]))
@@ -120,7 +123,7 @@ def test_model_phase_card_header_reconnect_and_terminal(project_chat, chat_id, t
     # The owner's 2026-10-12 view: title primary beside a short chip, at the native window
     # width, a phone and a narrower phone; details opened show the exact phase and cost reason.
     for width in (1100, 390, 320):
-        page.set_viewport_size({"width": width, "height": 722})
+        set_viewport(page, width, 722)
         expect(title).to_be_visible()
         assert title.evaluate("el => el.getBoundingClientRect().width >= 120"), f"title squeezed at {width}px"
         assert chip.evaluate("el => el.getBoundingClientRect().width < 140"), f"chip crowds the title at {width}px"
@@ -133,9 +136,9 @@ def test_model_phase_card_header_reconnect_and_terminal(project_chat, chat_id, t
         assert card.evaluate("el => el.scrollWidth <= el.clientWidth + 1")
         page.screenshot(path=str(_evidence_dir(tmp_path) / f"phase-details-{suffix}-{width}.png"), animations="disabled")
         disclosure.click()
-    page.set_viewport_size({"width": ui["width"], "height": 850})
+    set_viewport(page, ui["width"], 850)
     show("rejoining", "Rejoining", "Rejoining the same model operation")
-    expect(chip).to_have_attribute("data-motion", "0")
+    expect(chip.locator(":scope > .status-mark")).to_have_attribute("data-shape", "still")
     show("response_ready", "Working", "Response available")
     show("response_received", "Working", "Response received · processing")
     stale = deepcopy(ui["state"])
@@ -146,5 +149,6 @@ def test_model_phase_card_header_reconnect_and_terminal(project_chat, chat_id, t
     page.evaluate("state => window.chat.hydrateStateSnapshot(state)", with_work_fields(stale))
     expect(chip).to_have_text("Done")
     assert phase_detail.text_content() == "", "a stale model observation never survives the terminal"
-    expect(chip).to_have_attribute("data-motion", "0")
+    expect(chip.locator(":scope > .status-mark")).to_have_attribute("data-shape", "dot")
+    expect(chip).to_have_attribute("data-chip-tone", "ok")
     page.screenshot(path=str(_evidence_dir(tmp_path) / f"phase-terminal-{suffix}.png"), animations="disabled")

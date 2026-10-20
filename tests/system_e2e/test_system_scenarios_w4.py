@@ -902,6 +902,15 @@ def test_s22_absorb_kill_recovery_absorbs_once_and_never_twice(
     # writes are separate atomic files, so the scenario shapes that state
     # deterministically by removing the marker after the kill.
     monkeypatch.setenv("OUROBOROS_EVOLUTION_AUTO_RESTART", "false")
+    # Evolution forces the full post-commit test battery even under skip_tests (tools/git.py:
+    # evolution publication requires a full run), and the cycle settles only after the commit
+    # tool returns. S22's subject is the absorb crash window, not qualification, so the
+    # product's own lane budget ends that battery red at once on every host: a red post-commit
+    # run withholds only the push and keeps the commit and the open transaction. Unbounded, the
+    # settle wait below held only while the battery's Node lane failed fast (CI, 18 Oct: three
+    # date-bound Node tests, red after 125 s); once the Node suite passed, the pytest lanes
+    # started and the 300 s wait ran out with the battery still running (CI, 19 Oct).
+    monkeypatch.setenv("OUROBOROS_PREFLIGHT_TIMEOUT_SEC", "5")
 
     settings_kwargs = dict(
         OUROBOROS_RUNTIME_MODE="cyber_pro",  # explicit in-place authoring is Cyber Pro only (#1620)

@@ -35,6 +35,10 @@ test('one header: no icon, no caption line, the tabs are a sibling after the row
     // A room's ☰ (owner 19.10, 1A): the composer row's first control, capsule-sized with the finger's hit area.
     assert.match(renderMobileNavToggle({ inComposer: true }), /class="shell-icon-control mobile-nav-toggle composer-menu ui-hit-area"/);
     assert.match(renderMobileNavToggle(), /class="shell-icon-control mobile-nav-toggle"/);
+    // Both placements carry one status mark for what waits behind the ☰, hidden until app.js paints it.
+    for (const toggle of [renderMobileNavToggle(), renderMobileNavToggle({ inComposer: true })]) {
+        assert.match(toggle, /aria-label="Open navigation"[^>]*><svg[^]*<\/svg><span class="status-mark" aria-hidden="true" data-shape="none" data-hue="ink" hidden><i><\/i><i><\/i><i><\/i><\/span><\/button>/);
+    }
 });
 
 test('Restart and the budget are the same nodes, placed by layout: the row on a desk, the ⋯ menu on a phone', () => {

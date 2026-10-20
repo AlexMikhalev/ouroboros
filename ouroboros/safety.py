@@ -187,9 +187,9 @@ TOOL_POLICY: Dict[str, str] = {
 
     # External skill surface.
     "list_skills": POLICY_SKIP,
-    # Review mutates durable skill state but executes no skill subprocess.
+    # Review records a verdict and prepares declared packages for executable skills.
     "skill_review": POLICY_SKIP,
-    # Toggle only writes private enabled.json state.
+    # Enable prepares admitted declared packages, then writes private enabled.json.
     "toggle_skill": POLICY_SKIP,
     # skill_exec enforces fresh executable review/enabled/hash; recheck per call.
     "skill_exec": POLICY_CHECK,

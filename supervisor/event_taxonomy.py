@@ -148,6 +148,9 @@ EVENT_DISPOSITIONS: Dict[str, EventDisposition] = {
         "supervisor.events_chat_delivery", "ouroboros/tools/core_artifacts.py"),
     "send_links": _handled(
         "supervisor.events_chat_delivery", "ouroboros/tools/core_artifacts.py"),
+    "send_card": _handled(
+        "supervisor.events_chat_delivery", "ouroboros/tools/cards.py",
+        note="the card is stored before the event; the row carries its identity, the body stays in the store"),
     "send_message": _handled(
         "supervisor.events_chat_delivery", "ouroboros/agent.py",
         "supervisor/task_reaper.py", "supervisor/terminal_delivery.py", idle_input=True),

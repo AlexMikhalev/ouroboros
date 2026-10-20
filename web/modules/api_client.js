@@ -76,7 +76,7 @@ export async function fetchJson(url, init = {}, options = {}) {
 export function jsonPost(url, payload = {}, options = {}) {
     return fetchJson(url, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...options.headers },
         body: JSON.stringify(payload),
     }, options);
 }
@@ -433,6 +433,8 @@ export const apiClient = {
     /** @returns {Promise<import('./api_types.js').UiPreferencesResponse>} */
     uiPreferences: (init = {}) => fetchJson('/api/ui/preferences', { cache: 'no-store', ...init }),
     saveUiPreferences: (payload) => jsonPost('/api/ui/preferences', payload),
+    /** Live skill contributions (CLIENT_CONTRACT §11). @returns {Promise<import('./api_types.js').UiContributionsResponse>} */
+    uiContributions: (init = {}) => fetchJson('/api/ui/contributions', { cache: 'no-store', ...init }),
     /** @returns {Promise<import('./ui_i18n_types.js').UiI18nResponse>} */
     uiI18n: () => fetchJson('/api/ui/i18n', { cache: 'no-store' }),
     /** @param {string|import('./ui_i18n_types.js').UiI18nLanguageRequest} payload */
@@ -503,10 +505,11 @@ export const apiClient = {
     deleteSkill: (skill, payloadRoot, expectedContentHash = '') => jsonPost(`/api/skills/${encodeURIComponent(skill)}/delete`, {
         payload_root: payloadRoot,
         ...(expectedContentHash ? { expected_content_hash: expectedContentHash } : {}),
-    }),
-    skillGrants: (skill, items, expectedContentHash = '') => jsonPost(`/api/skills/${encodeURIComponent(skill)}/grants`, {
+    }, { headers: { Prefer: 'respond-async' } }),
+    skillGrants: (skill, items, expectedContentHash = '', enableAfterGrant = false) => jsonPost(`/api/skills/${encodeURIComponent(skill)}/grants`, {
         items, ...(expectedContentHash ? { expected_content_hash: expectedContentHash } : {}),
-    }),
+        ...(enableAfterGrant ? { enable_after_grant: true } : {}),
+    }, { headers: { Prefer: 'respond-async' } }),
     /**
      * @param {string} skill
      * @param {import('./api_types.js').OwnerSkillPresenceRuntimeRequest} payload

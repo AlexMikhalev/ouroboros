@@ -12,6 +12,20 @@ export class ClassList {
     sync() { this.node._className = [...this.names].join(' '); }
     from(value) { this.names = new Set(String(value || '').split(/\s+/).filter(Boolean)); this.sync(); }
 }
+// A text node: a task chip keeps its words in one beside its status mark (task_phase_chip.paintTaskPhase).
+export class TextStub {
+    constructor(data = '') { this.nodeType = 3; this.data = String(data); this.children = []; this.dataset = {}; }
+    get textContent() { return this.data; }
+    set textContent(value) { this.data = String(value ?? ''); }
+    get classList() { return { contains: () => false }; }
+    contains(node) { return node === this; }
+    querySelector() { return null; }
+    querySelectorAll() { return []; }
+    matches() { return false; }
+    getAttribute() { return null; }
+    hasAttribute() { return false; }
+    remove() { this.parentNode?.removeChild?.(this); }
+}
 export class ElementStub {
     constructor(tag = 'div', doc = null) {
         this.tagName = tag.toUpperCase();
@@ -48,7 +62,7 @@ export class ElementStub {
         this._innerHTML = this._textContent
             .replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;');
     }
-    get textContent() { return this._textContent; }
+    get textContent() { return this._textContent + this.children.filter((child) => child.nodeType === 3).map((child) => child.data).join(''); }
     set innerHTML(value) {
         this._innerHTML = String(value || '');
         if (!this.ownerDocument) return;
@@ -117,8 +131,10 @@ export class ElementStub {
         node.parentElement = null;
     }
     remove() { this.parentNode?.removeChild?.(this); this.isConnected = false; }
-    get firstElementChild() { return this.children[0] || null; }
-    get lastElementChild() { return this.children.at(-1) || null; }
+    get firstElementChild() { return this.children.find((child) => child.nodeType !== 3) || null; }
+    get lastElementChild() { return this.children.findLast((child) => child.nodeType !== 3) || null; }
+    get firstChild() { return this.children[0] || null; }
+    get lastChild() { return this.children.at(-1) || null; }
     replaceChild(next, current) { this.insertBefore(next, current); this.removeChild(current); return current; }
     replaceChildren(...nodes) { this.children = []; nodes.forEach((node) => this.appendChild(node)); }
     contains(node) {
@@ -129,7 +145,8 @@ export class ElementStub {
     querySelectorAll(selector) {
         // Document order, including a figure's descendants. Attribute filters
         // matter too: clearing pending receipts must not clear settled ones.
-        const descendants = this.children.flatMap((child) => [child, ...child.querySelectorAll('*')]);
+        const descendants = this.children.filter((child) => child.nodeType !== 3)
+            .flatMap((child) => [child, ...child.querySelectorAll('*')]);
         if (selector === '*') return descendants;
         if (selector === '[id]') return descendants.filter((child) => child.id);
         const id = selector.match(/^\[id="([^"]+)"\]$/)?.[1] || selector.match(/^#([\w-]+)$/)?.[1];
@@ -168,6 +185,7 @@ export function installDom(fetchImpl = async () => ({ ok: true, json: async () =
     const document = {
         byId: new Map(), hidden: false, activeElement: null,
         createElement(tag) { return new ElementStub(tag, document); },
+        createTextNode(data) { return new TextStub(data); },
         createDocumentFragment() {
             const fragment = new ElementStub('#document-fragment', document);
             fragment.isDocumentFragment = true;

@@ -26,6 +26,7 @@ import pytest
 
 from tests.test_effort_range_browser import _evidence_dir, _launch, _open_chat, _shot
 from tests.test_ui_smoke_playwright import direct_server_with_data  # noqa: F401 - pytest fixture import
+from tests.ui_chat_viewport_smoke import set_viewport
 
 pytestmark = [pytest.mark.ui_browser, pytest.mark.serial]
 
@@ -100,7 +101,32 @@ FRAMES = """async ({ sel, frames }) => {
                  whole: whole(), compact: row.dataset.ownerCompact || '' };
     };
     const frame = () => new Promise((resolve) => requestAnimationFrame(resolve));
-    const run = async () => { const out = []; for (let i = 0; i < frames; i += 1) { await frame(); out.push(sample()); } return out; };
+    // Every frame a press can paint, however few this host draws (a loaded WebKit draws two or three per
+    // transition): the row's transitions are held from the press on, stepped through their whole timeline, then
+    // finished, and the frames after that are sampled as they come.
+    const held = () => {
+        const moving = document.getAnimations().filter((animation) => 'transitionProperty' in animation
+            && row.contains(animation.effect?.target));
+        moving.forEach((animation) => animation.pause());
+        return moving;
+    };
+    const run = async () => {
+        held();
+        await frame();  // the press's own frame work runs; what it starts is held too
+        const moving = held();
+        const end = Math.max(0, ...moving.map((animation) => animation.effect.getComputedTiming().endTime));
+        const out = [];
+        for (let i = 0; i < frames; i += 1) {
+            moving.forEach((animation) => { animation.currentTime = end * i / (frames - 1); });
+            // The step is read once the product has refit to it: its ResizeObserver hands the fit to the next
+            // frame (composer_owner_controls.js observeLayout), so that frame runs before the read.
+            for (let wait = 0; wait < 3; wait += 1) await frame();
+            out.push(sample());
+        }
+        moving.forEach((animation) => animation.finish());
+        for (let i = 0; i < 4; i += 1) { await frame(); out.push(sample()); }
+        return out;
+    };
     const press = () => head.dispatchEvent(new MouseEvent('click', { bubbles: true, detail: 1 }));
     const closed = sample();
     press();
@@ -428,14 +454,17 @@ def test_closed_names_reduced_motion_and_a_resize_that_refits(direct_server_with
             assert all(set(d.replace(" ", "").split(",")) == {"0s"} for d in durations), durations
             page.click(f"{EFFORT} .chat-capsule-head")
             _until(page, "r.eff.open === 'true' && r.eff.fit === 'inline'")
+            # The pointer leaves the row: a pointer resting on a capsule is hover, which opens a closed one (WebKit
+            # moves it over again as the row reflows); this flow is a press, two resizes and Escape.
+            page.mouse.move(2, 2)
             facts = {"wide": _row(page)}
             # The window narrows to a phone's width with the strip open: it refits alone, one line.
-            page.set_viewport_size({"width": 390, "height": 900})
+            set_viewport(page, 390, 900)
             _until(page, "['solo', 'overflow'].includes(r.eff.fit) && r.solo === 'effort'")
             facts["narrow"] = _row(page)
             assert facts["narrow"]["oneLine"] and not facts["narrow"]["docScroll"], facts
             assert facts["narrow"]["eff"]["right"] <= facts["narrow"]["rowRight"] + 1, facts
-            page.set_viewport_size({"width": 1440, "height": 900})
+            set_viewport(page, 1440, 900)
             _until(page, "r.eff.fit === 'inline' && r.solo === '' && r.ctx.shown && r.swarmShown")
             page.keyboard.press("Escape")
             # Probe both sides of the actual named row's width. System fonts differ between

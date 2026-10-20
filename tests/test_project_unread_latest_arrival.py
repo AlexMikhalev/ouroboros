@@ -6,7 +6,7 @@ outbox delivers late keeps its original ``ts``: the event-time tail can leave
 it out of the recent window entirely, or sort it above messages that arrived
 before it. A recent Project read therefore names the physically newest
 standalone message it read (``window.latest_message``) without moving or adding
-a row, and names nothing it cannot vouch for (DESIGN "Project unread dot").
+a row, and names nothing it cannot vouch for (DESIGN "Unread").
 
 Deliveries run the real ``events_chat_delivery`` seam into a real registered
 Project, so every counted row is one the sidebar revision counted; reads run the

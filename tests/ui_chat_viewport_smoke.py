@@ -77,6 +77,47 @@ _SETTLE_RESTORE_FRAMES = """() => new Promise(resolve => {
 })"""
 
 
+# web/theme.js switches the shell's layout (html[data-layout]) from a media query's change event, which an engine may
+# run frames after the new size is in place (WebKit does): a resize ends once the layout is the new width's.
+_LAYOUT_FOR_WIDTH = """width => document.documentElement.dataset.layout
+    === (width >= window.ouroLayout.dockedMinWidth ? 'docked' : 'stack')"""
+
+
+# A feed lays its rows out at a new width once the width holds (chat_reading_position.js marks a width still moving
+# [data-resizing] and re-applies the reading place when it stops): every feed keeps one unmarked width for 16 frames.
+_FEEDS_HOLD_WIDTH = """() => {
+    const now = [...document.querySelectorAll('#chat-messages, .chat-messages')]
+        .map(feed => feed.hasAttribute('data-resizing') ? 'moving' : feed.offsetWidth).join();
+    const seen = window.__feedsHoldWidth;
+    window.__feedsHoldWidth = { now, frames: seen?.now === now && !now.includes('moving') ? seen.frames + 1 : 0 };
+    return window.__feedsHoldWidth.frames >= 16;
+}"""
+
+
+def set_viewport(page, width, height, timeout=10_000):
+    """Resize the page, then wait for the shell to take the layout of the new width and its feeds to hold it."""
+    page.set_viewport_size({"width": width, "height": height})
+    page.wait_for_function(_LAYOUT_FOR_WIDTH, arg=width, timeout=timeout)
+    page.evaluate("() => { window.__feedsHoldWidth = null; }")
+    page.wait_for_function(_FEEDS_HOLD_WIDTH, polling="raf", timeout=timeout)
+
+
+# On a phone (the stack layout) the closed drawer lies under the room, a step to the left (style.css), so its own box
+# no longer says whether it is closed. Closed is the drawer's own state (no nav-drawer-open, the sidebar inert: app.js)
+# with every room (Main, a Project open over it) back at the screen's left edge, its motion finished.
+_DRAWER_CLOSED = """() => {
+    const side = document.getElementById('primary-sidebar');
+    const rooms = [document.getElementById('content'), document.querySelector('#project-panel.open')].filter(Boolean);
+    return !document.body.classList.contains('nav-drawer-open') && side.inert
+        && rooms.every((room) => Math.abs(room.getBoundingClientRect().left) < 0.5 && !room.getAnimations().length);
+}"""
+
+
+def wait_drawer_closed(page, timeout=None):
+    """On a phone, wait until the drawer is closed and the room has settled back over it (the page's default timeout)."""
+    page.wait_for_function(_DRAWER_CLOSED, timeout=timeout)
+
+
 def _emit_ws_frame(page, frame):
     page.evaluate(
         """frame => {

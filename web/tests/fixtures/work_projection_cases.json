@@ -41,6 +41,7 @@
       ]
      },
      "confirmed": true,
+     "mark": "moving",
      "kind": "task",
      "project_id": "",
      "since": 100.0,
@@ -117,6 +118,7 @@
       ]
      },
      "confirmed": true,
+     "mark": "moving",
      "kind": "task",
      "project_id": "",
      "since": 100.0,
@@ -206,6 +208,7 @@
       ]
      },
      "confirmed": true,
+     "mark": "still",
      "kind": "direct",
      "project_id": "",
      "since": 100.0,
@@ -237,7 +240,7 @@
       }
      ],
      "amber": true,
-     "mark": "dot",
+     "mark": "still",
      "confirmed": true,
      "works": [
       "d"
@@ -290,6 +293,7 @@
       ]
      },
      "confirmed": true,
+     "mark": "pause",
      "kind": "task",
      "project_id": "",
      "since": 100.0,
@@ -313,7 +317,7 @@
      "call": "",
      "turn": [],
      "amber": false,
-     "mark": "dot",
+     "mark": "pause",
      "confirmed": true,
      "works": [
       "o"
@@ -366,6 +370,7 @@
       ]
      },
      "confirmed": true,
+     "mark": "pause",
      "kind": "task",
      "project_id": "",
      "since": 100.0,
@@ -389,7 +394,7 @@
      "call": "",
      "turn": [],
      "amber": false,
-     "mark": "dot",
+     "mark": "pause",
      "confirmed": true,
      "works": [
       "m"
@@ -448,6 +453,7 @@
       ]
      },
      "confirmed": true,
+     "mark": "pause",
      "kind": "task",
      "project_id": "",
      "since": 100.0,
@@ -478,7 +484,7 @@
       }
      ],
      "amber": true,
-     "mark": "dot",
+     "mark": "pause",
      "confirmed": true,
      "works": [
       "s"
@@ -540,6 +546,7 @@
       ]
      },
      "confirmed": true,
+     "mark": "still",
      "kind": "task",
      "project_id": "",
      "since": 100.0,
@@ -571,7 +578,7 @@
       }
      ],
      "amber": true,
-     "mark": "dot",
+     "mark": "still",
      "confirmed": true,
      "works": [
       "a"
@@ -624,6 +631,7 @@
       ]
      },
      "confirmed": true,
+     "mark": "moving",
      "kind": "task",
      "project_id": "",
      "since": 100.0,
@@ -668,6 +676,7 @@
       ]
      },
      "confirmed": true,
+     "mark": "still",
      "kind": "task",
      "project_id": "",
      "since": 90.0,
@@ -739,6 +748,7 @@
       ]
      },
      "confirmed": true,
+     "mark": "moving",
      "outcome": "failed",
      "kind": "task",
      "project_id": "",
@@ -824,6 +834,7 @@
       ]
      },
      "confirmed": true,
+     "mark": "still",
      "kind": "task",
      "project_id": "",
      "since": 100.0,
@@ -843,7 +854,7 @@
      "call": "",
      "turn": [],
      "amber": false,
-     "mark": "dot",
+     "mark": "still",
      "confirmed": true,
      "works": [
       "sl"
@@ -890,6 +901,7 @@
       ]
      },
      "confirmed": false,
+     "mark": "ring",
      "kind": "task",
      "project_id": "",
      "since": 100.0,
@@ -960,6 +972,7 @@
       "ids": []
      },
      "confirmed": true,
+     "mark": "moving",
      "outcome": "done",
      "kind": "task",
      "project_id": "",
@@ -984,6 +997,83 @@
      "confirmed": true,
      "works": [
       "r"
+     ]
+    }
+   },
+   "work_summary": {
+    "counts": {
+     "working": 1,
+     "queued": 0,
+     "waiting": 0,
+     "paused": 0,
+     "unknown": 0
+    },
+    "turn": 0,
+    "confirmed": true
+   },
+   "works_complete": true,
+   "works_gaps": []
+  },
+  "helper_after_parent": {
+   "works": [
+    {
+     "work_id": "p",
+     "room": 42,
+     "name": "",
+     "episode": {
+      "task_id": "p",
+      "live": false
+     },
+     "activity": "working",
+     "transition": "none",
+     "call": "working",
+     "because": [
+      {
+       "code": "helpers_running",
+       "text": "1 helper still working",
+       "count": 1,
+       "ids": [
+        "h"
+       ]
+      }
+     ],
+     "turn": [],
+     "release": "self",
+     "paused_by": null,
+     "members": {
+      "working": 1,
+      "waiting": 0,
+      "delegated": 0,
+      "ids": [
+       "h"
+      ]
+     },
+     "confirmed": true,
+     "mark": "moving",
+     "outcome": "completed",
+     "kind": "task",
+     "project_id": "",
+     "since": 100.0,
+     "controls": [
+      {
+       "action": "stop",
+       "target": "p",
+       "scope": "cascade"
+      }
+     ]
+    }
+   ],
+   "rooms": {
+    "42": {
+     "activity": "working",
+     "transition": "none",
+     "call": "working",
+     "turn": [],
+     "amber": false,
+     "mark": "moving",
+     "confirmed": true,
+     "works": [
+      "p"
      ]
     }
    },

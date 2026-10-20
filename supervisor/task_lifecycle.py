@@ -1305,7 +1305,7 @@ def _finish_captured_running(
     # id keeps the publish below idempotent and a crash between settle and send replays it.
     # Completion wins: cancel_publication withdraws this salvage and owes the kept result.
     owed_ok = _register_owed_terminal_delivery(
-        q, task, task_id, {"status": STATUS_CANCELLED}, deliver=deliver,
+        q, task, task_id, {"status": STATUS_CANCELLED, **_intent_outcome_fields(intent or {})}, deliver=deliver,
         salvage_text=salvage_text, salvage_path=salvage_path,
         unreconciled_runs=unreconciled,
     )

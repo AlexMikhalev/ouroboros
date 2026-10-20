@@ -12,6 +12,7 @@ def test_privileged_extension_permissions_have_skill_review_items() -> None:
         "companion_process": "companion_process_safety",
         "supervised_task": "companion_process_safety",
         "context_snapshot": "context_snapshot_discipline",
+        "page_module": "A `page_module` permission",
     }
     for permission, item in required_mentions.items():
         assert permission in VALID_EXTENSION_PERMISSIONS

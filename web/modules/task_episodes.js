@@ -12,6 +12,7 @@
 import { escapeHtmlAttr, escapeHtmlText as escapeHtml } from './utils.js';
 import { taskDoneIsTerminal, taskPresentation, taskReasonDetail, taskTerminalPhase } from './log_events.js';
 import { fmt } from './i18n.js';
+import { outcomeTone } from './task_phase_chip.js';
 import { projectCollapsedActivity, renderCollapsedActivity } from './chat_activity.js';
 
 export function admittedSuccessor(row) {
@@ -37,7 +38,6 @@ export function noteEpisodeFacts(previous = {}, row = {}) {
     return next;
 }
 
-const TONE = { done: 'ok', warn: 'warn', error: 'error', cancelled: 'neutral' };
 const pad = (n) => String(n).padStart(2, '0');
 const toDate = (raw) => {
     const value = typeof raw === 'number' ? raw : Date.parse(String(raw || ''));
@@ -71,7 +71,7 @@ export function renderEpisodes(el, episodes = []) {
         const current = index === episodes.length - 1;
         const span = episodeSpan(episode.started, current && !episode.ended ? '' : episode.ended);
         const outcome = !current && episode.phase ? taskPresentation(episode.phase).headline : '';
-        const tone = TONE[episode.phase] || 'neutral';
+        const tone = outcomeTone(episode.phase) || 'neutral';  // the chips' outcome tones
         const parts = [`<span class="chat-live-episode-label">${escapeHtml(fmt('Episode {n}', { n: index + 1 }))}</span>`];
         if (episode.name) parts.push(`<span class="chat-live-episode-name">${escapeHtml(episode.name)}</span>`);
         if (span) parts.push(`<span class="chat-live-episode-span">${escapeHtml(span)}</span>`);

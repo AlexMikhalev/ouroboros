@@ -152,8 +152,29 @@ python3 scripts/build_repo_bundle.py --source-branch "$MANAGED_SOURCE_BRANCH"
 
 rm -rf build dist
 
+# Compile before Ouroboros.spec prunes the standalone headers. Both the ABI and
+# library must come from the interpreter this entry will host, not build Python.
+echo "--- Compiling the macOS source-launcher entry ---"
+SHELL_PY_VERSION="$(python-standalone/bin/python3 -c 'import sys; print("%d.%d" % sys.version_info[:2])')"
+SHELL_PY_LIB="libpython${SHELL_PY_VERSION}.dylib"
+if [ ! -f "python-standalone/include/python${SHELL_PY_VERSION}/Python.h" ]; then
+    echo "ERROR: matching standalone Python headers are missing; fetch a fresh python-standalone before building." >&2
+    exit 1
+fi
+mkdir -p build/macos
+xcrun clang -std=c11 -Wall -Wextra -Werror -mmacosx-version-min=12.0 \
+    -I "python-standalone/include/python${SHELL_PY_VERSION}" \
+    packaging/macos/ouroboros_shell.c "python-standalone/lib/$SHELL_PY_LIB" \
+    -Wl,-rpath,@executable_path/../Frameworks/python-standalone/lib -o build/macos/ouroboros-shell
+
 echo "--- Running PyInstaller ---"
 python3 -m PyInstaller Ouroboros.spec --clean --noconfirm
+
+echo "--- Installing the macOS source-launcher entry ---"
+cp build/macos/ouroboros-shell "$APP_PATH/Contents/MacOS/ouroboros-shell"
+# The standalone executable may be static (3.10.22). Use its explicitly bundled
+# library, matching the headers and stdlib, not an incidental top-level dependency.
+test -f "$APP_PATH/Contents/Frameworks/python-standalone/lib/$SHELL_PY_LIB"
 
 echo "--- Installing packaged CLI wrappers ---"
 CLI_BIN_DIR="$APP_PATH/Contents/Resources/bin"
@@ -241,6 +262,19 @@ if [ "$SIGN_MODE" != "0" ]; then
     # remaining bytecode objects into the final app hierarchy.
     codesign -s "$SIGN_IDENTITY" --timestamp --force --options runtime --deep \
         --entitlements "$ENTITLEMENTS" "$APP_PATH"
+
+    # --deep overwrites a helper's explicit identifier. Restore the app identity
+    # on the source entry, then seal the outer bundle without walking its code.
+    codesign -s "$SIGN_IDENTITY" --timestamp --force --options runtime \
+        --identifier com.ouroboros.agent --entitlements "$ENTITLEMENTS" \
+        "$APP_PATH/Contents/MacOS/ouroboros-shell"
+    codesign -s "$SIGN_IDENTITY" --timestamp --force --options runtime \
+        --entitlements "$ENTITLEMENTS" "$APP_PATH"
+    SHELL_SIGN_ID="$(codesign -dv "$APP_PATH/Contents/MacOS/ouroboros-shell" 2>&1 | sed -n 's/^Identifier=//p')"
+    if [ "$SHELL_SIGN_ID" != "com.ouroboros.agent" ]; then
+        echo "ERROR: source entry lost its application signing identity: $SHELL_SIGN_ID" >&2
+        exit 1
+    fi
 
     echo "--- Verifying signature ---"
     codesign -dvv "$APP_PATH"

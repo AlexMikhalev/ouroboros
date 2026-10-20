@@ -208,15 +208,29 @@ def test_sidebar_is_three_zones_with_the_projects_list_as_the_one_scroller():
     for page in ("files", "skills", "widgets", "dashboard", "settings"):
         assert f"id: '{page}'," in pages_js and "zone: 'foot'" in pages_js.split(f"id: '{page}',", 1)[1].split("}", 1)[0]
     assert "Utilities" not in html and "nav-section-label" not in html
-    # A finger gets 44px rows, ⋯ and +; the version reads at the meta size; unread is a red dot in a soft ring.
+    # A finger gets 44px rows and +; the version reads at the meta size.
     assert "#primary-sidebar { --nav-item-h: 44px; --nav-control-h: 44px; }" in css
     version = css.split("#nav-version {", 1)[1].split("}", 1)[0]
     assert "font-size: var(--type-meta)" in version and "opacity" not in version
-    dot = css.split(".nav-unread-dot {", 1)[1].split("}", 1)[0]
-    assert "background: var(--red)" in dot and "box-shadow: 0 0 0 2px var(--accent-18)" in dot
-    # Working dots take the row's ink, so they never out-shout the name; the row's ⋯ is the shell's one More glyph.
-    assert ".nav-activity-marker.chat-live-typing span { background: currentColor; }" in css
-    assert '.nav-activity-marker[data-state="working"] span { background' not in css
+    # A row's one status mark is the shared one (ui.css "Status marks"), in the row's own ink: no unread dot of its
+    # own, no second painter, and no name ink that changes with unread (new messages are the mark's hue).
+    for retired in (".nav-unread-dot", ".nav-activity-marker", ".nav-project-row.has-unread", ".nav-projects-show-all"):
+        assert retired not in css, retired
+    row = css.split("\n.nav-project-row {\n    min-height", 1)[1].split("}", 1)[0]
+    assert "grid-template-columns: minmax(0, 1fr) 18px;" in row, row
+    assert ".nav-project-row > .nav-mark { grid-column: 2; }" in css
+    # Main's mark lands in the Project rows' column by construction: Main's row ends where theirs does.
+    assert "--nav-kebab-w: var(--nav-control-h);" in css
+    assert "grid-template-columns: minmax(0, 1fr) var(--nav-kebab-w);" in css.split("\n.nav-project-item {", 1)[1].split("}", 1)[0]
+    assert "padding-right: calc(var(--nav-kebab-w) + var(--space-1));" in css.split("\n.nav-row-main {", 1)[1].split("}", 1)[0]
+    # On touch a long press opens a row's menu: the ⋯ keeps no column and no finger, and stays the keyboard's door.
+    touch = css.split("/* Touch: a long press opens the row's menu", 1)[1].split("\n}\n", 1)[0]
+    assert "#primary-sidebar { --nav-kebab-w: 0px; }" in touch
+    assert ".nav-project-item .nav-project-kebab:not(:focus, [aria-expanded=\"true\"]) {" in touch
+    assert "pointer-events: none" in touch
+    assert ".nav-project-item:has(> .nav-project-kebab:is(:focus, [aria-expanded=\"true\"])) {" in touch
+    assert "-webkit-touch-callout: none" in touch and "user-select: none" in touch
+    # The row's ⋯ is the shell's one More glyph.
     app_js = _read("web/app.js")
     assert "kebab.innerHTML = SHELL_ICONS.more;" in app_js and "kebab.textContent = '⋯'" not in app_js
     assert "navProjectsToggle?.classList.toggle('active'" not in _read("web/app.js")
@@ -262,22 +276,25 @@ def test_server_navigation_and_chat_static_contracts():
     assert "evo-runtime-detail" in evo_source
     assert "data?.evolution_state?.detail" in chat_source
     assert "data?.bg_consciousness_state?.detail" in chat_source
-    assert re.search(r'<input[^>]+id="chat-file-input"[^>]+multiple', chat_source)
+    # The composer's markup and send path live in composer.js, mounted by chat.js.
+    composer_source = _read("web/modules/composer.js")
+    assert "${composerMarkup()}" in chat_source
+    assert re.search(r'<input[^>]+id="chat-file-input"[^>]+multiple', composer_source)
     # The composer's staged files live in chat_attachments.js (DESIGN "Chat attachments");
-    # chat.js uploads through it on Send and names the uploads for the model.
+    # composer.js uploads through it on Send and names the uploads for the model.
     attachments_source = _read("web/modules/chat_attachments.js")
-    assert "createComposerAttachments({" in chat_source
-    assert "composerText(text, uploadedAttachments.map(" in chat_source
+    assert "createComposerAttachments({" in composer_source
+    assert "composerText(text, uploadedAttachments.map(" in composer_source
     assert "attachmentTail(names);" in attachments_source  # every message but the exact /restart command
     assert "list.slice(0, ATTACHMENT_PREVIEW_COUNT)" in attachments_source
     assert "for (const item of [...pending])" in attachments_source
     assert "attachBtn.classList.toggle('uploading', flag)" in attachments_source
     assert "input.readOnly = flag;" in attachments_source
-    assert "cleanupUploadedAttachments" in chat_source
-    assert "await cleanupUploadedAttachments(e.uploaded || []);" in chat_source
-    assert "await cleanupUploadedAttachments(uploadedAttachments);" in chat_source
-    assert "ws.send({" in chat_source and "{ queue: false }" in chat_source
-    assert "result?.status !== 'sent'" in chat_source
+    assert "cleanupUploadedAttachments" in composer_source
+    assert "await cleanupUploadedAttachments(e.uploaded || []);" in composer_source
+    assert "await cleanupUploadedAttachments(uploadedAttachments);" in composer_source
+    assert "ws.send(frame, hasAttachments ? { queue: false } : undefined)" in composer_source
+    assert "result?.status !== 'sent'" in composer_source
     assert "data-attachment-remove" in attachments_source
     media_source = _read("web/modules/chat_media.js")
     assert "export async function cleanupUploadedAttachments" in media_source

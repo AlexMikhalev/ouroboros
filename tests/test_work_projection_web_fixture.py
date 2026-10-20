@@ -79,6 +79,11 @@ CASES = {
     ),
     "unknown": ([_row("u", "unknown")], {}, {}, {}),
     "ended_with_runs": ([], {}, {"r": {"task_id": "r", "status": "done", "chat_id": 42}}, {"r": ["run-1", "run-2"]}),
+    # The parent finished while its helper still works: its episode is not live, its tree's Stop still stands.
+    "helper_after_parent": (
+        [_row("h", parent_task_id="p", root_task_id="p")], {},
+        {"p": {"task_id": "p", "status": "completed", "chat_id": 42}}, {},
+    ),
 }
 
 # The owner fence records who paused: the owner, or Ouroboros itself (the mind's own Pause).
@@ -111,6 +116,7 @@ def test_the_web_fixture_is_the_servers_projection():
 @pytest.mark.parametrize("name, activity", [
     ("held_continue", "working"), ("direct_question", "waiting"), ("paused_by_owner", "paused"),
     ("spending_limit", "paused"), ("queued_and_pausing", "working"), ("unknown", "unknown"),
+    ("helper_after_parent", "working"),
 ])
 def test_each_fixture_room_is_the_state_its_name_says(name, activity):
     """The fixture is meaningful, not merely equal: each room is the case the web tests read it as."""

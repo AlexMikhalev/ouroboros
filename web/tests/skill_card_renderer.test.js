@@ -13,7 +13,8 @@ const LISTING = JSON.parse(readFileSync(new URL('./fixtures/skills_v4/extensions
 const row = (name) => structuredClone(LISTING.skills.find((skill) => skill.name === name));
 const FIXES = JSON.parse(readFileSync(new URL('./fixtures/skills_v4/extensions_fix_r1.json', import.meta.url), 'utf8')).skills;
 const ROUND2 = JSON.parse(readFileSync(new URL('./fixtures/skills_v4/extensions_fix_r2.json', import.meta.url), 'utf8')).skills;
-const chipOf = (html) => html.match(/<span class="skills-card-status"><span class="ui-chip skills-chip" data-tone="([^"]+)"[^>]*>(?:<span class="chat-live-typing[^"]*"[^>]*>(?:<span><\/span>){3}<\/span>)?([^<]+)</);
+const chipOf = (html) => html.match(/<span class="skills-card-status"><span class="ui-chip skills-chip" data-tone="([^"]+)"[^>]*>(?:<span class="status-mark"[^>]*>(?:<i><\/i>){3}<\/span>)?([^<]+)</);
+const MOVING = /<span class="status-mark" aria-hidden="true" data-shape="moving" data-hue="ink">/;
 const traysOf = (html) => html.split('data-skill-trays>')[1].split('<div data-skill-errors>')[0];
 
 function skill(overrides = {}) {
@@ -39,12 +40,21 @@ test('one head: the name opens the detail sheet, marks stay beside it, the who l
 test('the run state is one status chip: On, Off, Needs access, Reviewing…, Review found problems, Not reviewed yet', () => {
     assert.deepEqual(chipOf(renderInstalledSkillCard(row('telegram'))).slice(1), ['ok', 'On']);
     assert.deepEqual(chipOf(renderInstalledSkillCard(skill())).slice(1), ['neutral', 'Off']);
+    // Amber is the owner's move: a grant, a review, a review to try again (each offers the owner's own action).
     assert.deepEqual(chipOf(renderInstalledSkillCard(row('zoom_meeting'))).slice(1), ['warn', 'Needs access']);
-    assert.deepEqual(chipOf(renderInstalledSkillCard(row('whoop-health'))).slice(1), ['warn', 'Reviewing…']);
-    assert.deepEqual(chipOf(renderInstalledSkillCard(row('minecraft-widget'))).slice(1), ['danger', 'Review found problems']);
     assert.deepEqual(chipOf(renderInstalledSkillCard(row('claudexor_quotas'))).slice(1), ['warn', 'Not reviewed yet']);
-    assert.match(renderInstalledSkillCard(row('whoop-health')), /class="chat-live-typing skills-dots"/, 'live work is the three-dot loop');
-    assert.doesNotMatch(renderInstalledSkillCard(row('telegram')), /skills-dots/, 'nothing moves when nothing works');
+    const unfinished = skill({ review_status: 'pending', review_gate: { executable_review: false }, executable_review: false,
+        skill_review: { current: { lifecycle_status: 'timeout', terminal_reason: 'the reviewer timed out' } } });
+    assert.deepEqual(chipOf(renderInstalledSkillCard(unfinished)).slice(1), ['warn', 'Review didn’t finish']);
+    assert.equal(installedSkillModel(unfinished).needs, true);
+    assert.deepEqual(chipOf(renderInstalledSkillCard(row('minecraft-widget'))).slice(1), ['danger', 'Review found problems']);
+    // Skipping the review was the owner's own choice: a neutral fact in Details, never amber.
+    assert.match(renderInstalledSkillCard(skill({ review_profile: 'owner_attested' })), /data-tone="neutral">review skipped by you</);
+    // A job in flight goes on by itself: a neutral chip with the shared moving mark.
+    assert.deepEqual(chipOf(renderInstalledSkillCard(row('whoop-health'))).slice(1), ['neutral', 'Reviewing…']);
+    assert.match(renderInstalledSkillCard(row('whoop-health')), MOVING, 'live work is the moving mark');
+    assert.deepEqual(chipOf(renderInstalledSkillCard(skill(), new Set(), new Set(['demo']))).slice(1), ['neutral', 'Asking Ouroboros…']);
+    assert.doesNotMatch(renderInstalledSkillCard(row('telegram')), /status-mark/, 'nothing moves when nothing works');
 });
 
 test('each attention tray is one sentence with its own actions, visible without hover', () => {
@@ -181,7 +191,8 @@ test('conflicts lock an off switch with a visible reason but never trap an enabl
 
 test('a pending lifecycle job shows its words and locks the switch on the intended side', () => {
     const html = renderInstalledSkillCard(skill({ enabled: true, lifecycle_pending: true, lifecycle_kind: 'disable', lifecycle_status: 'running' }));
-    assert.deepEqual(chipOf(html).slice(1), ['warn', 'Turning off…']);
+    assert.deepEqual(chipOf(html).slice(1), ['neutral', 'Turning off…']);
+    assert.match(html, MOVING);
     assert.match(html, /input type="checkbox" class="skills-toggle"[^>]*data-skill="demo"\s+disabled/);
     const failed = renderInstalledSkillCard(skill({ lifecycle_status: 'failed', lifecycle_kind: 'enable', lifecycle_error: 'reconcile failed' }));
     assert.deepEqual(chipOf(failed).slice(1), ['danger', 'Enable failed']);
@@ -216,15 +227,18 @@ test('a stale recorded preflight failure keeps Review first and offers the fix f
     assert.match(html, /skills-menu-item skills-repair-stale" data-skill="demo" data-skill-action="repair">Ask Ouroboros to fix</);
 });
 
-test('the menu carries details, review again, make runnable, publish and the remove action for the origin', () => {
-    const made = renderInstalledSkillCard(skill({ type: 'instruction', source: 'self_authored', is_self_authored: true }));
+test('the menu carries details, review again, make runnable, publish and exactly the removal the host names', () => {
+    const made = renderInstalledSkillCard(skill({ type: 'instruction', source: 'self_authored', is_self_authored: true, removal: 'delete' }));
     assert.match(made, /skills-make-runnable" data-skill="demo" data-skill-action="repair">Make runnable</);
     assert.match(made, /skills-delete-local"[^>]*data-skill-action="delete"[^>]*>Delete</);
     assert.doesNotMatch(made, /skills-uninstall/);
     const sourced = renderInstalledSkillCard(row('weather'));
     assert.match(sourced, /skills-uninstall"[^>]*>Uninstall</);
     assert.doesNotMatch(sourced, /skills-delete-local/);
-    assert.doesNotMatch(renderInstalledSkillCard(row('telegram')), /skills-uninstall|skills-delete-local/, 'built-in skills are turned off, not removed');
+    // Inverted pin: a built-in is removed like any skill (owner decision 17.10 «7. A»); the host says so.
+    assert.match(renderInstalledSkillCard(row('telegram')), /skills-uninstall"[^>]*>Uninstall</);
+    const unnamed = renderInstalledSkillCard({ ...row('weather'), removal: '' });
+    assert.doesNotMatch(unnamed, /skills-uninstall|skills-delete-local/, 'the card derives no removal of its own');
 });
 
 test('Publish follows the host verdict: task_start_allowed decides, a missing token is said in Details', () => {

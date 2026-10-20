@@ -78,6 +78,7 @@ class Work(TypedDict):
     controls: List[WorkControl]
     since: Any
     confirmed: bool
+    mark: str
     outcome: NotRequired[str]
     focus: NotRequired[WorkFocus]
     gaps: NotRequired[List[Dict[str, Any]]]

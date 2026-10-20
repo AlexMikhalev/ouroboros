@@ -23,6 +23,7 @@ from types import SimpleNamespace
 import pytest
 
 from tests.test_acceptance_delivery import _EpisodeLLM
+from tests._store_journal_shared import tree_state
 from tests._store_shared import result_signature
 
 
@@ -91,7 +92,9 @@ def test_an_empty_store_polls_known_zero_through_the_reader_and_writes_nothing(t
     reader (no fast path answers ahead of it) and changes nothing at all. The
     store exists as in production: the supervisor's lifecycle job creates it
     before any worker (and so any poll) exists. Pinned as the EXACT observed
-    tree, byte for byte, across two polls; no events row, no ctx attribute.
+    tree, byte for byte, across two polls (each store as its rows and any
+    write's trace: a WAL reader's own index and log files are no write,
+    ``tree_state``); no events row, no ctx attribute.
     The relayed numbers are the reader's own projection, key by key."""
     import queue
 
@@ -117,8 +120,7 @@ def test_an_empty_store_polls_known_zero_through_the_reader_and_writes_nothing(t
     }
 
     def _tree():
-        return {path.relative_to(root).as_posix(): path.read_bytes() if path.is_file() else None
-                for path in sorted(root.rglob("*"))}
+        return tree_state(root)
 
     before = _tree()
     events_before = custody.event_log_path(root).read_bytes()
@@ -169,8 +171,7 @@ def test_a_stale_name_lock_is_the_readers_removal_and_the_poll_stays_known_zero(
     usage_store.forget(root)
 
     def _tree():
-        return {path.relative_to(root).as_posix(): path.read_bytes() if path.is_file() else None
-                for path in sorted(root.rglob("*"))}
+        return tree_state(root)
 
     migrated = _tree()
     stale_lock = root / "state" / "usage_attempts.lock"

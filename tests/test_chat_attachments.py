@@ -924,6 +924,7 @@ def test_an_unreadable_dialogue_store_refuses_the_frame_instead_of_guessing_it_n
     photo = _upload(files_app, "one.png", PNG)
     text = "Посмотри\n\n[Attached file: one.png]"
     _send_web(bridge, "первое", [])  # a fresh install has no dialogue: absent, not unreadable
+    store.close_connections()  # a WAL commit is in the log until the last close checkpoints it into the file
     intact = dialogue_store.path(tmp_path).read_bytes()
     dialogue_store.path(tmp_path).write_bytes(b"not a database at all" * 10)
     store.close_connections()

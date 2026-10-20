@@ -8,6 +8,7 @@ import { escapeHtmlAttr as escapeHtml } from './ui_primitives.js';
 import { strokeIcon } from './page_icons.js';
 import { formatCompactNumber, safeExternalUrl } from './utils.js';
 import { openExternalViaHostBridge } from './ui_helpers.js';
+import { statusMarkHtml } from './status_mark.js';
 
 const OFFICIAL_PATH = '<path d="M3.85 8.62a4 4 0 0 1 4.78-4.77 4 4 0 0 1 6.74 0 4 4 0 0 1 4.78 4.78 4 4 0 0 1 0 6.74 4 4 0 0 1-4.77 4.78 4 4 0 0 1-6.75 0 4 4 0 0 1-4.78-4.77 4 4 0 0 1 0-6.76Z"/><path d="m9 12 2 2 4-4"/>';
 const WARNING_PATH = '<path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/><path d="M12 9v4"/><path d="M12 17h.01"/>';
@@ -91,18 +92,18 @@ export function skipReviewButtonHtml(attrs = '', label = 'Skip review') {
     return `<button type="button" class="btn btn-default btn-sm skills-skip-btn"${attrs ? ` ${attrs}` : ''}><span class="skills-skip-glyph" aria-hidden="true">${WARNING_GLYPH}</span>${escapeHtml(label)}</button>`;
 }
 
-export function dotsHtml() {
-    return '<span class="chat-live-typing skills-dots" aria-hidden="true"><span></span><span></span><span></span></span>';
-}
+// A job that runs now is the shared moving mark (web/modules/status_mark.js) in its chip's or sentence's ink; a job
+// goes on by itself, so its chip and sentence are neutral and amber stays for the owner's move.
+const workMarkHtml = () => statusMarkHtml('', { shape: 'moving', hue: 'ink' });
 
 /** A status chip: the chip IS the status (flat tint, never standing). */
 export function chipHtml(label, tone = 'neutral', { work = false, attrs = '' } = {}) {
-    return `<span class="ui-chip skills-chip" data-tone="${escapeHtml(tone)}"${attrs ? ` ${attrs}` : ''}>${work ? dotsHtml() : ''}${escapeHtml(label)}</span>`;
+    return `<span class="ui-chip skills-chip" data-tone="${escapeHtml(tone)}"${attrs ? ` ${attrs}` : ''}>${work ? workMarkHtml() : ''}${escapeHtml(label)}</span>`;
 }
 
-/** A status sentence (dot + words); live work replaces the dot with the three-dot loop. */
+/** A status sentence (dot + words); live work replaces the dot with the moving mark. */
 export function statusHtml(textHtml, tone = 'muted', { work = false } = {}) {
-    return `<span class="ui-status skills-status" data-tone="${escapeHtml(tone)}"${work ? ' data-work' : ''}>${work ? dotsHtml() : ''}<span class="skills-status-text">${textHtml}</span></span>`;
+    return `<span class="ui-status skills-status" data-tone="${escapeHtml(tone)}"${work ? ' data-work' : ''}>${work ? workMarkHtml() : ''}<span class="skills-status-text">${textHtml}</span></span>`;
 }
 
 /** One attention tray: one sentence (and an optional quiet note) with its actions, visible on touch. */

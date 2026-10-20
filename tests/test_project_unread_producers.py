@@ -8,7 +8,7 @@ task card (``card_row``, a child's terminal incident included), a child task's
 own message (its delegation lineage, host-enriched at delivery) and every
 progress row — narration, lifecycle, typed incidents — change a card, not the
 conversation, and leave the revision alone. Where a row is shown decides, never
-its kind (DESIGN "Project unread dot").
+its kind (DESIGN "Unread").
 
 Every case runs the real delivery seam (``events_chat_delivery._handle_send_message``
 or the bridge's media sends) against a real registered Project, so the counter

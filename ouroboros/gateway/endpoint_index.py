@@ -56,6 +56,10 @@ HTTP_ENDPOINTS: tuple[str, ...] = (
     "POST /api/tasks/{task_id}/continue",
     "POST /api/tasks/{task_id}/resume",
     "POST /api/decisions",
+    "GET /api/cards/{card_id}",
+    "GET /api/cards/{card_id}/app",
+    "POST /api/cards/{card_id}/pin",
+    "DELETE /api/cards/{card_id}/pin",
     "GET /api/schedules",
     "POST /api/schedules",
     "POST /api/schedules/{schedule_id}/action",
@@ -119,6 +123,8 @@ HTTP_ENDPOINTS: tuple[str, ...] = (
     "GET /api/extensions",
     "GET /api/extensions/{skill}/manifest",
     "GET /api/extensions/{skill}/module/{entry:path}",
+    "GET /api/extensions/{skill}/ui/{revision}/{path:path}",
+    "GET /api/ui/contributions",
     "GET /api/extensions/{skill}/settings_section",
     "ANY /api/extensions/{skill}/{rest:path}",
     "GET /api/skills/daemons",
@@ -177,7 +183,7 @@ class Shape(NamedTuple):
 
     ``responses`` reads ``"200:TaskCreateResponse 400,409,503:ErrorResponse"``: statuses, then
     a body that is a contract TypedDict name (JSON), a media kind (``json`` = JSON whose shape is
-    not published, ``html``, ``sse``, ``file``, ``zip``, ``js``, ``empty``, ``any``), a kind with
+    not published, ``html``, ``text``, ``sse``, ``file``, ``zip``, ``js``, ``empty``, ``any``), a kind with
     the TypedDict its items follow (``sse/TaskEvent``), or alternatives joined by ``|``.
     ``request`` uses the same body words (plus ``multipart``); ``query`` names the parameters
     the handler reads and ``headers`` the request headers it reads (a ``!`` suffix: required).
@@ -227,6 +233,7 @@ HTTP_SHAPES: dict[str, Shape] = {
     "POST /api/settings/secret": Shape("200:SettingsSecretResponse 400,404,409:ErrorResponse", "SettingsSecretRequest",
                                        note="reveals one stored secret, no-store; writes nothing"),
     "GET /api/ui/preferences": Shape("200:UiPreferencesResponse"),
+    "GET /api/ui/contributions": Shape("200:UiContributionsResponse", note="live contributions, offers and owner preferences; no-store"),
     "POST /api/ui/preferences": Shape("200:UiPreferencesResponse 400,503:ErrorResponse", "json"),
     "GET /api/ui/i18n": Shape("200:UiI18nResponse"),
     "POST /api/ui/i18n/language": Shape(
@@ -293,7 +300,13 @@ HTTP_SHAPES: dict[str, Shape] = {
                                               note="a budget-paused task; not idempotent: a repeat is refused"),
     "POST /api/decisions": Shape(
         "200,202:DecisionResponse 400,404:ErrorResponse 409:DecisionResponse|ErrorResponse 501,503:ErrorResponse",
-        "DecisionRequest", note="request_id is the idempotency key; the first answer wins"),
+        "DecisionRequest", note="request_id is the idempotency key; the first answer wins (a card press: unless once)"),
+    "GET /api/cards/{card_id}": Shape("200:CardResponse 404:ErrorResponse", note="read-only; the current body and presses"),
+    "GET /api/cards/{card_id}/app": Shape(
+        "200:text 404:ErrorResponse", note="the app's HTML as text/plain for a sandboxed srcdoc; never served as a page"),
+    "POST /api/cards/{card_id}/pin": Shape(
+        "200:CardPinResponse 404,409,503:ErrorResponse", note="component cards only; broadcasts extension_lifecycle"),
+    "DELETE /api/cards/{card_id}/pin": Shape("200:CardPinResponse 503:ErrorResponse", note="a repeat answers pinned false"),
     "GET /api/chat/history": Shape(
         "200,400,409,503:ChatHistoryResponse", query="chat_id cursor around n_human n_progress limit",
         note="an error page echoes the cursor sent, so the same request can be repeated"),
@@ -327,6 +340,7 @@ HTTP_SHAPES: dict[str, Shape] = {
     "GET /api/extensions/{skill}/module/{entry:path}": Shape("200:js 400,404,409:ErrorResponse",
                                                             note="reviewed module text; host protocol: docs/WIDGET_HOST_PROTOCOL.md"),
     "GET /api/extensions/{skill}/settings_section": Shape("200:ExtensionSettingsSectionResponse 400:ErrorResponse"),
+    "GET /api/extensions/{skill}/ui/{revision}/{path:path}": Shape("200:any 404:empty", note="captured live ui assets; stale revisions are unavailable"),
     "ANY /api/extensions/{skill}/{rest:path}": Shape(
         "200:any 404,405,409,413,502:ErrorResponse", "any", note="the skill's own route, inside its own prefix"),
     "POST /api/skills/{skill}/toggle": Shape(f"200:SkillToggleResponse {_SKILL_REFUSAL}", "SkillToggleRequest",
@@ -508,6 +522,8 @@ WS_SHAPES: dict[str, tuple[str, str]] = {
     "links": ("", "LinksOutbound"),
     "quiz": ("", "QuizOutbound"),
     "quiz_state": ("", "QuizStateOutbound"),
+    "card": ("", "CardOutbound"),
+    "card_state": ("", "CardStateOutbound"),
     "typing": ("", "TypingOutbound"),
     "log": ("", "LogOutbound"),
     "heartbeat": ("", "HeartbeatOutbound"),

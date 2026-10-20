@@ -131,6 +131,13 @@ test('reset applied and failed readback remain separate; already_used is not own
     const unconfirmed = { request: fixture.receipt.request, receipt: { ...fixture.receipt, outcome: 'already_used' } };
     assert.equal(resetOutcome(unconfirmed).tone, 'warn');
     assert.match(resetOutcome(unconfirmed).body, /does not confirm/);
+    // In flight or unconfirmed goes on by itself: a quiet message, never amber.
+    for (const receipt of [{ ...fixture.receipt, outcome: 'pending', state: 'running' }, { ...fixture.receipt, outcome: 'unknown' }]) {
+        const outcome = resetOutcome({ request: fixture.receipt.request, receipt });
+        assert.equal(outcome.tone, 'neutral', receipt.outcome);
+    }
+    assert.equal(resetOutcome({ request: fixture.receipt.request, receipt: { ...fixture.receipt, outcome: 'pending',
+        state: 'running' } }).title, 'Reset is in progress');
 });
 
 test('a refresh or reset envelope replaces only the addressed subject, including named default', () => {

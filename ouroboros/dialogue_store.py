@@ -698,15 +698,15 @@ def probe_rows(root: Any, stream: str, keys: Iterable[Tuple[str, Any]], *, befor
                lower: int = 0, limit: int = 200, newest_first: bool = True) -> List[Row]:
     """The union of one indexed probe per ``(column, value)`` key in ``[lower, before)``, newest
     first, at most ``limit`` rows: the candidate rows of a room or a task tree. Each probe reads
-    at most ``limit`` rows through its own index, so the cost is the number of keys times the
-    page -- never another room's history. ``("chat_id", None)`` probes rows without a chat id."""
+    at most ``limit`` coordinates through its own index; only the union's winning rows fetch
+    bodies, in this same snapshot. ``("chat_id", None)`` probes rows without a chat id."""
     with transaction(root, write=False) as conn:
         return _probe(conn, stream, keys, before=before, lower=lower, limit=limit, newest_first=newest_first)
 
 
 def _probe(conn: sqlite3.Connection, stream: str, keys: Iterable[Tuple[str, Any]], *, before: Optional[int],
            lower: int, limit: int, newest_first: bool) -> List[Row]:
-    found: Dict[int, sqlite3.Row] = {}
+    found = set()
     order = "DESC" if newest_first else "ASC"
     for column, value in dict.fromkeys(tuple(keys)):
         index = _PROBE_INDEX.get(column)
@@ -716,11 +716,21 @@ def _probe(conn: sqlite3.Connection, stream: str, keys: Iterable[Tuple[str, Any]
             continue  # the partial indexes hold only rows that carry the fact: nothing to probe
         # ``IS`` reaches the NULL chat rows through the full room index; a partial index needs ``=``.
         operator = "IS" if column == "chat_id" else "="
-        for record in conn.execute(f"{_SELECT} INDEXED BY {index} WHERE stream=? AND {column} {operator} ? AND seq<? AND seq>=? "
+        for record in conn.execute(f"SELECT seq FROM dialogue INDEXED BY {index} WHERE stream=? AND {column} {operator} ? AND seq<? AND seq>=? "
                                    f"ORDER BY seq {order} LIMIT ?", (stream, value, _bound(before), lower, limit)):
-            found.setdefault(record["seq"], record)
+            found.add(record["seq"])
     chosen = heapq.nlargest(limit, found) if newest_first else heapq.nsmallest(limit, found)
-    return [_row(found[seq]) for seq in chosen]
+    if not chosen:
+        return []
+    # Python 3.10 has no getlimit; 999 is the default variable limit at our SQLite 3.24 floor.
+    variables = conn.getlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER) if hasattr(conn, "getlimit") else 999
+    records = {}
+    for start in range(0, len(chosen), variables - 1):  # one binding is the stream, including for 10,000-row readers
+        batch = chosen[start:start + variables - 1]
+        marks = ",".join("?" for _ in batch)
+        for record in conn.execute(f"{_SELECT} WHERE stream=? AND seq IN ({marks})", (stream, *batch)):
+            records[record["seq"]] = record
+    return [_row(records[seq]) for seq in chosen]
 
 
 def room_candidates(root: Any, stream: str, chat_id: int, *, tasks: Iterable[str] = (), origins: Iterable[str] = (),

@@ -165,23 +165,30 @@ def test_activity_outcome_rows_and_their_controls_in_a_real_browser(tmp_path, mo
                     expect(row("child-1").locator("[data-activity-phase]")).to_have_count(0)
                     expect(row("child-1")).to_contain_text("running")
                     expect(row("paused-root")).to_contain_text("paused (budget)")
-                    # The outcome chip is drawn in the error pair, the second fact in the quiet meta ink.
+                    # The outcome chip is drawn in the error pair with the failed dot, the second fact in the quiet
+                    # meta ink; Stop… is the neutral shared trigger, never a danger button.
                     colours = page.evaluate("""() => {
                         const probe = document.createElement('span');
                         document.body.append(probe);
                         const ink = (value) => { probe.style.color = value; return getComputedStyle(probe).color; };
                         const chip = document.querySelector('[data-id="failed-root"]').closest('.activity-row')
                             .querySelector('[data-activity-phase]');
+                        const mark = chip.querySelector(':scope > .status-mark');
+                        const stop = document.querySelector('[data-act="task-control"][data-id="failed-root"]');
                         const scroll = document.querySelector('.activity-scroll');
                         const out = {chip: getComputedStyle(chip).color, chipBg: getComputedStyle(chip).backgroundColor,
                             second: getComputedStyle(chip.nextElementSibling).color, error: ink('var(--status-error-fg)'),
                             errorBg: ink('var(--status-error-bg)'), meta: ink('var(--text-meta)'),
+                            mark: `${mark.dataset.shape}/${mark.dataset.hue}`, markInk: getComputedStyle(mark).color,
+                            red: ink('var(--red)'), stop: stop.className,
                             overflow: scroll.scrollWidth - scroll.clientWidth};
                         probe.remove();
                         return out;
                     }""")
                     assert colours["chip"] == colours["error"] and colours["second"] == colours["meta"], colours
                     assert colours["chipBg"] == colours["errorBg"], colours
+                    assert (colours["mark"], colours["markInk"]) == ("dot/failed", colours["red"]), colours
+                    assert colours["stop"] == "btn btn-xs btn-default", colours
                     assert colours["overflow"] <= 0, colours
                     page.close()
 

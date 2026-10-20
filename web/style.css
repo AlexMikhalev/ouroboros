@@ -96,6 +96,7 @@ html[data-layout="stack"] .shell-icon-control {
     --nav-row-h: 44px;       /* a place: Main Chat, Files … */
     --nav-item-h: 32px;      /* a Project row */
     --nav-control-h: 28px;   /* a row's ⋯ and the header's + */
+    --nav-kebab-w: var(--nav-control-h);  /* the column a Project row's ⋯ takes (none on touch: a long press opens it) */
     --nav-label-x: calc(var(--space-3) + 18px + var(--space-3));  /* the one text column every label starts on */
     width: var(--drag-width, var(--sidebar-width));
     height: var(--vvh);
@@ -274,50 +275,10 @@ html[data-layout="stack"] .resize-handle { display: none; }
     white-space: nowrap;
 }
 
-/* Sidebar activity reuses the live-card's three 4px dots (`.chat-live-typing`
-   supplies the size, 3px gap and 1.4s bounce) as the room's one mark in the
-   server's work projection: three moving dots for work, three still dots for
-   queued work, one dot for a wait or a pause, a hollow ring when unconfirmed.
-   The dots take the row's own foreground, like the shared status-sentence dot,
-   so they never out-shout the title and follow its hover/active ink; amber is
-   the one hue, while something in the room waits for the owner; queued and
-   unknown work stay static at a quieter step of that ink. */
-.nav-activity-marker {
-    pointer-events: none;
-}
-
-.nav-activity-label {
-    display: inline-flex;
-    align-items: center;
-    gap: var(--space-2);
-    flex: 1 1 auto;
-    min-width: 0;
-}
-
-.nav-activity-label .nav-row-label { flex: 0 1 auto; }
-
-.nav-activity-marker[hidden] { display: none; }
-
-/* Same specificity as the later shared `.chat-live-typing span` accent rule
-   would lose on order; name the composed marker so the row ink wins: the dots never out-shout the name, and
-   what waits for the owner is the one amber. */
-.nav-activity-marker.chat-live-typing span { background: currentColor; }
-.nav-activity-marker[data-amber="1"] span { background: var(--amber); }
-.nav-activity-marker[data-state="queued"],
-.nav-activity-marker[data-state="unknown"] { opacity: 0.55; }
-/* One fact is one dot; an unconfirmed room is one hollow ring. */
-.nav-activity-marker:is([data-state="dot"], [data-state="unknown"]) span:not(:first-child) { display: none; }
-.nav-activity-marker[data-state="unknown"] span { box-sizing: border-box; background: transparent; border: 1px solid currentColor; }
-
-/* Only confirmed computation inherits the bounce. */
-.nav-activity-marker[data-state="dot"] span,
-.nav-activity-marker[data-state="queued"] span,
-.nav-activity-marker[data-state="unknown"] span,
-.nav-activity-marker[data-state="idle"] span { animation: none; }
-
-@media (prefers-reduced-motion: reduce) {
-    .nav-activity-marker[data-state="working"] span { animation: none; }
-}
+/* The sidebar's marks are the shared status marks (ui.css "Status marks", status_mark.js): one per place, in the
+   place's own ink (hover and the chosen row's ink included), the owner's amber and the unread crimson its only hues.
+   The Projects header carries the Projects' one mark in the rows' mark column; its chevron follows its word. */
+#nav-projects-toggle > .nav-row-label { flex: 0 1 auto; }
 
 .nav-row-meta {
     flex: 0 0 auto;
@@ -325,8 +286,8 @@ html[data-layout="stack"] .resize-handle { display: none; }
     font-size: var(--type-meta);
 }
 
-/* The chosen place: the crimson tone, its ink and a left mark. One row at a time; the Projects header is never
-   chosen (a Project row is). */
+/* The chosen place: the crimson tone, its ink and a left mark (--place-mark: the accent on the light tint, the
+   fill's white ink on the dark solid). One row at a time; the Projects header is never chosen (a Project row is). */
 .nav-row.active::before {
     content: '';
     position: absolute;
@@ -336,15 +297,16 @@ html[data-layout="stack"] .resize-handle { display: none; }
     width: 3px;
     height: 17px;
     border-radius: 0 3px 3px 0;
-    background: var(--accent);
+    background: var(--place-mark);
 }
 
 /* Unread counts and badges are the crimson accent (a live fact for you), never red and never a glow (owner Q6=A);
-   a Project row's own unread dot is the quieter red dot in a soft ring (.nav-unread-dot). */
+   a Project row's own new messages are the crimson hue of its status mark. */
+/* Main's count stands in its row just before the mark's slot: the label gives way to it (and ellipsizes), it never
+   covers the mark or the label, and it keeps its place when the mark comes and goes (the slot stays). */
 .unread-badge {
-    position: absolute;
-    top: 4px;
-    right: 8px;
+    order: 1;
+    flex: 0 0 auto;
     min-width: 18px;
     height: 18px;
     padding: 0 5px;
@@ -360,15 +322,26 @@ html[data-layout="stack"] .resize-handle { display: none; }
 }
 
 .nav-project-row { position: relative; }
-/* A small red dot in a soft ring: noticed, never louder than the name. */
-.nav-unread-dot {
-    flex: 0 0 auto;
-    margin-left: auto;
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
-    background: var(--red);
-    box-shadow: 0 0 0 2px var(--accent-18);
+
+/* Main's row ends where a Project row's mark column ends (the ⋯ column and the row's inset), so its room's mark sits
+   at the Project rows' x by construction, in the same 18px box; its words are for readers only. */
+.nav-row-main {
+    padding-right: calc(var(--nav-kebab-w) + var(--space-1));
+}
+.nav-row-main > .nav-mark-slot {
+    order: 2;
+    flex: 0 0 18px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;  /* a one-dot shape sits where a Project row's does, mid-column */
+}
+.nav-row-words {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
 }
 
 @media (hover: hover) {
@@ -1148,6 +1121,8 @@ html[data-layout="docked"] .app-page-header[data-empty] {
     background: var(--accent-12);
 }
 
+/* A tab's count (Skills: the jobs in flight) is a neutral count pill on the shared type scale: it says how many,
+   while amber would say the owner has a move to make. */
 .app-tab-pill {
     display: inline-flex;
     align-items: center;
@@ -1156,11 +1131,13 @@ html[data-layout="docked"] .app-page-header[data-empty] {
     padding: 0 6px;
     min-width: 18px;
     height: 18px;
-    border-radius: 9px;
-    background: rgba(245, 158, 11, 0.15);
-    color: var(--status-warn-fg);
-    font-size: 11px;
-    font-family: 'JetBrains Mono', monospace;
+    border-radius: var(--pill-radius);
+    background: var(--status-neutral-bg);
+    color: var(--status-neutral-fg);
+    font-size: var(--type-meta);
+    font-weight: 600;
+    line-height: 1;
+    font-variant-numeric: tabular-nums;
 }
 
 .scroll-fade-y {
@@ -1183,10 +1160,10 @@ html[data-layout="docked"] .app-page-header[data-empty] {
 
 /* === design-system:migrated-begin (chat: page header, budget pill, load-older) === */
 
-/* Main's header is one bar like a Project's: the title with the room's status right after it, then the agent's
-   commands. The title block's flex basis, never a word, decides whether the commands share its row: below that
-   width they wrap onto their own row, still at the trailing edge, so no status word can wrap, stretch or move
-   anything (the title and the word ellipsize inside the block instead). */
+/* Main's header is one bar like a Project's, one row in every layout (DESIGN "Page header"): the title with the
+   room's status right after it, then the agent's commands. The commands keep their width and the title block
+   yields to them, its status word dropping whole while the mark stays (room_work.js); a narrow bar has Restart and
+   the budget inside ⋯ (page_header.js). A wider face (Linux sets these words wider) moves nothing to a second row. */
 .chat-page-header {
     position: absolute;
     top: 0;
@@ -1194,10 +1171,9 @@ html[data-layout="docked"] .app-page-header[data-empty] {
     right: 0;
     z-index: var(--z-page-header);
     display: flex;
-    flex-wrap: wrap;
+    flex-wrap: nowrap;
     align-items: center;
     column-gap: var(--space-3);
-    row-gap: calc(var(--space-2) + var(--chrome-inset));
     pointer-events: none;
     background: transparent;
     backdrop-filter: none;
@@ -1207,11 +1183,11 @@ html[data-layout="docked"] .app-page-header[data-empty] {
     overflow: visible;
 }
 .chat-page-header > .app-page-leading { flex: 0 0 auto; }
-.chat-page-header > .app-page-title-block { flex: 999 1 min(15rem, calc(100% - 44px - var(--space-3))); min-width: 0; }
-.chat-page-header > .app-page-actions { flex: 1 1 auto; gap: 6px; justify-content: flex-end; }
+.chat-page-header > .app-page-title-block { flex: 1 1 0; min-width: 0; }
+.chat-page-header > .app-page-actions { flex: 0 0 auto; gap: 6px; justify-content: flex-end; }
 
-/* The header's reading backing (DESIGN §5): page ink under everything readable (title, every wrapped line
-   of controls, the history note) that fades only in the band below it, so moving messages never show
+/* The header's reading backing (DESIGN §5): page ink under everything readable (title, controls, the
+   history note) that fades only in the band below it, so moving messages never show
    through header text, closed or open. The mask stays on this layer, never on the actions. */
 .chat-page-header::before,
 .chat-page-note::before {
@@ -1250,7 +1226,7 @@ html[data-layout="docked"] .app-page-header[data-empty] {
     display: flex;
     align-items: center;
     justify-content: flex-end;
-    flex-wrap: wrap;
+    flex-wrap: nowrap;
     gap: 6px;
     min-width: 0;
     max-width: min(100%, 640px);
@@ -1356,32 +1332,22 @@ html[data-layout="docked"] .app-page-header[data-empty] {
     color: var(--status-error-fg);
 }
 
-/* When a mode inside More is active, mark the collapsed More pill with a dot. */
+/* A mode inside More is on: the collapsed More capsule takes its tone, with no dot of its own. */
 .chat-header-more > summary.has-active {
-    position: relative;
     border-color: var(--accent-35);
     background: var(--accent-dim);
     color: var(--accent-light);
 }
 
-.chat-header-more > summary.has-active::after {
-    content: '';
-    position: absolute;
-    top: 5px;
-    right: 7px;
-    width: 6px;
-    height: 6px;
-    border-radius: 50%;
-    background: var(--accent);
-}
-
+/* The budget: a neutral fact (spent / limit and its bar). It turns amber only while a task the spending limit
+   stopped waits for the owner (data-attention, from Main's attention rows): then the money is the owner's move. */
 .chat-budget-pill {
     appearance: none;
     display: flex;
     flex-direction: column;
     align-items: center;
     gap: 3px;
-    border: 1px solid rgba(245, 158, 11, 0.18);
+    border: 1px solid var(--surface-border);
     background: rgba(var(--shell-rgb), 0.55);
     cursor: pointer;
     min-width: 100px;
@@ -1391,8 +1357,7 @@ html[data-layout="docked"] .app-page-header[data-empty] {
 
 @media (hover: hover) {
     .chat-budget-pill:hover {
-        border-color: rgba(245, 158, 11, 0.34);
-        background: rgba(245, 158, 11, 0.08);
+        background: var(--bg-hover);
     }
 }
 
@@ -1403,7 +1368,7 @@ html[data-layout="docked"] .app-page-header[data-empty] {
 .chat-budget-text {
     font-size: var(--type-meta);
     font-weight: 600;
-    color: var(--status-warn-fg);
+    color: var(--text-secondary);
     white-space: nowrap;
     letter-spacing: 0.02em;
 }
@@ -1412,17 +1377,21 @@ html[data-layout="docked"] .app-page-header[data-empty] {
     width: 100%;
     height: 2px;
     border-radius: 1px;
-    background: rgba(245, 158, 11, 0.12);
+    background: var(--surface-border);
     overflow: hidden;
 }
 
 .chat-budget-bar-fill {
     height: 100%;
     border-radius: 1px;
-    background: var(--amber);
+    background: var(--text-meta);
     transition: width 0.4s ease;
     width: 0;
 }
+
+.chat-budget-pill[data-attention="1"] .chat-budget-text { color: var(--status-warn-fg); }
+.chat-budget-pill[data-attention="1"] .chat-budget-bar { background: var(--amber-dim); }
+.chat-budget-pill[data-attention="1"] .chat-budget-bar-fill { background: var(--amber); }
 
 .status-badge {
     padding: 4px 10px;
@@ -1433,7 +1402,8 @@ html[data-layout="docked"] .app-page-header[data-empty] {
     -webkit-backdrop-filter: blur(8px);
 }
 .status-badge.online { color: var(--status-ok-fg); }
-.status-badge.starting { color: var(--status-warn-fg); }
+/* Loading… and Starting… go on by themselves: the meta ink, never amber. */
+.status-badge.starting { color: var(--text-meta); }
 .status-badge.error { color: var(--status-error-fg); }
 .status-badge.offline { color: var(--text-muted); }
 .chat-page-header .status-badge,
@@ -1512,26 +1482,10 @@ html[data-layout="docked"] .app-page-header[data-empty] {
     text-align: left;
     overflow-wrap: anywhere;
 }
-.typing-bubble { opacity: 0.7; }
-.typing-dots {
-    display: inline-flex;
-    gap: 4px;
-    align-items: center;
-    height: 20px;
-}
-.typing-dots span {
-    width: 6px;
-    height: 6px;
-    border-radius: 50%;
-    background: var(--text-secondary);
-    animation: typing-bounce 1.4s ease-in-out infinite;
-}
-.typing-dots span:nth-child(2) { animation-delay: 0.2s; }
-.typing-dots span:nth-child(3) { animation-delay: 0.4s; }
-@keyframes typing-bounce {
-    0%, 60%, 100% { transform: translateY(0); opacity: 0.4; }
-    30% { transform: translateY(-6px); opacity: 1; }
-}
+/* The transcript's typing bubble: the shared moving mark (status_mark.js) in the bubble's secondary ink, on a line of
+   its own height. */
+.typing-bubble { opacity: 0.7; color: var(--text-secondary); }
+.typing-bubble > .typing-mark { height: 20px; }
 
 /* === design-system:migrated-end === */
 
@@ -1889,7 +1843,7 @@ html[data-layout="docked"] .app-page-header[data-empty] {
 }
 
 .skill-review-summary-button:hover {
-    background: rgba(245, 158, 11, 0.08);
+    background: var(--system-bubble-bg);
 }
 
 .skill-review-summary-main {
@@ -1936,7 +1890,7 @@ html[data-layout="docked"] .app-page-header[data-empty] {
 .skill-review-retry {
     margin-left: 6px;
     padding: 2px 10px;
-    border: 1px solid rgba(245, 158, 11, 0.55);
+    border: 1px solid var(--system-border);
     border-radius: 6px;
     background: transparent;
     color: var(--system-sender);
@@ -1946,7 +1900,7 @@ html[data-layout="docked"] .app-page-header[data-empty] {
 }
 
 .skill-review-retry:hover {
-    background: rgba(245, 158, 11, 0.12);
+    background: var(--system-bubble-bg);
 }
 
 .chat-bubble.pending {
@@ -2044,7 +1998,7 @@ html[data-layout="docked"] .app-page-header[data-empty] {
 
 /* Subdued progress messages. */
 .chat-bubble.progress {
-    border-left: 2px solid rgba(220, 38, 38, 0.2);
+    border-left: 2px solid var(--accent-18);
     padding-left: 14px;
     max-width: min(100%, 760px);
     margin-right: 0;
@@ -2213,8 +2167,7 @@ html[data-layout="docked"] .app-page-header[data-empty] {
     outline-offset: 2px;
 }
 
-.chat-live-phase,
-.chat-live-line-phase {
+.chat-live-phase {
     display: inline-flex;
     align-items: center;
     padding: 2px 8px;
@@ -2227,9 +2180,10 @@ html[data-layout="docked"] .app-page-header[data-empty] {
     text-transform: none;
 }
 
-/* The task status chip (DESIGN "Status and chips"): a semi-transparent pill, dot + the chip's words,
-   in its explicit pair. The dot carries the state at a glance; while the work is computing it
-   breathes (the one motion; the card draws no second typing indicator). */
+/* The task status chip (DESIGN "Status marks"): a flat tint with the shared status mark first and the chip's words,
+   in its explicit pair. Its body tone is the view's (task_phase_chip.js writes data-chip-tone): the live word crimson,
+   the owner's move amber, a known outcome in its tone (Done with warnings succeeds, Stopped is neutral), anything else
+   the neutral chip above. The mark takes the chip's ink; only its moving dots loop. */
 .chat-live-phase {
     gap: calc(var(--space-1) * 1.5);
     padding: calc(var(--space-1) / 2) var(--space-3) calc(var(--space-1) / 2) var(--space-2);
@@ -2238,98 +2192,56 @@ html[data-layout="docked"] .app-page-header[data-empty] {
     white-space: nowrap;
 }
 
-.chat-live-phase::before {
-    content: "";
-    flex: 0 0 auto;
-    width: 6px;
-    height: 6px;
-    border-radius: 50%;
-    background: currentColor;
-}
+/* A live chip keeps the moving dots' width when the owner's dot takes their place, so its word never moves. */
+.chat-live-phase[data-chip-tone="live"] > .status-mark { min-width: calc(3 * var(--mark-dot) + 2 * var(--mark-gap)); }
 
-.chat-live-phase:is(.start, .calling, .context, .progress, .working, .thought, .thinking, .boot),
-.chat-live-line-phase:is(.start, .calling, .context, .progress, .working, .thought, .thinking, .boot) {
+.chat-live-phase[data-chip-tone="live"] {
     color: var(--accent-light);
     border-color: var(--accent-25);
     background: var(--accent-10);
 }
 
-/* Motion: the chip's dot breathes while the work computes (the chip itself stays still and readable);
-   a moving fact beside an outcome chip (a running finalization) keeps today's gentle pulse. */
-.chat-live-phase[data-motion="1"]::before {
-    animation: live-dot-breathe 1.4s ease-in-out infinite;
+.chat-live-phase[data-chip-tone="owner"] {
+    color: var(--status-warn-fg);
+    border-color: var(--status-warn-border);
+    background: var(--status-warn-bg);
 }
 
-.chat-live-phase-secondary[data-motion="1"] {
-    animation: thinking-pulse 1.5s ease-in-out infinite;
+.chat-live-phase[data-chip-tone="ok"] {
+    color: var(--status-ok-fg);
+    border-color: var(--status-ok-border);
+    background: var(--status-ok-bg);
 }
 
-@keyframes live-dot-breathe {
-    0%, 100% { opacity: 1; transform: scale(1); }
-    50% { opacity: 0.35; transform: scale(0.7); }
+.chat-live-phase[data-chip-tone="failed"] {
+    color: var(--status-error-fg);
+    border-color: var(--status-error-border);
+    background: var(--status-error-bg);
 }
 
-@media (prefers-reduced-motion: reduce) {
-    .chat-live-phase[data-motion="1"]::before, .chat-live-phase-secondary[data-motion="1"] { animation: none; }
-}
-
-/* Phase pills are status chips with class-named tones; the triple is the
-   canonical one. The saturated --green/--amber/--red they used to carry are
-   dot-and-indicator hues, not small-text hues (docs/DESIGN.md "Status and
-   chips"). */
-.chat-live-phase:is(.done, .ready, .ok, .result, .usage, .metrics),
-.chat-live-line-phase:is(.done, .ready, .ok, .result, .usage, .metrics),
+/* Logs phase pills and Evolution pills name the status triples by class (DESIGN "The tone primitive"); the
+   saturated --green/--amber/--red are dot-and-indicator hues, not small-text hues. A Logs task headline that settled
+   is its task's outcome and takes the cards' tone (logs.js writes data-chip-tone): Done with warnings green, Stopped
+   neutral. A warn-level log event stays amber: a warning worth reading. */
 .log-entry .log-phase:is(.done, .ready, .ok, .result, .usage, .metrics),
+.log-entry .log-phase[data-chip-tone="ok"],
 .evo-runtime-pill.online {
     color: var(--status-ok-fg);
     border-color: var(--status-ok-border);
     background: var(--status-ok-bg);
 }
 
-.chat-live-phase:is(.warn, .alive, .empty, .cancelled),
-.chat-live-line-phase:is(.warn, .alive, .empty, .cancelled),
-.log-entry .log-phase:is(.warn, .alive, .empty, .cancelled),
-.evo-runtime-pill.starting {
+.log-entry .log-phase:is(.warn, .empty):not([data-chip-tone]) {
     color: var(--status-warn-fg);
     border-color: var(--status-warn-border);
     background: var(--status-warn-bg);
 }
 
-.chat-live-phase:is(.error, .timeout, .lifecycle_error),
-.chat-live-line-phase:is(.error, .timeout, .lifecycle_error),
 .log-entry .log-phase:is(.error, .timeout, .lifecycle_error),
 .evo-runtime-pill.error {
     color: var(--status-error-fg);
     border-color: var(--status-error-border);
     background: var(--status-error-bg);
-}
-
-/* Live-card typing dots. */
-.chat-live-typing {
-    display: inline-flex;
-    gap: 3px;
-    align-items: center;
-    flex-shrink: 0;
-}
-
-.chat-live-typing span {
-    width: 4px;
-    height: 4px;
-    border-radius: 50%;
-    background: var(--accent-55);
-    animation: typing-bounce 1.4s ease-in-out infinite;
-}
-
-.chat-live-typing span:nth-child(2) { animation-delay: 0.2s; }
-.chat-live-typing span:nth-child(3) { animation-delay: 0.4s; }
-
-.chat-live-card[data-finished="1"] > .chat-live-summary-button .chat-live-typing {
-    display: none;
-}
-
-/* A card's chip dot is its activity indicator; the three dots stay for the sidebar and typing rows. */
-.chat-live-card .chat-live-typing {
-    display: none;
 }
 
 .chat-live-title {
@@ -2490,8 +2402,7 @@ html[data-layout="docked"] .app-page-header[data-empty] {
 }
 
 .chat-live-episode-outcome[data-tone="ok"] { color: var(--status-ok-fg); }
-.chat-live-episode-outcome[data-tone="warn"] { color: var(--status-warn-fg); }
-.chat-live-episode-outcome[data-tone="error"] { color: var(--status-error-fg); }
+.chat-live-episode-outcome[data-tone="failed"] { color: var(--status-error-fg); }
 .chat-live-episode-outcome[data-tone="neutral"] { color: var(--status-neutral-fg); }
 
 /* Earlier physical episodes disclose their existing content, never another work/control card. */
@@ -2525,7 +2436,7 @@ html[data-layout="docked"] .app-page-header[data-empty] {
 
 /* The secondary status fact beside the outcome chip (a running finalization).
    Neutral by rule: the outcome owns the status colour, this only says the task
-   has not let go yet, so it stays a quiet sentence rather than a second chip. */
+   has not let go yet, so it stays a quiet sentence rather than a second chip, and never moves. */
 .chat-live-phase-secondary {
     min-width: 0;
     color: var(--text-meta);
@@ -2986,7 +2897,7 @@ html[data-layout="docked"] .app-page-header[data-empty] {
 }
 
 .chat-live-line.expandable[data-expanded="1"] {
-    background: rgba(59, 130, 246, 0.08);
+    background: var(--surface-tray);
 }
 
 .chat-live-line-toggle {
@@ -3241,7 +3152,7 @@ html[data-layout="docked"] .app-page-header[data-empty] {
     line-height: 1;
 }
 .md-checkbox.is-checked {
-    border-color: rgba(34, 197, 94, 0.38);
+    border-color: var(--status-ok-border);
     background: var(--status-ok-bg);
 }
 .md-quote {
@@ -3580,9 +3491,20 @@ html[data-layout="stack"] #app {
     grid-template-columns: minmax(0, 1fr);
 }
 html[data-layout="stack"] .mobile-nav-toggle {
-    position: static;
+    position: relative;  /* its status dot sits on its corner */
     flex: 0 0 44px;
     display: inline-flex;
+}
+/* The ☰'s dot says what waits behind it (app.js paintNavToggles): the shared 7px fact dot on the control's top-right,
+   clear of the glyph's top stroke, with no ring around it; inset closer on the composer's 32px capsule. */
+.mobile-nav-toggle > .status-mark {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+}
+.mobile-nav-toggle.composer-menu > .status-mark {
+    top: 3px;
+    right: 3px;
 }
 /* A room's ☰ is the first control of its composer's row, under the thumb (owner 19.10, 1A): as tall as the
    capsules beside it, with the touch minimum as its finger target (.ui-hit-area). */
@@ -3714,7 +3636,9 @@ html[data-layout="stack"] body.nav-drawer-open :is(#content, .project-panel.open
     overflow: hidden;
     transition-duration: var(--drawer-settle, 340ms);
 }
-html[data-layout="stack"] :is(#content, .project-panel.open).dragging {
+/* Under a finger. `body` makes it as specific as the open card's rule above, so a finger that takes the open drawer
+   back, or pulls it past open, moves the card too; the veil's rule below likewise. */
+html[data-layout="stack"] body :is(#content, .project-panel.open).dragging {
     transition: none;
     will-change: transform;
     transform: translate3d(calc(var(--drawer-p, 0) * var(--drawer-w)), 0, 0) scale(calc(1 - 0.04 * min(var(--drawer-p, 0), 1)));
@@ -3741,7 +3665,7 @@ html[data-layout="stack"] body.nav-drawer-open .room-veil {
     opacity: 0.42;
     transition-duration: var(--drawer-settle, 340ms);
 }
-html[data-layout="stack"] .room-veil.dragging {
+html[data-layout="stack"] body .room-veil.dragging {
     opacity: calc(0.42 * min(var(--drawer-p, 0), 1));
     transition: none;
 }
@@ -3750,8 +3674,6 @@ html[data-layout="stack"] .room-veil.dragging {
         .project-panel, .room-veil) { transition: none; }
 }
 html[data-layout="stack"] .unread-badge {
-    top: 2px;
-    right: 4px;
     min-width: 14px;
     height: 14px;
 }
@@ -3798,15 +3720,11 @@ html[data-layout="stack"] .chat-header-more > summary {
 }
 html[data-layout="stack"] .chat-header-more-word { display: none; }
 html[data-layout="stack"] .chat-header-more-glyph { display: inline-flex; }
-html[data-layout="stack"] .chat-header-more > summary.has-active::after {
-    top: 9px;
-    right: 9px;
-}
 html[data-layout="stack"] .chat-page-note {
     padding: 0 var(--space-3) var(--space-2);
 }
 /* Inside ⋯ (page_header.js places them there when the bar is too narrow for the full row) the budget is a
-   full-width amber row and Restart the last row. */
+   full-width row and Restart the last row. */
 .chat-header-menu:has(> .chat-budget-pill) {
     min-width: 220px;
 }
@@ -3919,12 +3837,14 @@ html[data-layout="stack"] .chat-page-note {
     box-shadow: 0 0 0 1px var(--accent-45), 0 0 0 4px var(--accent-10);
 }
 
-/* Attach button: a flow item at the left of the text row (no absolute float). */
-.chat-attach-btn {
+/* "+": the composer's actions menu, a flow item at the left of the text row (no absolute float). A finger-sized
+   target whose negative margin keeps the row's height and the field's place. */
+.chat-plus-btn {
     flex: 0 0 auto;
     align-self: center;
-    width: 32px;
-    height: 32px;
+    width: var(--touch-target-min);
+    height: var(--touch-target-min);
+    margin: calc((var(--composer-control-height) - var(--touch-target-min)) / 2);
     border-radius: var(--radius-sm);
     border: none;
     background: transparent;
@@ -3937,19 +3857,171 @@ html[data-layout="stack"] .chat-page-note {
     padding: 0;
 }
 
-.chat-attach-btn:hover {
+.chat-plus-btn:hover,
+.chat-plus-btn[aria-expanded="true"] {
     color: var(--text-primary);
     background: rgba(var(--neutral-rgb), 0.06);
 }
+
+.chat-plus-btn:focus-visible { outline: 2px solid var(--focus-accent-border); outline-offset: 2px; }
 
 .chat-file-input-hidden {
     display: none !important;
 }
 
-.chat-attach-btn.uploading {
+.chat-plus-btn.uploading {
     opacity: 0.5;
     pointer-events: none;
 }
+
+/* The "+" menu is the shared menu sheet (ui.css): an item's icon in the secondary ink, a section under its label. */
+.chat-plus-menu .chat-plus-item { display: flex; align-items: center; gap: var(--space-2); }
+.chat-plus-icon { display: inline-flex; flex: 0 0 auto; color: var(--text-secondary); }
+.chat-plus-group { display: flex; flex-direction: column; }
+.chat-plus-label {
+    padding: var(--space-2) var(--space-3) var(--space-1);
+    color: var(--text-meta);
+    font-size: var(--type-meta);
+    font-weight: 500;
+}
+
+/* Mount points (empty and hidden until a control fills them): the dictation mic between the field and Send, and
+   contributed chips after the room's capsules on their one line. The host capsules keep priority: the chips slot
+   takes only the room they leave (a zero basis never wraps the row; it shrinks first and clips), and a chip keeps
+   its own width. */
+.chat-voice-slot { display: inline-flex; flex: 0 0 auto; align-items: center; gap: var(--space-1); }
+/* The dictation mic and its recording face (voice_controls.js): quiet finger-sized controls like "+", whose negative
+   margin keeps the row's height; the chevron is a narrow, finger-high door to the engine menu. While recording, Stop
+   wears the soft crimson of a control that is on now and the dot follows the microphone's level. */
+.voice-btn {
+    flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: var(--touch-target-min);
+    height: var(--touch-target-min);
+    margin: calc((var(--composer-control-height) - var(--touch-target-min)) / 2) 0;
+    padding: 0;
+    border: none;
+    border-radius: var(--radius-sm);
+    background: transparent;
+    color: var(--text-secondary);
+    cursor: pointer;
+    transition: color 0.15s, background 0.15s;
+}
+.voice-btn:hover { color: var(--text-primary); background: rgba(var(--neutral-rgb), 0.06); }
+.voice-btn:focus-visible { outline: 2px solid var(--focus-accent-border); outline-offset: 2px; }
+.voice-btn:disabled { color: var(--text-disabled); background: transparent; cursor: default; }
+.voice-chevron { width: 24px; margin-left: calc(-1 * var(--space-1)); }
+.voice-stop:not(:disabled), .voice-stop:not(:disabled):hover { background: var(--tone-crimson-soft); color: var(--tone-crimson-soft-ink); }
+.voice-time, .voice-status {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    color: var(--text-secondary);
+    font-size: var(--composer-control-font-size);
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+}
+.voice-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--accent-light);
+    transform: scale(calc(0.85 + var(--voice-level, 0) * 0.65));
+}
+.chat-voice-slot[data-voice-state="permission"] .voice-dot { opacity: 0.4; }
+/* Dictated words whose draft changed meanwhile wait above the composer as a float sheet until the owner puts them in,
+   copies or discards them; the draft below stays as it is. */
+.voice-offer {
+    position: absolute;
+    right: 0;
+    bottom: calc(100% + var(--space-2));
+    z-index: 5;
+    box-sizing: border-box;
+    width: min(100%, 420px);
+    padding: var(--space-3);
+    border-radius: var(--radius-object);
+    background: var(--surface-float);
+    color: var(--text-primary);
+    box-shadow: var(--elev-float);
+    -webkit-backdrop-filter: var(--glass);
+    backdrop-filter: var(--glass);
+}
+.voice-offer-note { margin: 0 0 var(--space-1); color: var(--text-meta); font-size: var(--type-meta); }
+.voice-offer-text { margin: 0; max-height: 6.5em; overflow-y: auto; overflow-wrap: anywhere; white-space: pre-wrap; }
+.voice-offer-actions { display: flex; align-items: center; gap: var(--space-2); margin-top: var(--space-2); }
+.voice-offer-close {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: var(--touch-target-min);
+    height: var(--touch-target-min);
+    margin-left: auto;
+    padding: 0;
+    border: none;
+    border-radius: var(--pill-radius);
+    background: transparent;
+    color: var(--text-secondary);
+    cursor: pointer;
+}
+.voice-offer-close:hover { background: var(--tone-quiet-hover); color: var(--text-primary); }
+/* Engine and voice menus: the shared menu sheet, an item's name over its destination line in the meta ink. */
+.voice-menu { width: min(360px, var(--ui-popup-max-width)); }
+.ui-popup .voice-menu-item { display: flex; flex-direction: column; gap: 2px; }
+.ui-popup .voice-menu-item[aria-checked="true"] { background: var(--accent-12); }
+.voice-menu-item[aria-checked="true"] .voice-menu-name { color: var(--accent-light); }
+.voice-menu-name { font-weight: 500; }
+.voice-menu-line, .voice-menu-note { color: var(--text-meta); font-size: var(--type-meta); }
+.voice-menu-hint { color: var(--accent-light); font-size: var(--type-meta); font-weight: 600; }
+.voice-menu-head { padding: var(--space-2) var(--space-3) var(--space-1); color: var(--text-meta); font-size: var(--type-meta); font-weight: 500; }
+.voice-menu-note { padding: 0 var(--space-3) var(--space-2); }
+.chat-composer-chips {
+    display: flex;
+    flex: 1 1 0;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+    max-width: max-content;
+    overflow: hidden;
+}
+.chat-composer-chips > * { flex: 0 0 auto; }
+/* Where the engine can clip one axis, the slot clips only sideways, so the chips keep their rest shadow below them.
+   Folded, it takes all the room the capsules leave, and "+N" lists the chips that do not fit (composer_chips.js). */
+@supports (overflow: clip) {
+    .chat-composer-chips { overflow-x: clip; overflow-y: visible; }
+}
+.chat-composer-chips[data-folded] { max-width: none; }
+/* No room even for "+N" (composer_chips.js lists the chips in "+"): the empty slot keeps the row's height, so its
+   top stays with the capsules, and still takes the room they leave, so a wider row brings the chips back. */
+.chat-composer-chips[data-roomless] { align-self: stretch; }
+/* A contributed chip is one of the row's capsules: the pills' height, the skill's name in the secondary ink at 500,
+   its value in the meta ink at 600, and a dot of the value's status tone when the skill names one. */
+.chat-composer-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-1);
+    box-sizing: border-box;
+    height: var(--composer-control-height);
+    padding: 0 12px;
+    border: 1px solid transparent;
+    border-radius: 999px;
+    font: inherit;
+    font-size: var(--composer-control-font-size);
+    white-space: nowrap;
+    cursor: pointer;
+}
+.chat-composer-chip:focus-visible { outline: 2px solid var(--focus-accent-border); outline-offset: -2px; }
+.chat-chip-name { font-weight: 500; }
+.chat-chip-value { color: var(--text-meta); font-weight: 600; }
+.chat-chip-dot { display: none; flex: 0 0 auto; width: 6px; height: 6px; border-radius: 50%; }
+.chat-composer-chip:is([data-tone="ok"], [data-tone="warn"], [data-tone="bad"]) .chat-chip-dot { display: inline-block; }
+.chat-composer-chip[data-tone="ok"] .chat-chip-dot { background: var(--status-ok-fg); }
+.chat-composer-chip[data-tone="warn"] .chat-chip-dot { background: var(--status-warn-fg); }
+.chat-composer-chip[data-tone="bad"] .chat-chip-dot { background: var(--status-error-fg); }
+/* "+N" is the narrowest capsule, so it still fits the room a 320 px phone's capsules leave. */
+.chat-chip-more { padding: 0 var(--space-2); }
 
 .chat-attachment-preview {
     display: none;
@@ -4262,6 +4334,7 @@ textarea.chat-input::placeholder { color: var(--text-muted); }
 /* A room's ☰ is one of the controls that step aside: the fit gives the open strip the whole line. */
 .chat-toolbar-row[data-owner-solo] > .composer-menu,
 .chat-toolbar-row[data-owner-solo] .chat-composer-pills,
+.chat-toolbar-row[data-owner-solo] .chat-composer-chips,
 .chat-toolbar-row[data-owner-solo="effort"] .chat-context-mode,
 .chat-toolbar-row[data-owner-solo="context"] .chat-effort-range {
     display: none;
@@ -4331,14 +4404,15 @@ textarea.chat-input::placeholder { color: var(--text-muted); }
 }
 
 /* Context: exactly three modes, the chosen one under a glass thumb, in its mode's colour (Max the
-   accent, full context; Low amber, reduced; Nano the project fuchsia). */
+   accent, full context; Low the neutral ink, reduced: a level the owner chose is not a warning; Nano the
+   project fuchsia). */
 .chat-context-mode {
     --context-ink: var(--accent-light);
     --context-fill: var(--accent-dim);
 }
 .chat-context-mode[data-context-mode="low"] {
-    --context-ink: var(--status-warn-fg);
-    --context-fill: var(--status-warn-bg);
+    --context-ink: var(--status-neutral-fg);
+    --context-fill: var(--status-neutral-bg);
 }
 .chat-context-mode[data-context-mode="nano"] {
     --context-ink: var(--project);
@@ -4805,7 +4879,7 @@ textarea.chat-input::placeholder { color: var(--text-muted); }
 }
 
 .log-entry .log-phase:is(.start, .calling, .context, .progress, .thought, .boot, .working, .thinking) {
-    color: rgba(248, 130, 140, 0.95);
+    color: var(--accent-light);
     border-color: var(--accent-25);
     background: var(--accent-10);
 }
@@ -4881,7 +4955,7 @@ textarea.chat-input::placeholder { color: var(--text-muted); }
 .log-type.errors { color: var(--status-error-fg); }
 .log-type.tasks { color: var(--status-warn-fg); }
 .log-type.system { color: var(--text-muted); }
-.log-type.consciousness { color: #d68cff; }
+.log-type.consciousness { color: var(--project); }
 
 .log-task-card {
     border-color: var(--accent-12);
@@ -4999,7 +5073,10 @@ textarea.chat-input::placeholder { color: var(--text-muted); }
     color: var(--text-secondary, rgba(var(--neutral-rgb), 0.65));
 }
 .settings-lan-hint[data-tone="ok"] { border-color: var(--status-ok-border); }
-.settings-lan-hint[data-tone="warn"] { border-color: var(--status-warn-border); }
+.settings-lan-hint[data-tone="warn"] {
+    border-color: var(--status-warn-border);
+    color: var(--status-warn-word, var(--text-secondary, rgba(var(--neutral-rgb), 0.65)));
+}
 .settings-lan-hint[data-tone="info"] { border-color: var(--status-neutral-border); }
 .settings-lan-hint a { color: inherit; text-decoration: underline; opacity: 0.9; }
 .btn-sm {
@@ -5072,6 +5149,14 @@ textarea.chat-input::placeholder { color: var(--text-muted); }
     background: rgba(var(--neutral-rgb), 0.04);
     color: var(--text-secondary);
     font-size: 12px;
+}
+
+/* Evolution's amber is the owner's move only: a first conversation, the owner's chat, a spending limit that stopped it
+   (evolution.js runtimePillTone). What goes on by itself keeps the plain pill above. */
+.evo-runtime-pill.owner {
+    color: var(--status-warn-fg);
+    border-color: var(--status-warn-border);
+    background: var(--status-warn-bg);
 }
 
 .evo-runtime-chip strong {
@@ -5231,7 +5316,7 @@ textarea.chat-input::placeholder { color: var(--text-muted); }
     font-size: var(--type-meta);
     line-height: var(--line-meta);
 }
-.storage-progress > .chat-live-typing { align-self: flex-start; margin-top: calc((var(--type-meta) * var(--line-meta) - 4px) / 2); }
+.storage-progress > .status-mark { align-self: flex-start; margin-top: calc((var(--type-meta) * var(--line-meta) - var(--mark-fact)) / 2); }
 /* The places a first count has already finished, under its progress line: nothing is summed yet. */
 .storage-first-count { display: grid; gap: var(--space-1); margin: var(--space-2) 0 0; padding: 0; list-style: none; }
 .storage-first-count > li { display: flex; justify-content: space-between; gap: var(--space-3); color: var(--text-meta); font-size: var(--type-meta); line-height: var(--line-meta); }
@@ -5677,6 +5762,8 @@ textarea.chat-input::placeholder { color: var(--text-muted); }
 .toast-warn { border-color: var(--status-warn-border); color: var(--status-warn-fg); }
 .toast-muted,
 .toast-info { color: var(--status-neutral-fg); }
+/* A notice's one way back (host_modules.js recovery) follows its words on the same line when they fit. */
+.toast .toast-action { display: inline-flex; margin-left: var(--space-2); vertical-align: middle; }
 
 @keyframes toast-in {
     from { opacity: 0; transform: translateY(8px); }
@@ -5766,7 +5853,7 @@ textarea.chat-input::placeholder { color: var(--text-muted); }
     padding: 0;
     border: 0;
     background: none;
-    color: var(--tone-crimson-ink);
+    color: var(--tone-crimson-word);
     font: inherit;
     font-size: var(--type-meta);
     line-height: var(--line-meta);
@@ -5824,9 +5911,10 @@ button.skills-mark { cursor: pointer; min-height: 0; }
     font-weight: 600;
 }
 .ui-chip.skills-chip { padding: 3px 10px; font-size: var(--type-meta); line-height: var(--line-meta); font-weight: 500; }
-.skills-dots { display: inline-flex; margin-right: var(--space-1); }
 .ui-status.skills-status { display: inline-flex; align-items: center; min-width: 0; font-size: var(--type-meta); line-height: var(--line-meta); }
-.skills-status[data-work]::before { display: none !important; }
+/* Live work's moving mark stands where the sentence's own dot would: one mark per place. */
+.ui-status.skills-status[data-work]::before { display: none; }
+.skills-status > .status-mark { margin-right: var(--space-1); }
 .skills-status-text { min-width: 0; overflow-wrap: anywhere; }
 .skills-skip-btn { display: inline-flex; align-items: center; gap: var(--space-1); }
 .skills-skip-glyph { display: inline-flex; color: var(--status-warn-fg); }
@@ -5837,6 +5925,7 @@ button.skills-mark { cursor: pointer; min-height: 0; }
 .skills-card-trays:empty { display: none; }
 .skills-tray { padding: var(--space-3) var(--space-4); border-radius: var(--radius-inner); background: var(--surface-tray); }
 .skills-tray[data-tone="danger"] { background: var(--status-error-bg); }
+.skills-tray[data-tone="danger"] .skills-tray-text { color: var(--status-error-word, var(--text-primary)); }
 .skills-tray-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: var(--space-3); }
 .skills-tray-text { min-width: 0; color: var(--text-primary); font-size: var(--type-body); line-height: var(--line-body); overflow-wrap: anywhere; }
 .skills-tray-note { margin-top: 2px; color: var(--text-meta); font-size: var(--type-meta); line-height: var(--line-meta); }
@@ -5886,7 +5975,7 @@ button.skills-mark { cursor: pointer; min-height: 0; }
 .skills-switch.is-locked,
 .skills-switch input:disabled { cursor: not-allowed; }
 .skills-switch.is-locked .skills-switch-track,
-.skills-switch input:disabled + .skills-switch-track { background: var(--tone-amber); }
+.skills-switch input:disabled + .skills-switch-track { background: var(--status-neutral-border); }
 .skills-switch.is-locked .skills-switch-thumb,
 .skills-switch input:disabled + .skills-switch-track .skills-switch-thumb { box-shadow: none; }
 
@@ -6069,7 +6158,7 @@ button.skills-mark { cursor: pointer; min-height: 0; }
 .skills-first-about { flex-basis: 100%; color: var(--text-meta); font-size: var(--type-meta); line-height: var(--line-meta); }
 .skills-trust-segments { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-2); }
 .skills-trust-segments .ui-segment { min-height: 34px; padding: 6px 10px; font-size: var(--type-meta); }
-.skills-trust-segments .ui-segment.active { background: var(--tone-crimson); color: var(--tone-crimson-ink); }
+.skills-trust-segments .ui-segment.active { background: var(--tone-crimson-soft); color: var(--tone-crimson-soft-ink); }
 .skills-mark-popup {
     max-width: min(360px, var(--ui-popup-max-width, 360px));
     padding: var(--space-3) var(--space-4);
@@ -6366,15 +6455,9 @@ button.skills-mark { cursor: pointer; min-height: 0; }
     overflow-wrap: anywhere;
 }
 
+/* The sentence's own dot is ui.css's; the card's controls only tighten its spacing. */
 .widgets-card-controls .ui-status[data-tone]::before {
-    content: "";
-    display: inline-block;
-    flex: 0 0 auto;
-    width: 6px;
-    height: 6px;
     margin-right: 6px;
-    border-radius: 999px;
-    background: currentColor;
 }
 
 .widgets-menu-heading {
@@ -6614,7 +6697,7 @@ button.skills-mark { cursor: pointer; min-height: 0; }
 .widget-metric > span { color: var(--text-secondary); font-size: 12px; }
 .widget-metric > strong { font-size: 18px; }
 .widget-metric small { color: var(--text-secondary); font-size: 11px; font-weight: 500; }
-.widget-callout { font-size: 13px; line-height: 1.45; background: rgba(96, 165, 250, 0.06); }
+.widget-callout { font-size: 13px; line-height: 1.45; background: var(--surface-tray); }
 .widget-metric[data-tone="ok"], .widget-callout[data-tone="ok"] { border-left-color: var(--status-ok-fg); }
 .widget-metric[data-tone="warn"], .widget-callout[data-tone="warn"] { border-left-color: var(--status-warn-fg); }
 .widget-metric[data-tone="danger"], .widget-callout[data-tone="danger"] { border-left-color: var(--status-error-fg); }
@@ -6651,7 +6734,7 @@ button.skills-mark { cursor: pointer; min-height: 0; }
 .widget-table th,
 .widget-table-status { white-space: nowrap; }
 
-.widget-table a { color: #93c5fd; overflow-wrap: anywhere; }
+.widget-table a { color: var(--status-info-fg); overflow-wrap: anywhere; }
 .widget-table-status { font-weight: 600; }
 .widget-table-status[data-tone="ok"] { color: var(--status-ok-fg); }
 .widget-table-status[data-tone="warn"] { color: var(--status-warn-fg); }
@@ -6782,7 +6865,7 @@ button.skills-mark { cursor: pointer; min-height: 0; }
     bottom: -2px;
     height: 2px;
     border-radius: 1px;
-    background: var(--accent, #7c5cff);
+    background: var(--accent);
     opacity: 0.5;
     animation: widget-refresh-pulse 1.2s ease-in-out infinite;
 }
@@ -6928,9 +7011,9 @@ html[data-layout="stack"] .chat-toolbar-row {
 
 /* While the owner reads back through the history the row of capsules folds away (composer_fold.js; owner 19.10, 2A):
    its line collapses from its measured height (--fold-row-h) with the wrap's gap, the capsules fade, ☰ stays the
-   row's first control and lands beside the field's middle (--fold-menu-dy), and the field makes room for it (☰ and
-   the row's 6px padding, then the row's gap). data-fold holds from the fold until the row is back, so all of it
-   runs back on the same curve. */
+   row's first control and lands beside the field's middle (--fold-menu-dy), and the field makes room for it on its
+   leading side, where ☰ leads the row in either direction (☰ and the row's 6px padding, then the row's gap).
+   data-fold holds from the fold until the row is back, so all of it runs back on the same curve. */
 html[data-layout="stack"] .chat-input-wrap[data-fold] .chat-toolbar-row {
     max-height: var(--fold-row-h);
     transition: max-height 300ms cubic-bezier(0.32, 0.72, 0, 1), margin-bottom 300ms cubic-bezier(0.32, 0.72, 0, 1);
@@ -6956,13 +7039,17 @@ html[data-layout="stack"] .chat-input-wrap[data-fold]:not([data-folded]) .chat-t
     transition: opacity 160ms ease 140ms, visibility 0s;
 }
 html[data-layout="stack"] .chat-input-wrap[data-fold] .chat-text-row {
-    transition: border-color 0.2s, box-shadow 0.2s, background 0.2s, margin-left 300ms cubic-bezier(0.32, 0.72, 0, 1);
+    transition: border-color 0.2s, box-shadow 0.2s, background 0.2s, margin-inline-start 300ms cubic-bezier(0.32, 0.72, 0, 1);
 }
 html[data-layout="stack"] .chat-input-wrap[data-folded] .chat-text-row {
-    margin-left: calc(var(--composer-control-height) + 6px + var(--space-2));
+    margin-inline-start: calc(var(--composer-control-height) + 6px + var(--space-2));
 }
+/* Each as specific as the motion it stops: the line and the field, ☰, the capsules going and coming back. */
 @media (prefers-reduced-motion: reduce) {
-    html[data-layout="stack"] .chat-input-wrap[data-fold] :is(.chat-toolbar-row, .chat-toolbar-row > *, .chat-text-row) {
+    html[data-layout="stack"] .chat-input-wrap[data-fold] :is(.chat-toolbar-row, .chat-text-row),
+    html[data-layout="stack"] .chat-input-wrap[data-fold] .chat-toolbar-row > .composer-menu,
+    html[data-layout="stack"] .chat-input-wrap[data-folded] .chat-toolbar-row > :not(.composer-menu),
+    html[data-layout="stack"] .chat-input-wrap[data-fold]:not([data-folded]) .chat-toolbar-row > :not(.composer-menu) {
         transition: none;
     }
 }
@@ -7080,14 +7167,6 @@ body.keyboard-open .chat-instance-panel .chat-input-area {
     min-height: 0;
 }
 
-/* Collapse keeps pinned, live, open and keyboard-owned Projects; other fetched rows wait here. */
-.nav-projects-show-all {
-    min-height: var(--nav-item-h);
-    padding-left: var(--nav-label-x);
-    font-size: var(--type-body);
-    color: var(--text-meta);
-}
-
 .nav-projects-list {
     display: flex;
     flex-direction: column;
@@ -7111,7 +7190,7 @@ body.keyboard-open .chat-instance-panel .chat-input-area {
    no left active bar) — a dropdown list, not standalone tabs. */
 .nav-project-item {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) var(--nav-control-h);
+    grid-template-columns: minmax(0, 1fr) var(--nav-kebab-w);
     align-items: center;
     width: 100%;
     border-radius: var(--radius-sm);
@@ -7123,7 +7202,7 @@ body.keyboard-open .chat-instance-panel .chat-input-area {
     margin-top: var(--space-2);
 }
 
-/* A Project row reads in the secondary ink at the body size; unread takes the primary ink as well as its dot. */
+/* A Project row reads in the secondary ink at the body size, read or not: its new messages are its mark's hue. */
 .nav-project-row {
     min-height: var(--nav-item-h);
     font-size: var(--type-body);
@@ -7131,30 +7210,22 @@ body.keyboard-open .chat-instance-panel .chat-input-area {
     padding-left: var(--nav-label-x);
     padding-right: var(--space-1);
     border-radius: var(--radius-sm);
-    /* One trailing rail per row: label, activity column, unread column. Each
-       trailing child is placed explicitly in its own always-reserved column
-       (the global [hidden] rule removes an idle marker from layout, so the
-       tracks, not the children, hold the slots): the dots and the unread dot
-       keep one x across rows whether or not the other is present, whatever
-       the name length, and while the sibling kebab (the item's own 28px
-       column) is hovered or focused. 18px is the marker's own width, three
-       4px dots and two 3px gaps; 8px is the unread dot's. */
+    /* One trailing column per row for its one status mark, always reserved (the global [hidden] rule removes a row's
+       mark at rest from layout, so the track, not the child, holds the slot): every mark keeps one x across rows,
+       whatever the name length and while the sibling ⋯ (the item's own column) is hovered or focused. 18px is the
+       widest mark's, three 4px dots and two 3px gaps. */
     display: grid;
-    grid-template-columns: minmax(0, 1fr) 18px 8px;
+    grid-template-columns: minmax(0, 1fr) 18px;
     column-gap: var(--space-2);
 }
 
 .nav-project-row > .nav-row-label { grid-column: 1; }
-.nav-project-row > .nav-activity-marker { grid-column: 2; }
-.nav-project-row > .nav-unread-dot { grid-column: 3; }
+.nav-project-row > .nav-mark { grid-column: 2; }
 
-/* A deleting row states one trailing fact, `Deleting…`, in its wider sibling
-   column. Its census marker stays in the accessible name but is not drawn:
-   motion on a row the owner cannot open would read as work to look at. */
+/* A deleting row states one trailing fact, `Deleting…`, in its wider sibling column. Its census mark stays in the
+   accessible name but is not drawn (app.js): motion on a row the owner cannot open would read as work to look at. */
 .nav-project-item.is-deleting .nav-project-row { grid-template-columns: minmax(0, 1fr); }
-.nav-project-item.is-deleting .nav-activity-marker { display: none; }
 
-.nav-project-row.has-unread { color: var(--text-primary); }
 @media (hover: hover) {
     .nav-project-row:hover {
         color: var(--text-primary);
@@ -7189,16 +7260,60 @@ body.keyboard-open .chat-instance-panel .chat-input-area {
     display: none;
 }
 
-/* The Projects header: the toggle, the unread count, the activity dots, then "+" (New project). */
+/* The Projects header: the toggle, the unread count, its status mark, then "+" (New project). */
+/* The Projects header keeps Main's columns (owner 19.10, Q1 = B): the toggle (icon, word, chevron), then its facts,
+   the count and the mark in the number and mark columns of Main and the rows, and + in the ⋯ column. On touch, where
+   rows have no ⋯ column, + follows the chevron so the facts keep those columns. A press on the facts toggles too. */
 .nav-projects-header {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) var(--nav-control-h);
+    display: flex;
     align-items: center;
     width: 100%;
 }
 
 .nav-projects-header > .nav-section-toggle {
+    flex: 0 1 auto;
+    width: auto;
     min-width: 0;
+    padding-right: var(--space-2);
+    border-radius: var(--radius-inner) 0 0 var(--radius-inner);
+}
+
+.nav-projects-facts {
+    order: 1;
+    flex: 1 0 auto;
+    align-self: stretch;
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: var(--space-3);
+    /* A Project row ends its mark column one border and --space-1 before its edge; the facts end where it does. */
+    padding-right: calc(var(--space-1) + 1px);
+    border-radius: 0 var(--radius-inner) var(--radius-inner) 0;
+    color: var(--text-secondary);
+    cursor: pointer;
+    transition: var(--motion-tone);
+}
+
+.nav-projects-facts > .nav-mark-slot {
+    flex: 0 0 18px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.nav-projects-add { order: 2; flex-shrink: 0; }  /* the ⋯ column keeps its width in a narrow sidebar */
+
+@media (pointer: coarse) {
+    .nav-projects-add { order: 0; }
+}
+
+@media (hover: hover) {
+    .nav-projects-facts:hover,
+    .nav-projects-header:has(> .nav-projects-facts:hover) > .nav-section-toggle,
+    .nav-projects-header:has(> .nav-section-toggle:hover) > .nav-projects-facts {
+        background: var(--tone-quiet-hover);
+        color: var(--text-primary);
+    }
 }
 
 .nav-projects-header .nav-chevron {
@@ -7256,8 +7371,9 @@ body.keyboard-open .chat-instance-panel .chat-input-area {
     outline-offset: -2px;
 }
 
-/* A row's ⋯: visible at rest where there is no hover (a phone); under a mouse it appears with the row's hover or
-   focus, so actions never depend on hover (DESIGN "actions never depend on hover"). */
+/* A row's ⋯: under a mouse it appears with the row's hover or focus. On touch the row's menu opens by a long press
+   (owner 19.10, 5A; row_menu_gesture.js), so the ⋯ leaves the row's look and its column there, and stays the keyboard's
+   and assistive technology's door: it comes back with its column whenever the keyboard reaches it. */
 .nav-project-kebab {
     width: var(--nav-control-h);
     height: var(--nav-control-h);
@@ -7299,6 +7415,51 @@ body.keyboard-open .chat-instance-panel .chat-input-area {
 .nav-project-kebab:focus-visible {
     outline: 2px solid var(--focus-accent-border);
     outline-offset: -2px;
+}
+
+/* Touch: a long press opens the row's menu, so the ⋯ takes no room and no finger, and the row's words are not a
+   selection or a callout under the held finger. The ⋯ stays in the tab order: focused (the keyboard, or assistive
+   technology moving focus), it is drawn again with its column, and it stays drawn while the menu it opened is open. */
+@media (pointer: coarse) {
+    #primary-sidebar { --nav-kebab-w: 0px; }
+    .nav-project-item .nav-project-kebab:not(:focus, [aria-expanded="true"]) {
+        width: 0;
+        height: 0;
+        padding: 0;
+        border: 0;
+        overflow: hidden;
+        opacity: 0;
+        pointer-events: none;
+    }
+    .nav-project-item:has(> .nav-project-kebab:is(:focus, [aria-expanded="true"])) {
+        grid-template-columns: minmax(0, 1fr) var(--nav-control-h);
+    }
+    .nav-project-item {
+        -webkit-touch-callout: none;
+        -webkit-user-select: none;
+        user-select: none;
+    }
+}
+
+/* A Project row menu's first line: the row's mark and its words (owner 19.10, 5A), the state word in the primary ink.
+   It is no item (no hover, no focus); space, not a rule, parts it from the items. */
+.project-row-menu-status {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    max-width: 280px;
+    margin-bottom: var(--space-1);
+    padding: var(--space-2) var(--space-3);
+    color: var(--text-secondary);
+    font-size: var(--type-meta);
+    line-height: var(--line-meta);
+}
+.project-row-menu-status > .status-mark {
+    flex: 0 0 18px;
+}
+.project-row-menu-word {
+    color: var(--text-primary);
+    font-weight: 500;
 }
 
 /* New Project dialog */
@@ -7398,7 +7559,7 @@ body.keyboard-open .chat-instance-panel .chat-input-area {
     padding: 8px 10px;
     border: 1px solid var(--status-warn-border);
     border-radius: var(--radius-md, 8px);
-    color: var(--text-primary);
+    color: var(--status-warn-word, var(--text-primary));
     font-size: 12.5px;
     margin: 0 0 var(--space-2);
 }
@@ -7761,14 +7922,7 @@ body.keyboard-open .project-panel {
 }
 .agent-family-id .ui-status[data-tone]::before,
 .harness-account-main .ui-status[data-tone]::before {
-    content: "";
-    display: inline-block;
-    flex: 0 0 auto;
-    width: 6px;
-    height: 6px;
     margin-right: 6px;
-    border-radius: 999px;
-    background: currentColor;
 }
 /* Narrow viewports: the actions column would squeeze the account name to a
    couple of characters, so the row becomes one column and the buttons drop
@@ -7803,6 +7957,7 @@ body.keyboard-open .project-panel {
    rendered at secondary ink reads as disabled"). A warn tint says the same
    thing without hiding it. */
 .harness-exhausted { background: var(--status-warn-bg); }
+.harness-exhausted .harness-account-meta { color: var(--status-warn-word, var(--text-meta)); }
 /* The login card frames itself: .panel-card is an onboarding.css class the
    settings pages never load, so leaning on it rendered a bare, frameless
    card (finding #4). Same ui-card tokens as every other panel surface. */
@@ -8827,23 +8982,16 @@ body.keyboard-open .project-panel {
     color: var(--status-neutral-fg);
     background: var(--status-neutral-bg);
 }
+/* The head's dot is the shared status mark (web/modules/status_mark.js, drawn by ui.css). Its ink is the disabled
+   one, which a replaced or closed question wears; every other lifecycle names its own hue. */
 .chat-quiz-status {
+    --mark-ink: var(--text-disabled);
     display: inline-flex;
     align-items: center;
     gap: var(--space-2, 8px);
     font-size: var(--type-meta);
     color: var(--text-meta);
 }
-.chat-quiz-dot {
-    flex: 0 0 auto;
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
-    background: var(--status-neutral-fg);
-}
-.chat-quiz-card[data-state="answered"] .chat-quiz-dot { background: var(--status-ok-fg); }
-.chat-quiz-card[data-state="expired_terminal"] .chat-quiz-dot,
-.chat-quiz-card[data-state="superseded"] .chat-quiz-dot { background: var(--text-disabled); }
 .chat-quiz-question {
     font-size: var(--type-body);
     line-height: var(--line-body, 1.5);
@@ -8908,9 +9056,6 @@ body.keyboard-open .project-panel {
 .chat-quiz-card [aria-disabled="true"]:hover:not(.pending-choice) {
     background: var(--surface-tray);
 }
-.chat-quiz-card[data-submission="sending"] .chat-quiz-dot,
-.chat-quiz-card[data-submission="unknown"] .chat-quiz-dot,
-.chat-quiz-card[data-submission="checking"] .chat-quiz-dot { background: var(--text-meta); }
 .chat-quiz-feedback {
     display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2);
     color: var(--text-meta); font-size: var(--type-meta); line-height: var(--line-meta);
@@ -9004,7 +9149,9 @@ body.keyboard-open .project-panel {
 }
 
 /* D12: always-visible compact copy icon in the bubble's bottom-right corner. The Reply control joins it in
-   one control row (docs/DESIGN.md "Replies"): the same 24px square, ink and rhythm, one --space-2 gap. */
+   one control row (docs/DESIGN.md "Replies"), and so do the registered message actions between them
+   (message_actions.js): the same 24px square, ink and rhythm, one --space-2 gap. */
+.chat-message-action,
 .chat-message-copy,
 .chat-message-reply {
     display: inline-flex;
@@ -9041,12 +9188,19 @@ body.keyboard-open .project-panel {
     .chat-message-actions { gap: calc(var(--touch-target-min) - var(--space-5)); }
 }
 
+.chat-message-action:hover,
+.chat-message-action:focus-visible,
+.chat-message-action[aria-pressed="true"],
 .chat-message-copy:hover,
 .chat-message-copy:focus-visible,
 .chat-message-reply:hover,
 .chat-message-reply:focus-visible { opacity: 1; }
+.chat-message-action:hover,
 .chat-message-copy:hover,
 .chat-message-reply:hover { background: var(--surface-control); }
+/* An action that is on now (Read aloud while it speaks) has no body, so it wears the crimson tone's word. */
+.chat-message-action[aria-pressed="true"] { color: var(--tone-crimson-word); }
+.chat-message-action:focus-visible,
 .chat-message-copy:focus-visible,
 .chat-message-reply:focus-visible {
     outline: 2px solid var(--focus-accent-border);
@@ -9054,9 +9208,12 @@ body.keyboard-open .project-panel {
 }
 
 /* Reserve a gutter so the timestamp never sits under the always-visible controls (Copy ends 32px from the
-   bubble's edge, Reply and Copy 64px; the bubble's own inset is --space-4, the gap to the time --space-2). */
+   bubble's edge, Reply and Copy 64px, each registered action one more square and gap; the bubble's own inset is
+   --space-4, the gap to the time --space-2). */
 .chat-bubble.has-copy .msg-time { margin-right: var(--space-5); }
-.chat-bubble.has-reply .msg-time { margin-right: calc(var(--space-5) * 2 + var(--space-2)); }
+.chat-bubble.has-reply .msg-time {
+    margin-right: calc((var(--space-5) + var(--space-2)) * (2 + var(--chat-message-extra-actions, 0)) - var(--space-2));
+}
 
 /* The message a quote points at: a calm ring for a moment, a keyboard ring while it holds focus. */
 @keyframes chat-quote-target {
@@ -9412,8 +9569,6 @@ body.keyboard-open .project-panel {
 :root[data-theme="light"] .files-preview-frame { background: var(--bg-secondary); }
 :root[data-theme="light"] .skill-review-summary-main { color: var(--system-text); }
 :root[data-theme="light"] .skill-review-summary-side { color: var(--text-meta); }
-:root[data-theme="light"] .widget-table a { color: var(--user-sender); }
-:root[data-theme="light"] .log-type.consciousness { color: var(--project); }
 :root[data-theme="light"] .chat-bubble .message pre { background: var(--code-bg); }
 :root[data-theme="light"] .md-code-block .hljs-comment,
 :root[data-theme="light"] .md-code-block .hljs-quote { color: var(--text-meta); }
@@ -9433,7 +9588,6 @@ body.keyboard-open .project-panel {
 :root[data-theme="light"] .md-code-block .hljs-function { color: var(--user-sender); }
 :root[data-theme="light"] .md-code-block .hljs-class .hljs-title { color: var(--status-warn-fg); }
 :root[data-theme="light"] .status-badge.online { color: var(--status-ok-fg); }
-:root[data-theme="light"] .status-badge.starting { color: var(--status-warn-fg); }
 :root[data-theme="light"] .status-badge.error { color: var(--status-error-fg); }
 
 /* ---- Airy dopamine (DESIGN.md design bible) -----------------------------------------------------------------------
@@ -9521,7 +9675,7 @@ body.keyboard-open .project-panel {
 /* The work card's foot (meta line, its one action row) and its Project footer share the card's insets. */
 :root[data-theme] :is(.chat-live-foot, .chat-live-bound-pointer) { padding-inline: 20px; }
 :root[data-theme] .chat-live-foot-end > .chat-live-actions { padding: 0; }
-:root[data-theme] :is(.chat-live-phase, .chat-live-line-phase) { border-color: transparent; }
+:root[data-theme] .chat-live-phase { border-color: transparent; }
 
 /* Objects and trays. A card on the room is an object: the object surface on the rest shadow with the object radius.
    Inside an object a group or row is a tray: the soft neutral fill with the inner radius and no shadow; a tray inside
@@ -9576,8 +9730,8 @@ body.keyboard-open .project-panel {
 /* Controls: ui.css's tones mapped onto the page's own controls. Every one with a body stands on the rest shadow in
    every state; hover deepens its fill, a press deepens it again, a chosen or switched-on one takes its tone. The bars'
    controls (the Project bar's close and the phone's menu button among them) are neutral capsules; Panic is danger,
-   the budget amber (it is the owner's money). The room's status beside the title is not a control: it stays a bare
-   sentence (room_work.css). */
+   the budget neutral and amber only while a spending limit's stop waits for the owner. The room's status beside the
+   title is not a control: it stays a bare sentence (room_work.css). */
 :root[data-theme] :is(.chat-header-btn.ui-chrome-control, .project-panel-close, .mobile-nav-toggle, .nav-drawer-close) {
     border-color: transparent; background: var(--surface-capsule); color: var(--text-primary); box-shadow: var(--elev-rest);
     -webkit-backdrop-filter: var(--glass); backdrop-filter: var(--glass);
@@ -9588,25 +9742,28 @@ body.keyboard-open .project-panel {
         border-color: transparent; background: var(--surface-capsule-hover); box-shadow: var(--elev-rest);
     }
     :root[data-theme] .chat-header-btn.danger.ui-chrome-control:hover { background: var(--tone-red-hover); }
-    :root[data-theme] .chat-budget-pill.ui-chrome-control:hover { border-color: transparent; background: var(--tone-amber-hover); }
+    :root[data-theme] .chat-budget-pill.ui-chrome-control:hover { border-color: transparent; background: var(--surface-capsule-hover); }
+    :root[data-theme] .chat-budget-pill.ui-chrome-control[data-attention="1"]:hover { background: var(--tone-amber-hover); }
 }
 :root[data-theme] :is(.project-panel-close, .mobile-nav-toggle, .nav-drawer-close) { border-radius: var(--pill-radius); }
 :root[data-theme] .chat-header-btn.danger.ui-chrome-control { background: var(--tone-red); color: var(--status-error-fg); }
 :root[data-theme] .chat-budget-pill.ui-chrome-control {
-    border-color: transparent; background: var(--tone-amber); box-shadow: var(--elev-rest); transition: var(--motion-tone);
+    border-color: transparent; background: var(--surface-capsule); box-shadow: var(--elev-rest); transition: var(--motion-tone);
+    -webkit-backdrop-filter: var(--glass); backdrop-filter: var(--glass);
 }
+:root[data-theme] .chat-budget-pill.ui-chrome-control[data-attention="1"] { background: var(--tone-amber); }
 :root[data-theme] .chat-budget-pill.ui-chrome-control:active { transform: none; }
 /* The composer: Swarm, Context and Effort are neutral capsules. A setting's name takes the secondary ink at 500 and
    its value the meta ink at 600 (owner 16.10: never the darkest ink); the only colour is a ring's lit arc. Send is the
    primary action's crimson tone. */
 :root[data-theme] .chat-input-wrap { --composer-control-shadow: var(--elev-rest); }
-:root[data-theme] :is(.chat-swarm, .chat-capsule) {
+:root[data-theme] :is(.chat-swarm, .chat-capsule, .chat-composer-chip) {
     border-color: transparent; background: var(--surface-capsule); color: var(--text-secondary); font-weight: 600;
     box-shadow: var(--elev-rest); -webkit-backdrop-filter: var(--glass); backdrop-filter: var(--glass);
 }
-:root[data-theme] .chat-swarm:hover { border-color: transparent; background: var(--surface-capsule-hover); color: var(--text-primary); }
+:root[data-theme] :is(.chat-swarm, .chat-composer-chip):hover { border-color: transparent; background: var(--surface-capsule-hover); color: var(--text-primary); }
 :root[data-theme] .chat-swarm[data-armed="true"] {
-    border-color: transparent; background: var(--tone-crimson); color: var(--tone-crimson-ink); box-shadow: var(--elev-rest);
+    border-color: transparent; background: var(--tone-crimson-soft); color: var(--tone-crimson-soft-ink); box-shadow: var(--elev-rest);
 }
 :root[data-theme] .chat-capsule[data-open="true"] { border-color: transparent; }
 :root[data-theme] .chat-capsule[data-morph] {
@@ -9639,7 +9796,7 @@ body.keyboard-open .project-panel {
 /* A question's × is a quiet control: no body until hover. */
 :root[data-theme] .chat-quiz-close { border-color: transparent; background: transparent; }
 :root[data-theme] .chat-quiz-close:hover:not(:disabled) { border-color: transparent; background: var(--tone-quiet-hover); }
-:root[data-theme] :is(.chat-attach-btn, .rw-more) { border-radius: var(--pill-radius); }
+:root[data-theme] :is(.chat-plus-btn, .rw-more, .voice-btn) { border-radius: var(--pill-radius); }
 /* Navigation over the transcript: Load older rests in the reading flow; ↓ latest and Back to reading fly over it. */
 :root[data-theme] .chat-load-older-btn { border-color: transparent; background: var(--surface-capsule); box-shadow: var(--elev-rest); }
 :root[data-theme] :is(.chat-scroll-bottom-btn, .rw-back) {
@@ -9647,9 +9804,9 @@ body.keyboard-open .project-panel {
     -webkit-backdrop-filter: var(--glass); backdrop-filter: var(--glass);
 }
 :root[data-theme] :is(.chat-load-older-btn, .chat-scroll-bottom-btn, .rw-back):not(:disabled):hover { border-color: transparent; background: var(--surface-capsule-hover); }
-/* Tabs and segmented choices: neutral capsules with the secondary ink; the chosen one takes the crimson tone and stays
-   standing. Their strip scrolls sideways, so it lends the capsules' shadow room inside its own box instead of clipping
-   it. Filters are quiet controls: no body, so no shadow; a chosen filter takes the crimson tone. */
+/* Tabs and segmented choices: neutral capsules with the secondary ink; the chosen tab (a place) takes the crimson tone,
+   a chosen segment (an option) the soft crimson, and both stay standing. Their strip scrolls sideways, so it lends the capsules' shadow room inside its own box instead of clipping
+   it. Filters are quiet controls: no body, so no shadow; a chosen filter takes the soft crimson. */
 :root[data-theme] .app-tab-strip {
     padding: var(--space-2) var(--space-4) var(--space-5);
     scroll-padding-inline: var(--space-4);
@@ -9673,18 +9830,20 @@ body.keyboard-open .project-panel {
 }
 :root[data-theme] .filter-chip { border-color: transparent; border-radius: var(--pill-radius); background: transparent; box-shadow: none; }
 :root[data-theme] .filter-chip:hover { background: var(--tone-quiet-hover); }
-:root[data-theme] .filter-chip.active { border-color: transparent; background: var(--tone-crimson); color: var(--tone-crimson-ink); }
+:root[data-theme] .filter-chip.active { border-color: transparent; background: var(--tone-crimson-soft); color: var(--tone-crimson-soft-ink); }
 /* A press deepens a capsule's colour; nothing changes height. */
 :root[data-theme] :is(.chat-header-btn, .chat-budget-pill, .project-panel-close, .mobile-nav-toggle, .chat-swarm, .chat-send-inline,
-    .app-tab, .filter-chip, .chat-load-older-btn, .chat-scroll-bottom-btn, .rw-back, .chat-question-nav):not(:disabled):active,
+    .app-tab, .filter-chip, .chat-load-older-btn, .chat-scroll-bottom-btn, .rw-back, .chat-question-nav, .chat-composer-chip):not(:disabled):active,
 :root[data-theme] .chat-capsule:not([data-open="true"]):active {
     filter: var(--press);
 }
+/* The solid crimson under white ink deepens when pressed (--press-solid), so its words keep 4.5:1. */
+:root[data-theme] :is(.chat-send-inline, .chat-quiz-send, .app-tab.active, .app-tab.is-active) { --press: var(--press-solid); }
 /* What cannot be pressed now has no body. */
 :root[data-theme] :is(.chat-header-btn, .chat-budget-pill, .project-panel-close, .mobile-nav-toggle, .chat-swarm, .chat-send-inline,
     .app-tab, .chat-load-older-btn, .chat-scroll-bottom-btn, .rw-back, .rw-row .rw-pill):disabled {
     box-shadow: none;
 }
-:root[data-theme] :is(.chat-capsule, .chat-swarm, .chat-send-inline, .app-tab, .filter-chip, .chat-load-older-btn) {
+:root[data-theme] :is(.chat-capsule, .chat-swarm, .chat-send-inline, .app-tab, .filter-chip, .chat-load-older-btn, .chat-composer-chip) {
     transition: var(--motion-tone);
 }

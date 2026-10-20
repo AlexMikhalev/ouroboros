@@ -533,3 +533,31 @@ test('the pill hides while every target is on screen, and the feed\'s own change
     main.waiting.refresh();
     assert.equal(main.shown(), null);
 });
+
+// A task that cannot continue without the owner is one System message whose chip is the owner's move (status marks:
+// the amber body and the amber dot), whatever the move is: Resume after the spending limit, an interrupted Resume the
+// census still names, or model access only the owner can restore. Resume stays the crimson primary, Stop… neutral;
+// a closed socket proves nothing, so the chip says Activity unconfirmed with its ring and no amber.
+test('an owner-action message says its task\'s state as the owner\'s move, beside Resume and a neutral Stop…', t => {
+    const main = mainPage(t);
+    const chipOf = id => find(main.actionNode(id), node => node.classList?.contains('chat-live-phase'));
+    const look = id => {
+        const chip = chipOf(id), mark = chip.firstElementChild;
+        return [chip.textContent, chip.dataset.chipTone, mark.hidden ? 'none' : `${mark.dataset.shape}/${mark.dataset.hue}`];
+    };
+    const wait = { wait_id: 'w', revision: 1, task_attempt: 1, state: 'waiting', reason: 'auth', role: 'main',
+        model: 'codex::gpt', requires_owner_action: true };
+    main.waiting.snapshot(census({ actions: [action('limit'),
+        action('resumed', { pause_cause: 'owner', attention_reason: 'resume' }),
+        action('access', { phase: 'working', pause_cause: undefined, can_resume: false, attention_reason: 'model_access',
+            model_waits: { w: wait } })] }));
+    assert.deepEqual(look('limit'), ['Paused · spending limit', 'owner', 'dot/owner']);
+    assert.deepEqual(look('resumed'), ['Paused', 'owner', 'dot/owner']);
+    assert.deepEqual(look('access'), ['Waiting for access', 'owner', 'dot/owner']);
+    const resume = find(main.actionNode('limit'), node => node.dataset?.resumeRun === '1');
+    assert.equal(resume.className, 'btn btn-sm btn-primary');
+    const stop = find(main.actionNode('limit'), node => node.tagName === 'BUTTON' && node.textContent === 'Stop…');
+    assert.equal(stop.className, 'btn btn-xs btn-default');
+    main.waiting.setConnected(false);
+    for (const id of ['limit', 'resumed', 'access']) assert.deepEqual(look(id), ['Activity unconfirmed', 'neutral', 'ring/ink'], id);
+});

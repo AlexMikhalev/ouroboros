@@ -95,6 +95,7 @@ from ouroboros.tools.core_artifacts import (  # noqa: F401
     validate_link_actions,
     validate_quiz_payload,
 )
+from ouroboros.tools.cards import SHOW_CARD_TOOL_SCHEMA, _show_card
 
 log = logging.getLogger(__name__)
 
@@ -1430,6 +1431,9 @@ def get_tools() -> List[ToolEntry]:
                     }, "required": ["label", "url"]}},
             }, "required": ["links"]},
         }, _send_links),
+        ToolEntry("show_card", copy.deepcopy(SHOW_CARD_TOOL_SCHEMA), _show_card,
+                  # Owner-chat delivery like send_file; an app runs only in the opaque sandbox frame.
+                  safety_policy="skip"),
         ToolEntry("search_code", {
             "name": "search_code",
             "description": (

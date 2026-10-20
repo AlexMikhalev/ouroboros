@@ -1,8 +1,10 @@
 """The row of capsules folds while the owner reads back through a room's history (owner 19.10, 2A; docs/DESIGN.md
 "Composer owner controls"; web/modules/composer_fold.js).
 
-On a phone, reading back folds the row (☰, Swarm, Context, Effort) away and ☰ waits beside the field, at its middle;
-the way toward the latest and the field's focus bring it back; a desk never folds it. Uses the static-server/API
+On a phone, reading back folds the row (☰, Swarm, Context, Effort) away, keeping its fit, and ☰ waits beside the
+field, at its middle, a draft of several lines included, on the field's leading side in either direction; the way toward
+the latest and the field's focus bring it back; a tap on the folded ☰ opens the drawer; reduced motion folds it at
+once; a desk never folds it. Uses the static-server/API
 fixture. The feed is moved as the owner moves it, by a finger (CDP touch, Chromium's input pipeline) or a wheel: a
 scroll the page makes itself is not the owner's, and the room pins it back to the latest.
 """
@@ -41,12 +43,51 @@ def drag(page, dy, strokes=3):
     page.wait_for_timeout(450)
 FACTS = """() => { const wrap = document.querySelector('#page-chat .chat-input-wrap');
     const row = wrap.querySelector('.chat-toolbar-row'), text = wrap.querySelector('.chat-text-row');
-    const menu = row.querySelector(':scope > .composer-menu').getBoundingClientRect(), field = text.getBoundingClientRect();
+    const button = row.querySelector(':scope > .composer-menu');
+    const menu = button.getBoundingClientRect(), field = text.getBoundingClientRect();
     const swarm = row.querySelector('.chat-swarm');
     return {folded: 'folded' in wrap.dataset, rowHeight: Math.round(row.getBoundingClientRect().height),
             menuMiddle: menu.top + menu.height / 2, fieldMiddle: field.top + field.height / 2,
-            menuRight: menu.right, fieldLeft: field.left, swarm: getComputedStyle(swarm).visibility,
+            menuRight: menu.right, fieldLeft: field.left, menuLeft: menu.left, fieldRight: field.right,
+            // What a finger reaches at ☰'s centre: ☰ itself, never "+" painted over it.
+            menuHit: button.contains(document.elementFromPoint(menu.left + menu.width / 2, menu.top + menu.height / 2)),
+            fieldHeight: Math.round(field.height),
+            swarm: getComputedStyle(swarm).visibility, fit: row.dataset.ownerCompact || '',
             area: Math.round(document.querySelector('#chat-input-area').getBoundingClientRect().height)}; }"""
+# Every frame for `ms` from the fold's start (the composer takes data-folded): how far ☰ has gone down, the room the
+# field makes on its leading side, the opacity of the capsules' group (Swarm's), and the transitions running on the
+# line, the field and each control on the line. No fold within 5 s gives no frames: the facts read next say so.
+FOLD_FRAMES = """ms => new Promise((resolve) => {
+    const wrap = document.querySelector('#page-chat .chat-input-wrap');
+    const row = wrap.querySelector('.chat-toolbar-row'), text = wrap.querySelector('.chat-text-row');
+    const menu = row.querySelector(':scope > .composer-menu'), pills = row.querySelector(':scope > .chat-composer-pills');
+    const lead = getComputedStyle(text).direction === 'rtl' ? 'marginRight' : 'marginLeft';
+    const down = (el) => { const t = getComputedStyle(el).transform; return t === 'none' ? 0 : new DOMMatrixReadOnly(t).m42; };
+    const frames = [];
+    const sample = () => frames.push({menu: down(menu), margin: parseFloat(getComputedStyle(text)[lead]),
+        swarm: Number(getComputedStyle(pills).opacity),
+        moving: [row, text, ...row.children].flatMap((el) => el.getAnimations().map((a) => a.transitionProperty || '?'))});
+    const observer = new MutationObserver(() => {
+        if (!('folded' in wrap.dataset)) return;
+        observer.disconnect();
+        clearTimeout(giveUp);
+        const start = performance.now();
+        sample();
+        const step = () => { sample(); if (performance.now() - start < ms) requestAnimationFrame(step); else resolve(frames); };
+        requestAnimationFrame(step);
+    });
+    observer.observe(wrap, {attributes: true, attributeFilter: ['data-folded']});
+    const giveUp = setTimeout(() => { observer.disconnect(); resolve(frames); }, 5000);
+})"""
+
+
+def read_back_by_wheel(page, notches=8):
+    """The owner reads back with the wheel, 120 px a notch (WebKit has no synthetic finger here)."""
+    page.mouse.move(200, 400)
+    for _ in range(notches):
+        page.mouse.wheel(0, -120)
+        page.wait_for_timeout(60)
+    page.wait_for_timeout(900)
 
 
 def test_reading_back_folds_the_row_and_the_way_down_brings_it_back(chromium_ui, tmp_path):
@@ -74,9 +115,110 @@ def test_reading_back_folds_the_row_and_the_way_down_brings_it_back(chromium_ui,
     assert reading['folded'] is True and reading['swarm'] == 'hidden' and reading['rowHeight'] == 0, reading
     assert abs(reading['menuMiddle'] - reading['fieldMiddle']) <= 1.5, ('☰ waits at the field\'s middle', reading)
     assert reading['menuRight'] < reading['fieldLeft'], ('beside the field, not over it', reading)
+    assert reading['fit'] == latest['fit'], ('folded, the row keeps its fit (☰ off its line misled the refit)', reading, latest)
     assert reading['area'] <= latest['area'] - 30, ('the composer gives its line back to the feed', reading, latest)
     assert back['folded'] is False and back['swarm'] == 'visible' and back['area'] == latest['area'], ('the way down', back)
     assert again['folded'] is True and writing['folded'] is False, ('the field\'s focus brings it back', writing)
+
+
+def test_a_folded_draft_of_several_lines_keeps_the_menu_at_its_middle(chromium_ui, tmp_path):
+    """Folded, the field is narrower by ☰'s place, so a draft of several lines wraps into one more line and grows from
+    its bottom; ☰ follows it to its middle (measured once as the fold started, it stood 12 px too high)."""
+    page = seed_page(chromium_ui, 390, 844)
+    facts = {}
+    try:
+        boot(page, chromium_ui)
+        page.evaluate(SEED)
+        page.locator('#chat-input').fill('Первая строка черновика\nвторая\nтретья\nчетвёртая')
+        page.locator('#chat-input').blur()
+        page.wait_for_timeout(300)
+        facts['open'] = page.evaluate(FACTS)
+        drag(page, 220)
+        facts['folded'] = page.evaluate(FACTS)
+    finally:
+        evidence(tmp_path, 'composer-fold-draft', facts)
+        page.close()
+    folded = facts['folded']
+    assert folded['folded'] is True and folded['fieldHeight'] > facts['open']['fieldHeight'], (
+        'setup: folded, the draft wraps into one more line', facts)
+    assert abs(folded['menuMiddle'] - folded['fieldMiddle']) <= 1.5, ('☰ waits at the draft\'s middle', folded)
+    assert folded['menuRight'] < folded['fieldLeft'], ('beside the field, not over it', folded)
+
+
+def test_a_thumbs_tap_on_the_folded_menu_opens_the_drawer(chromium_ui, tmp_path):
+    """Folded, ☰ waits beside the field. A thumb's tap on it (held 90 ms, hit-tested where it ends) opens the drawer:
+    the press leaves the row folded, so neither ☰ nor 📎 beside it slides under the finger first (the row used to come
+    back on any press in the composer, and the tap landed on 📎 and opened the file picker)."""
+    page = seed_page(chromium_ui, 390, 844)
+    facts = {}
+    try:
+        boot(page, chromium_ui)
+        page.evaluate(SEED)
+        page.wait_for_timeout(300)
+        drag(page, 220)
+        facts['folded'] = page.evaluate(FACTS)
+        menu = page.locator('#page-chat .chat-toolbar-row > .composer-menu').bounding_box()
+        cdp = page.context.new_cdp_session(page)
+        try:
+            point = {'x': menu['x'] + menu['width'] / 2, 'y': menu['y'] + menu['height'] / 2, 'id': 1}
+            cdp.send('Input.dispatchTouchEvent', {'type': 'touchStart', 'touchPoints': [point]})
+            page.wait_for_timeout(90)
+            cdp.send('Input.dispatchTouchEvent', {'type': 'touchEnd', 'touchPoints': []})
+        finally:
+            cdp.detach()
+        page.wait_for_timeout(500)
+        facts['drawer'] = page.evaluate("() => document.getElementById('primary-sidebar').classList.contains('open')")
+        facts['after'] = page.evaluate(FACTS)
+    finally:
+        evidence(tmp_path, 'composer-fold-menu-tap', facts)
+        page.close()
+    assert facts['folded']['folded'] is True, ('reading back folded the row', facts)
+    assert facts['drawer'] is True and facts['after']['folded'] is True, ('the tap opened the drawer, nothing moved', facts)
+
+
+@pytest.mark.parametrize('motion', ['no-preference', 'reduce'])
+@pytest.mark.parametrize('direction', ['ltr', 'rtl'])
+def test_the_folded_menu_waits_on_the_fields_leading_side_and_moves_only_where_motion_is_welcome(
+        shell_ui, tmp_path, direction, motion):
+    """☰ leads the row from the line's start, so folded it waits beside the field on that side: the left, or the right
+    in a right-to-left interface (i18n.js sets dir=rtl), where it used to drop onto "+" while the field made room on
+    the left. Asked for reduced motion, the row folds at once, ☰ and the capsules with it (their own rules outranked
+    the reduced-motion one, and ☰ still glided); otherwise all of it moves."""
+    page = seed_page(shell_ui, 390, 844)
+    page.emulate_media(reduced_motion=motion)
+    facts = {'engine': shell_ui['engine'], 'direction': direction, 'motion': motion}
+    try:
+        boot(page, shell_ui)
+        if direction == 'rtl':
+            page.evaluate("() => { document.documentElement.dir = 'rtl'; }")  # what i18n.js does for an RTL language
+        page.evaluate(SEED)
+        page.wait_for_timeout(300)
+        page.evaluate(f"ms => {{ window.__foldFrames = ({FOLD_FRAMES})(ms); }}", 420)
+        read_back_by_wheel(page)
+        facts['frames'] = page.evaluate('() => window.__foldFrames')
+        facts['folded'] = page.evaluate(FACTS)
+    finally:
+        evidence(tmp_path, f'composer-fold-{direction}-{motion}-{shell_ui["engine"]}', facts)
+        page.close()
+    folded, frames = facts['folded'], facts['frames']
+    assert folded['folded'] is True and abs(folded['menuMiddle'] - folded['fieldMiddle']) <= 1.5, folded
+    assert folded['menuHit'] is True, ('folded, a finger reaches ☰, not "+"', folded)
+    if direction == 'ltr':
+        assert folded['menuRight'] < folded['fieldLeft'], ('beside the field, on its left', folded)
+    else:
+        assert folded['menuLeft'] > folded['fieldRight'], ('beside the field, on its right', folded)
+    assert frames, ('setup: the fold was sampled from its start', facts)
+    end = frames[-1]
+    assert end['menu'] > 4 and end['margin'] > 30 and end['swarm'] == 0 and end['moving'] == [], ('setup: settled folded', end)
+    if motion == 'reduce':
+        assert all(f['moving'] == [] for f in frames), ('nothing moves', frames)
+        assert all((f['menu'], f['margin'], f['swarm']) == (end['menu'], end['margin'], 0) for f in frames), (
+            'from its first frame the row is folded', frames)
+    else:
+        lead = 'margin-left' if direction == 'ltr' else 'margin-right'
+        assert {'transform', 'opacity', 'max-height', lead} <= set(frames[0]['moving']), (
+            "at the fold ☰, the capsules, the line and the field's leading side all start moving", frames[0])
+        assert any(0 < f['menu'] < end['menu'] for f in frames), ('and ☰ is seen on its way down', frames)
 
 
 def test_a_desk_never_folds_the_row(chromium_ui, tmp_path):

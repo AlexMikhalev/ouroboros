@@ -439,7 +439,7 @@ def test_the_page_plays_no_second_sound_after_the_launchers_banner(settings, mon
     answer = background.attention(True, "Task finished", "")  # the real request_native_attention, sound off
     assert answer == {"ok": True, "status": "background", "banner": True, "sound_played": False}, "never claims it played"
     assert _page_tones(answer) == 0, "the banner owns the sound"
-    assert _page_tones({**answer, "banner": False}) == 1, "no banner and no system sound: the page's one tone"
+    assert _page_tones({**answer, "banner": False}) == 0, "legacy attention is no permission for a fallback tone"
 
 
 def test_attention_never_raises_a_window_hidden_on_purpose(settings, monkeypatch, make):

@@ -1,7 +1,9 @@
 // The row of capsules folds while the owner reads back through a room's history (composer_fold.js, owner 19.10 2A):
-// a run of reading back folds it and ☰ lands at the field's middle; the way down, the latest, the field's focus, an open
-// capsule, another layout and the end of the room bring it back; older history added above and a hidden typing row
-// move nothing. Real frames are in the browser lane (tests/test_composer_fold_browser.py).
+// a run of reading back folds it and ☰ lands at the field's middle, whatever the folded field's height and past a reply
+// staged above the field; the way down, the latest, the field's focus, an open capsule, another layout and the end of
+// the room bring it back; a focused field keeps it; history paged in or let go, rows arriving or growing and a hidden
+// typing row move nothing, and a press on another control is that control's.
+// Real frames are in the browser lane (tests/test_composer_fold_browser.py).
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { FOLD, createComposerFold } from '../modules/composer_fold.js';
@@ -13,18 +15,27 @@ function rig({ stack = true } = {}) {
     const on = (target) => (type, fn) => listeners.set(`${target}:${type}`, fn);
     const off = (target) => (type, fn) => { if (listeners.get(`${target}:${type}`) === fn) listeners.delete(`${target}:${type}`); };
     // The newest row lies 90px under the visible bottom: the owner has read back a little already.
-    const newest = { bottom: 900, getClientRects: () => [1], getBoundingClientRect() { return { bottom: this.bottom }; } };
+    const rowAt = (bottom) => ({ bottom, getClientRects: () => [1], getBoundingClientRect() { return { bottom: this.bottom }; } });
+    const newest = rowAt(900);
+    const rows = [newest];  // every row a scroll moves
     const typing = { getClientRects: () => [], getBoundingClientRect: () => ({ bottom: 0 }), previousElementSibling: newest };
     const feed = {
         lastElementChild: typing, scrollHeight: 6000, clientHeight: 810, scrollTop: 5190,
         getBoundingClientRect: () => ({ bottom: 810 }), addEventListener: on('feed'), removeEventListener: off('feed'),
     };
-    const field = { getBoundingClientRect: () => ({ top: 725, height: 52 }) };
-    const menu = { getBoundingClientRect: () => ({ top: 685, height: 32 }) };
+    // The field's box (.chat-text-row) lies the wrap's gap (8px) under the line; a staged reply's strip would lower it.
+    const field = { top: 725, height: 52, getBoundingClientRect() { return { top: this.top, height: this.height }; },
+        get offsetHeight() { return this.height; } };
+    const input = { name: 'textarea' };  // the field the owner writes in
+    const menu = { getBoundingClientRect: () => ({ top: 685, height: 32 }), contains: (el) => el === menu };
+    const swarm = { name: 'swarm' };  // a capsule of the row, hidden while it is folded
     const props = new Map();
+    // The row's line as it stands: its box and its bottom margin (both mid-motion while the line comes back).
+    const line = { top: 685, height: 32, margin: 0 };
     const row = {
         dataset: {}, open: false,
-        getBoundingClientRect: () => ({ top: 685, height: 32 }),
+        getBoundingClientRect: () => ({ top: line.top, height: line.height }),
+        contains: (el) => el === menu || el === swarm,
         querySelector(selector) {
             if (selector.includes('composer-menu')) return menu;
             if (selector.includes('data-open')) return this.open ? {} : null;
@@ -35,28 +46,41 @@ function rig({ stack = true } = {}) {
         dataset: {}, offsetHeight: 120, inside: new Set([field]),
         style: { setProperty: (k, v) => props.set(k, v), removeProperty: (k) => props.delete(k) },
         contains(el) { return this.inside.has(el); },
-        querySelector: (selector) => (selector === '.chat-text-row' ? field : null),
+        querySelector: (selector) => (selector === '.chat-text-row' ? field : selector === 'textarea' ? input : null),
         addEventListener: on('wrap'), removeEventListener: off('wrap'),
     };
     const keys = new Set();
     const doc = { activeElement: null, body: { classList: { contains: (c) => keys.has(c) } } };
+    const observers = [];
     const win = {
         requestAnimationFrame: (fn) => { fn(); return 0; },
         cancelAnimationFrame: () => {},
         setTimeout: (fn, ms) => { timerId += 1; timers.set(timerId, fn); return timerId; },
         clearTimeout: (id) => { timers.delete(id); },
+        getComputedStyle: (el) => (el === row ? { marginBottom: `${line.margin}px` } : { rowGap: '8px' }),
+        ResizeObserver: class {
+            constructor(fn) { this.fn = fn; this.targets = new Set(); observers.push(this); }
+            observe(el) { this.targets.add(el); }
+            disconnect() { this.targets.clear(); }
+        },
     };
+    // A layout pass changed `el`'s size: its observers hear of it.
+    const resize = (el) => { for (const o of observers) if (o.targets.has(el)) o.fn([{ target: el }]); };
     const env = { stack, layout: null };
     const fold = createComposerFold({ feed, wrap, row, win, doc, isStack: () => env.stack,
         onLayout: (fn) => { env.layout = fn; return () => { env.layout = null; }; } });
-    // The owner's finger moves the feed: reading back brings the newest row further down and the scroll off its end.
+    // The owner's finger moves the feed: reading back brings every row further down and the scroll off its end.
     const scroll = (down, by = 30) => {
-        newest.bottom += down ? by : -by;
+        for (const r of rows) r.bottom += down ? by : -by;
         feed.scrollTop -= down ? by : -by;
         listeners.get('feed:scroll')?.();
     };
+    // A row becomes the newest one with a box (a message or a newer page arriving, the newest page let go), and the
+    // feed's content changes by `grow` px; no scroll is the owner's.
+    const newestIs = (r, grow) => { rows.push(r); typing.previousElementSibling = r; feed.scrollHeight += grow; };
     const runTimers = () => { for (const [id, fn] of [...timers]) { timers.delete(id); fn(); } };
-    return { fold, feed, wrap, row, field, newest, props, doc, keys, env, listeners, scroll, runTimers };
+    return { fold, feed, wrap, row, line, field, input, menu, swarm, newest, rowAt, newestIs, props, doc, keys, env,
+        listeners, scroll, runTimers, resize, observers };
 }
 
 test('reading back folds the row, ☰ lands at the field\'s middle, and the way down brings it back', () => {
@@ -80,6 +104,61 @@ test('reading back folds the row, ☰ lands at the field\'s middle, and the way 
     assert.ok(FOLD.run <= 60 && FOLD.away < 90, 'the fixture reads past both bounds');
 });
 
+test('folded, ☰ waits at the field\'s middle whatever its height, and past a reply staged above the field', () => {
+    const r = rig();
+    for (let i = 0; i < 3; i += 1) r.scroll(true);
+    assert.equal(r.fold.folded(), true);
+    assert.equal(r.props.get('--fold-menu-dy'), '10px', 'a field of one line: half of it, less ☰\'s centre on the line');
+    // Folded, the field is narrower by ☰'s place: a draft of several lines wraps into one more, its bottom staying.
+    r.field.height = 75;
+    r.resize(r.field);
+    assert.equal(r.props.get('--fold-menu-dy'), `${Math.round(75 / 2 - 16)}px`, '☰ follows the field to its new middle');
+    r.scroll(false);
+    r.scroll(false);
+    r.field.height = 52;
+    r.resize(r.field);
+    r.runTimers();
+    assert.equal(r.fold.folded(), false);
+    assert.equal(r.props.has('--fold-menu-dy'), false, 'back, the row is ☰\'s line again');
+    // A reply staged between the line and the field: its strip (56px) and the wrap's gap above the field.
+    r.field.top = 725 + 56 + 8;
+    for (let i = 0; i < 3; i += 1) r.scroll(true);
+    assert.equal(r.fold.folded(), true);
+    assert.equal(r.props.get('--fold-menu-dy'), `${56 + 8 + 52 / 2 - 16}px`, 'down past the strip, to the field\'s middle');
+    r.field.height = 75;
+    r.resize(r.field);
+    assert.equal(r.props.get('--fold-menu-dy'), `${Math.round(56 + 8 + 75 / 2 - 16)}px`);
+});
+
+test('a reply cancelled or staged while the line is still held: the next fold reads what lies between again', () => {
+    const r = rig();
+    r.field.top = 725 + 56 + 8;  // a reply staged: its strip (56px) and the wrap's gap above the field
+    for (let i = 0; i < 3; i += 1) r.scroll(true);
+    assert.equal(r.props.get('--fold-menu-dy'), `${56 + 8 + 52 / 2 - 16}px`);
+    // × on the strip: the strip goes and the field takes the focus (chat_reply.js), which brings the row back.
+    const back = () => {
+        r.doc.activeElement = r.input;
+        r.listeners.get('wrap:focusin')({ target: r.input });
+        assert.equal(r.fold.folded(), false);
+        r.doc.activeElement = null;  // and the owner leaves the field again
+    };
+    back();
+    // Reading back before FOLD.settle (no timer runs): the line is still held and comes back mid-motion (20px of its 32,
+    // a margin of -3px); the field lies right under it now.
+    Object.assign(r.line, { height: 20, margin: -3 });
+    r.field.top = 685 + 20 - 3 + 8;
+    for (let i = 0; i < 3; i += 1) r.scroll(true);
+    assert.equal(r.fold.folded(), true);
+    assert.equal('fold' in r.wrap.dataset, true, 'the line is still the held one');
+    assert.equal(r.props.get('--fold-menu-dy'), `${52 / 2 - 16}px`, 'the strip is gone: down to the field\'s middle, not past it');
+    // A reply staged inside the hold: the strip lies between the line and the field again.
+    back();
+    r.field.top = 685 + 20 - 3 + 8 + 56 + 8;
+    for (let i = 0; i < 3; i += 1) r.scroll(true);
+    assert.equal(r.fold.folded(), true);
+    assert.equal(r.props.get('--fold-menu-dy'), `${56 + 8 + 52 / 2 - 16}px`, 'past the new strip, to the field\'s middle');
+});
+
 test('at the latest the row stays; a wobble, older history above and the hidden typing row move nothing', () => {
     const r = rig();
     r.feed.scrollTop = r.feed.scrollHeight - r.feed.clientHeight - 2;  // at the end
@@ -96,17 +175,26 @@ test('at the latest the row stays; a wobble, older history above and the hidden 
     assert.equal(r.fold.folded(), true, 'the reader is read through the hidden typing row, from the newest row with a box');
 });
 
-test('while the owner writes or works a capsule the row stays, and focusing the field brings it back', () => {
+test('while the owner writes, the field holds the focus or a capsule is worked the row stays; the field\'s focus brings it back', () => {
     const r = rig();
     r.keys.add('keyboard-open');
     for (let i = 0; i < 4; i += 1) r.scroll(true);
     assert.equal(r.fold.folded(), false, 'writing (the keyboard up): the row stays');
     r.keys.delete('keyboard-open');
-    r.doc.activeElement = r.field;
+    r.doc.activeElement = r.input;
+    for (let i = 0; i < 4; i += 1) r.scroll(true);
+    assert.equal(r.fold.folded(), false, 'the field holding the focus, keyboard or not: the row stays');
+    r.doc.activeElement = r.swarm;
+    for (let i = 0; i < 4; i += 1) r.scroll(true);
+    assert.equal(r.fold.folded(), false, 'a focused capsule, which the fold would hide: the row stays');
+    r.doc.activeElement = r.menu;
     for (let i = 0; i < 2; i += 1) r.scroll(true);
-    assert.equal(r.fold.folded(), true, 'a field that merely holds the focus, with no keyboard, is not writing');
-    r.listeners.get('wrap:focusin')();
-    assert.equal(r.fold.folded(), false);
+    assert.equal(r.fold.folded(), true, '☰ stays in sight folded: its focus keeps nothing');
+    r.listeners.get('wrap:focusin')({ target: r.menu });
+    assert.equal(r.fold.folded(), true, 'nor does a focus or press on ☰ (or ↓, 📎, Send) move the row under the finger');
+    assert.equal(r.listeners.has('wrap:pointerdown'), false, 'a press elsewhere in the composer is its control\'s own');
+    r.listeners.get('wrap:focusin')({ target: r.input });
+    assert.equal(r.fold.folded(), false, 'the field\'s focus brings it back');
     r.doc.activeElement = null;
     r.row.dataset.ownerSolo = 'effort';
     for (let i = 0; i < 4; i += 1) r.scroll(true);
@@ -114,12 +202,31 @@ test('while the owner writes or works a capsule the row stays, and focusing the 
     delete r.row.dataset.ownerSolo;
     for (let i = 0; i < 4; i += 1) r.scroll(true);
     assert.equal(r.fold.folded(), true);
-    r.listeners.get('wrap:focusin')();
-    assert.equal(r.fold.folded(), false, 'the field\'s focus brings it back');
-    for (let i = 0; i < 4; i += 1) r.scroll(true);
-    assert.equal(r.fold.folded(), true);
-    r.listeners.get('wrap:pointerdown')();
-    assert.equal(r.fold.folded(), false, 'and so does a press on the composer, the focused field included');
+});
+
+test('history paged in or let go, rows arriving or growing are not the owner\'s reading; the owner\'s own still is', () => {
+    const r = rig();
+    for (let i = 0; i < 3; i += 1) r.scroll(true, 400);
+    assert.equal(r.fold.folded(), true, 'reading back deep into the history folds it');
+    // The pager lets the newest page go under the screen: the newest row is now one 1000px higher, still under it.
+    r.newestIs(r.rowAt(r.newest.bottom - 1000), -1000);
+    assert.ok(r.newest.bottom - 1000 > 810 + 80, 'the fixture: still deep in the history');
+    r.scroll(true, 10);
+    assert.equal(r.fold.folded(), true, 'a page let go under the screen brings nothing back');
+    r.scroll(false);
+    r.scroll(false);
+    assert.equal(r.fold.folded(), false, 'the way down still brings it back');
+    // While the owner heads down, a message (or a newer page) arrives under the screen, then grows.
+    const arrived = r.rowAt(r.newest.bottom + 2000);
+    r.newestIs(arrived, 2000);
+    r.scroll(false, 10);
+    assert.equal(r.fold.folded(), false, 'a row arriving under the screen folds nothing');
+    arrived.bottom += 160;
+    r.feed.scrollHeight += 160;
+    r.scroll(false, 10);
+    assert.equal(r.fold.folded(), false, 'nor does a row growing (a live card, a long reply)');
+    for (let i = 0; i < 3; i += 1) r.scroll(true);
+    assert.equal(r.fold.folded(), true, 'and the owner reading back folds it again');
 });
 
 test('only on a phone; another layout brings the row back; the end of the room clears it', () => {
@@ -138,4 +245,5 @@ test('only on a phone; another layout brings the row back; the end of the room c
     assert.equal(r.props.size, 0);
     assert.equal(['feed:scroll', 'wrap:focusin', 'wrap:pointerdown'].some((k) => r.listeners.has(k)), false, 'no listener stays');
     assert.equal(r.env.layout, null, 'nor the layout watch');
+    assert.equal(r.observers.some((o) => o.targets.size), false, 'nor the field\'s observer');
 });

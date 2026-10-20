@@ -497,8 +497,6 @@ def skill_review_cycles_refusal(
         f"yourself: finalize and disclose the unreviewed skill, {owner_exit}or {fresh_exit}. "
         "A rebuttal cannot buy past the ceiling — rebuttal cycles count toward it."
         f"{author_exit}"
-        + (" If the reviewers do not work at all and recovery fails, explain that to your human."
-           if author_finish_open else "")
     )
     emit_review_cycles_exhausted(
         getattr(ctx, "event_queue", None),

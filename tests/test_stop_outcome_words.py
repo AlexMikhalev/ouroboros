@@ -6,39 +6,11 @@ callers speak the new word, while the statuses and callers that never said it st
 """
 from __future__ import annotations
 
-import ast
-import pathlib
 import types
 
 from ouroboros.task_results import load_task_result, write_task_result
 
 from tests._cancel_intents_shared import _CaptureQueue
-
-REPO = pathlib.Path(__file__).resolve().parents[1]
-
-
-def _outcome_words(relative, function, callee):
-    """The string literals one module's ``function`` passes as ``outcome=`` to ``callee``."""
-    tree = ast.parse((REPO / relative).read_text(encoding="utf-8"))
-    words = []
-    for node in ast.walk(tree):
-        if isinstance(node, ast.FunctionDef) and node.name == function:
-            for call in ast.walk(node):
-                if isinstance(call, ast.Call) and getattr(call.func, "id", "") == callee:
-                    words += [kw.value.value for kw in call.keywords
-                              if kw.arg == "outcome" and isinstance(kw.value, ast.Constant)]
-    return words
-
-
-def test_every_stop_receipt_caller_speaks_the_same_word():
-    """The owed registration and the publish half build one event under one content id, so they must agree."""
-    cancel, delivery = "supervisor/cancel_publication.py", "supervisor/terminal_delivery.py"
-    assert _outcome_words(cancel, "_register_owed_terminal_delivery", "build_unreviewed_salvage_event") == ["stopped"]
-    assert _outcome_words(cancel, "_publish_cancelled_task", "deliver_unreviewed_salvage") == ["stopped"]
-    assert _outcome_words(delivery, "deliver_miss_lane_outcome", "build_unreviewed_salvage_event") == ["stopped"]
-    assert _outcome_words(delivery, "deliver_miss_lane_outcome", "deliver_unreviewed_salvage") == ["stopped"]
-    # The reaper speaks a typed reason through the cause table, never a bare outcome word.
-    assert _outcome_words("supervisor/task_reaper.py", "_deliver_reap_salvage", "deliver_unreviewed_salvage") == [""]
 
 
 def test_owed_stop_receipt_reads_stopped_and_keeps_the_typed_status(tmp_path):

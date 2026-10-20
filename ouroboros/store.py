@@ -285,10 +285,10 @@ def held_descriptor(path: Any) -> Optional[int]:
 
 def is_sqlite_file(path: Any) -> bool:
     """Whether PATH holds a SQLite database (its header magic), read without closing a descriptor
-    a store connection may depend on."""
+    a store connection may depend on; a WAL index is none, and is never opened to look."""
     try:
-        if not stat.S_ISREG(os.stat(path).st_mode):
-            return False  # never open a FIFO or a device to look
+        if not stat.S_ISREG(os.stat(path).st_mode) or is_wal_index(path):
+            return False  # never open a FIFO or a device to look, nor a WAL index (``is_wal_index``)
         return _read_header(pathlib.Path(path)).startswith(b"SQLite format 3\x00")
     except OSError:
         return False
@@ -348,10 +348,49 @@ class _BorrowedReader:
         return b"".join(parts)
 
 
+class WalIndexRefused(PermissionError):
+    """A raw read of a SQLite WAL index (``is_wal_index``), refused before any descriptor opens."""
+
+
+def is_wal_index(path: Any) -> bool:
+    """Whether PATH is a SQLite WAL index: a regular file (nothing else ever is, and nothing is read
+    before that is known) whose real name (a link stands for the file it names) is its database's name
+    plus ``-shm``, folded as a case-insensitive volume folds it, where the database, a sibling in that
+    real directory, is no link and is SQLite by its header (read only when it is no index itself: the
+    same rule on a strictly shorter name, so the question always ends), and the volume resolves
+    ``<database>-shm`` to PATH's own file, so on a case-sensitive volume ``x.db-SHM`` stays the user's.
+    Every WAL connection holds locks on the index (POSIX record locks, which closing any descriptor of
+    the file drops; Windows byte-range locks, which fail a read across them), and its bytes are shared
+    memory a copy rebuilds from the log: the store's raw readers (``open_for_read`` and what reads
+    through it, ``copy_file_bytes``) refuse it, and the copies and captures that apply this rule leave
+    it out, tracked or not. The rule assumes this process's own databases never end in ``-shm`` (they
+    are ``current.sqlite``, ``usage.sqlite``, ``dialog.sqlite``, ``index.sqlite3``, ``index.sqlite`` and
+    temporaries ending in hex): beside a database ``x``, a database ``x-shm`` reads as ``x``'s index and
+    its own index ``x-shm-shm`` as a file, whose raw read drops only this process's locks, and this
+    process holds none on ``x-shm``. The ``-wal`` log carries no lock and reads as any file does."""
+    path = pathlib.Path(os.path.realpath(path) if os.path.islink(path) else path)
+    if len(path.name) <= 4 or path.name[-4:].casefold() != "-shm":
+        return False
+    database = path.with_name(path.name[:-4])
+    try:
+        return (stat.S_ISREG(os.stat(path).st_mode) and not os.path.islink(database) and is_sqlite_file(database)
+                and os.path.samefile(path, database.with_name(database.name + "-shm")))
+    except OSError:
+        return False
+
+
+def refuse_wal_index(path: Any) -> None:
+    """Raise ``WalIndexRefused`` for a WAL index, before anything opens it."""
+    if is_wal_index(path):
+        raise WalIndexRefused(errno.EACCES, "a SQLite WAL index is not read as a file (its bytes are shared "
+                              "memory; the database's content is in the database and its log)", str(path))
+
+
 def open_for_read(path: Any) -> Any:
     """``open(path, "rb")`` for any reader in a process that may hold a store: on POSIX the read
     borrows the inode's shared descriptor, whose close waits until no store connection of this
-    process has the file open; Windows opens and closes as usual."""
+    process has the file open; Windows opens and closes as usual. A WAL index is refused."""
+    refuse_wal_index(path)
     return pathlib.Path(path).open("rb") if os.name == "nt" else _BorrowedReader(path)
 
 
@@ -373,7 +412,9 @@ def read_file_bytes(path: Any, *, limit: Optional[int] = None) -> bytes:
 
 def copy_file_bytes(source: Any, destination: Any) -> Any:
     """``shutil.copy2`` that reads a SQLite file through ``open_for_read`` (a ``copytree``
-    ``copy_function``); the copy is a byte copy, not a consistent snapshot of a live store."""
+    ``copy_function``) and refuses a WAL index; the copy is a byte copy, not a consistent snapshot
+    of a live store."""
+    refuse_wal_index(source)
     if os.name == "nt" or not is_sqlite_file(source):
         return shutil.copy2(source, destination)
     target = pathlib.Path(destination)
@@ -729,16 +770,46 @@ def forget_handoffs() -> None:
     _HANDED_OFF.clear()
 
 
+_WAL_MAGIC = (0x377F0682, 0x377F0683)
+
+
 def log_identity(path: Any) -> Optional[list]:
-    """The WAL log's identity while it holds frames (``[inode, size, mtime_ns]``), else ``None``. A
-    commit lives there until a checkpoint moves it into the database file; an empty or absent log
-    (opened empty by a reader, deleted at the last close) holds none, so its coming and going is no
-    change: a resting duty keyed on the database file plus this wakes on commits only."""
+    """The commits the WAL log holds (``[checkpoint sequence and salts, last commit frame, its
+    checksum, the log's size, its mtime_ns]``), else ``None``. A commit lives there until a checkpoint
+    moves it into the database file; an empty or absent log (opened empty by a reader, deleted at the
+    last close) holds none, so its coming and going is no change. Read from the log, which carries no
+    lock (sqlite.org/fileformat2.html §4): the committed frames are a prefix carrying the generation's
+    salts, the last one ending a commit (a database size); frames after them may carry any salts but
+    no size. What moves: a commit, its commit frame (with the checksum, size and time); a checkpointed
+    log reused in place at the same inode and size, the sequence and salts; a rolled-back transaction's
+    frames, the size and time. A writer killed between writing its commit frame and publishing it in
+    the index leaves a commit frame no reader sees: the next commit of the same length overwrites it,
+    moving its checksum; a shorter one leaves it the last, so only the log's time moves, and where
+    that time stays (a held file on Windows, a coarse clock) the identity stays until the next commit."""
+    name = f"{os.fspath(path)}-wal"
     try:
-        info = os.stat(f"{os.fspath(path)}-wal")
+        if not stat.S_ISREG(os.stat(name).st_mode):
+            return None  # never open a FIFO or a device to look
+        with open(name, "rb", buffering=0) as log:
+            header = log.read(32)
+            if len(header) < 32 or int.from_bytes(header[:4], "big") not in _WAL_MAGIC:
+                return None  # no frame is valid before the header
+            frame = 24 + int.from_bytes(header[8:12], "big")
+
+            def frame_header(number: int) -> bytes:  # frame NUMBER, from 1
+                log.seek(32 + (number - 1) * frame)
+                return log.read(24)
+
+            held, above = 0, (os.fstat(log.fileno()).st_size - 32) // frame + 1
+            while above - held > 1:  # ends at or past the last committed frame: all before carry the salts
+                middle = (held + above) // 2
+                held, above = (middle, above) if frame_header(middle)[8:16] == header[16:24] else (held, middle)
+            while held and frame_header(held)[4:8] == b"\0\0\0\0":
+                held -= 1
+            checksum, info = frame_header(held)[16:24] if held else b"", os.fstat(log.fileno())
     except OSError:
         return None
-    return [info.st_ino, info.st_size, info.st_mtime_ns] if info.st_size else None
+    return [header[12:24].hex(), held, checksum.hex(), info.st_size, info.st_mtime_ns] if held else None
 
 
 def prepare_handoff(path: pathlib.Path, tier: str, *, wait_sec: float = STORE_WAIT_SEC, seam: bool = True) -> None:

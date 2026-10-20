@@ -1,6 +1,6 @@
 import { escapeHtmlAttr, escapeHtmlText as escapeHtml } from './utils.js';
 import { bindMarkdownTables, destroyChatMarkdown, enhanceChatMarkdown, mountChatMarkdown, renderChatMarkdown } from './chat_markdown.js';
-import { bindHeaderControlPlacement, renderMobileNavToggle, renderPageHeader } from './page_header.js';
+import { bindHeaderControlPlacement, renderPageHeader } from './page_header.js';
 import { strokeIcon } from './page_icons.js';
 import { mainHeaderActionsHtml } from './chat_header.js';
 import { pageLabel } from './pages.js';
@@ -11,15 +11,15 @@ import { ORIGIN_ADDRESSED_NOTICE_TYPES, childRowPlacement, replayConcludesTask }
 import { appendProjectRow, decorateProjectRow, PROJECT_ROW_TYPES, refreshProjectAnswerFold, syncSavedProjectContext } from './project_answer.js';
 import { createWorkPortals, isPortal, reconcilePortalNotes } from './work_portal.js';
 import { createTaskEpisodes } from './task_episodes.js';
-import { bindComposerFileTargets, cleanupUploadedAttachments, createChatMedia, showTaskIncidentToast } from './chat_media.js';
-import { attachmentCaption, attachmentViews, composerText, createComposerAttachments, createUnconfirmedSends } from './chat_attachments.js';
+import { createChatMedia, showTaskIncidentToast } from './chat_media.js';
+import { attachmentCaption, attachmentViews, createUnconfirmedSends } from './chat_attachments.js';
 import { createChatDecision } from './chat_decision.js';
 import { createRoomWork } from './room_work.js';
-import { applyCardWorkViews, cardControls, cardMenuActions, emptyWorkState, openCardControls, ownStopPress, reconcileWorkState, roomStatusView } from './work_status.js';
+import { applyCardWorkViews, cardControls, cardMenuActions, changedOffers, emptyWorkState, openCardControls, ownStopPress, reconcileWorkState, roomStatusView } from './work_status.js';
+import { statusMarkHtml } from './status_mark.js';
 import { createMainWaiting } from './main_waiting.js';
 import { createHostStart } from './host_starting_status.js';
 import { createModelWaitController, isModelWaitReference } from './model_wait.js';
-import { clientSurfaceField } from './client_surface.js';
 import { syncSettledItems } from './settled_card.js';
 import { createChatReadingPosition } from './chat_reading_position.js';
 import { createChatHistoryPager, historyCoverage, historyIslandAtEdge } from './chat_history.js';
@@ -53,15 +53,12 @@ import {
 } from './task_control_menu.js';
 import { openConfirmDialog } from './confirm_dialog.js';
 import { chooseAndSendReview } from './review_command.js';
-import { bindEnterSubmit } from './ui_interactions.js';
-import { createComposerOwnerControls } from './composer_owner_controls.js';
-import { attachChatInputSizing } from './chat_input_sizing.js';
+import { composerMarkup, createComposer } from './composer.js';
 import { effortFact } from './effort_chip.js';
 import { mountEmptyChatWelcome } from './welcome_preference.js';
 import { createChatReplies } from './chat_reply.js';
 import { createHistoryReveal } from './chat_history_reveal.js';
 import { createChatRowMenu } from './chat_row_menu.js';
-import { haptic } from './haptics.js';
 import { clearTransientRoutingAnnotations } from './routing_receipt.js';
 import {
     captureLiveCardPhaseState,
@@ -72,7 +69,6 @@ import {
     replayTerminalPhase,
     restoreLiveCardPhaseState,
     setLiveCardPhase,
-    setLiveCardTypingVisible,
     setHistoricalUnavailable,
     setHistoricalUnconfirmed,
     syncParkedPhase,
@@ -128,7 +124,6 @@ import {
     isNonTerminalMediaHistoryRow,
     isReplayEvidenceRow,
     isTerminalTaskPhase,
-    loadChatInputHistory,
     markIngressSaved,
     liveLineRowToggleKey,
     bindLiveCardTimeline,
@@ -146,7 +141,6 @@ import {
     stampNodeTimestamp,
     reconcileHydratedDirectActivities,
     reconnectBannerText,
-    saveChatInputHistory,
     senderLabel,
     shouldFirePanic,
     taskCostMeta,
@@ -193,8 +187,6 @@ const CARD_ROW_PHASES = new Map([['timeline', 'warn'], ['reviews', 'result']]);
 const SUBAGENT_LIFECYCLE_EVENTS = new Set(['scheduled', 'running', 'completed', 'completed_warn', 'failed',
     'cancelled', 'rejected', 'interrupted']);  // a helper's narration is `progress`
 const CHAT_STORAGE_KEY = 'ouro_chat';
-const CHAT_DRAFT_KEY = 'ouro_chat_draft';
-const CHAT_INPUT_HISTORY_KEY = 'ouro_chat_input_history';
 
 export function initChat(ctx) {
     // Back-compat main-chat entry: one full-page instance bound to chat 1.
@@ -204,7 +196,7 @@ export function initChat(ctx) {
 const taskKey = (value) => String(value || '').trim();
 
 export function createChatInstance({
-    ws, state, updateUnreadBadge, openSettingsTab, openDashboardTab,
+    ws, state, openSettingsTab, openDashboardTab,
     stateSnapshots,
     chatId = 1, projectId = '', idPrefix = 'chat', mountEl = null,
     asPanel = false, title = pageLabel('chat'),
@@ -245,24 +237,7 @@ export function createChatInstance({
                     ${strokeIcon('<path d="M12 5v14"/><path d="M19 12l-7 7-7-7"/>', 16)}
                     <span class="chat-scroll-activity-dot" aria-hidden="true" hidden></span>
                 </button>
-                <div id="chat-attachment-preview" class="chat-attachment-preview"></div>
-                <div class="chat-toolbar-row">
-                    ${renderMobileNavToggle({ inComposer: true })}
-                    <div class="chat-composer-pills" id="chat-composer-pills">
-                        <button class="chat-swarm ui-hit-area" id="chat-swarm" type="button" data-armed="false" title="Swarm: route your next message into a new managed task, run a deep plan review with plan_task, then delegate when parallel work helps. Auto-disarms after sending.">Swarm</button>
-                    </div>
-                    <div class="chat-context-mode" id="chat-context-mode" data-context-mode="max"></div>
-                </div>
-                <div class="chat-text-row">
-                    <button class="chat-attach-btn ui-hit-area" id="chat-attach" type="button" title="Attach file">
-                        ${strokeIcon('<path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/>', 18)}
-                    </button>
-                    <input type="file" id="chat-file-input" class="chat-file-input-hidden" accept="*/*" multiple>
-                    <textarea id="chat-input" placeholder="Message Ouroboros..." rows="1" autocorrect="off" autocapitalize="off" spellcheck="false"></textarea>
-                    <div class="chat-send-group">
-                        <button class="chat-send-inline ui-hit-area" id="chat-send" title="Send message">Send</button>
-                    </div>
-                </div>
+                ${composerMarkup()}
             </div>
         </div>
     `;
@@ -281,21 +256,18 @@ export function createChatInstance({
     const messagesDiv = byId('messages');
     const input = byId('input');
     const inputArea = byId('input-area');
-    const sendBtn = byId('send');
     const statusBadge = byId('status');
     const headerActions = byId('header-actions');
     const pageHeader = page.querySelector('.chat-page-header');
     const pageNote = page.querySelector('.chat-page-note');
     const budgetPill = byId('budget-pill');
     const disposeHeaderPlacement = asPanel ? () => {} : bindHeaderControlPlacement({ headerActions, budgetPill });
-    const attachBtn = byId('attach');
-    const fileInput = byId('file-input');
-    const attachmentPreview = byId('attachment-preview');
     const scrollBottomBtn = byId('scroll-bottom');
     const scrollActivityDot = scrollBottomBtn?.querySelector('.chat-scroll-activity-dot');
     let nestedSubagentsExpanded = false;
     let _remoteActivityDepth = 0;
-    let ownerControls = null, cognitionRead = false;
+    // The composer (composer.js), wired once the room's feed owners exist.
+    let composer = null;
 
     // Destroyed instances ignore late async work and animation frames.
     let destroyed = false;
@@ -313,6 +285,7 @@ export function createChatInstance({
         senderLabel,
         stampNodeTimestamp,
         onDomWrite: withStableViewport,
+        replies, composer: () => composer,
     });
     const mainWaiting = isMain ? createMainWaiting({ page, messagesDiv, insertMessageNode, stampNodeTimestamp,
         openSettings: openSettingsTab, refresh: () => refreshHeaderControlState(true), mutate: withStableViewport,
@@ -347,24 +320,10 @@ export function createChatInstance({
         }
     }
 
-    // Staged files, their thumbnails and object URLs, and the upload on Send.
-    const composer = createComposerAttachments({ preview: attachmentPreview, attachBtn, fileInput, input, showToast,
-        onLayout: () => requestAnimationFrame(() => updateMessagesPadding()) });
     // Sent attachment messages not yet confirmed saved: "Send again" with the same id, kept by this tab across a reload.
     const unconfirmed = createUnconfirmedSends({ send: (frame, options) => ws.send(frame, options),
         root: () => messagesDiv, onDomWrite: withStableViewport, showToast, compose: replies.compose,
         storage: sessionStorage, storageKey: storeKey('ouro_chat_unconfirmed') });
-
-    attachBtn.addEventListener('click', () => fileInput.click());
-
-    // Local-only staging avoids orphan uploads and fast-send races.
-    fileInput.addEventListener('change', () => {
-        const files = Array.from(fileInput.files || []);
-        fileInput.value = '';
-        composer.stage(files);
-    });
-
-    bindComposerFileTargets({ page, inputArea, input, stagePendingFiles: composer.stage });
     const ownProjectId = projectId;
 
     let _syncPass1Active = false;
@@ -376,14 +335,10 @@ export function createChatInstance({
     const seenMessageKeys = new Set();
     const messageKeyOrder = [];
     const pendingUserBubbles = new Map();
-    const inputHistory = loadChatInputHistory(sessionStorage, CHAT_INPUT_HISTORY_KEY);
-    let inputHistoryIndex = inputHistory.length;
-    let inputDraft = '';
     let historyLoaded = false;
     // A source read has painted the room. The sessionStorage preview a failed first
     // read leaves is not one: the first source read after it still opens the room.
     let sourceHydrated = false;
-    let inputHistorySeededFromServer = false; // set true only after a successful server-side recall seed
     let historySyncPromise = null;
     let lastHistorySyncSucceeded = false;
     // STICKY single-flight hydration promise.
@@ -520,13 +475,13 @@ export function createChatInstance({
         }
     }
 
-    function setStatus({ kind, text, tone = 'online', dots = 'one', amber = '', mark = '', title = '' }) {
+    function setStatus({ kind, text, tone, mark, owner, amber, title = '' }) {
         // Replay frames never touch the badge; syncChatStatus writes it once.
         if (!statusBadge) return;
         statusBadge.className = `status-badge ${kind}`;
         statusBadge.textContent = text;
         statusBadge.title = title; // a failed boot step's cause; empty otherwise
-        Object.assign(statusBadge.dataset, { tone, dots, amber, mark });
+        Object.assign(statusBadge.dataset, { tone, mark, owner: owner ? '1' : '', amber });
         roomWork?.update();
     }
 
@@ -549,18 +504,18 @@ export function createChatInstance({
             const anyActive = !!data?.evolution_enabled || !!data?.bg_consciousness_enabled;
             moreSummary.classList.toggle('has-active', anyActive);
         }
-        ownerControls?.syncState(data);
-        if (projectId && !data?.projects?.some(project => project.id === projectId && project.cognition)) void refreshProjectCognition();
+        composer?.syncState(data);
         const budget = headerBudgetPresentation(data);
         const budgetText = byId('budget-text');
         const budgetFill = byId('budget-bar-fill');
         if (budgetText) budgetText.textContent = budget.label;
         if (budgetFill) budgetFill.style.width = `${budget.fillPct}%`;
+        if (budgetPill) budgetPill.dataset.attention = budget.attention ? '1' : '0';
     }
 
     // Main: a moved work's card is its portal (work_portal.js); Continue episodes share one card (task_episodes.js).
     const portals = createWorkPortals({ isMain, feed: messagesDiv, records: liveCardRecords, onDomWrite: withStableViewport,
-        isConnected: () => ws.isConnected?.() !== false, onConverted: () => signalChatFreed(), remember: rememberMessageKey,
+        isConnected: () => ws.isConnected?.() !== false, onConverted: () => composer?.signalFreed(), remember: rememberMessageKey,
         append: (msg, text, opts) => appendProjectRow(addMessage, msg, text, opts), actionsOf: ensureLiveActionsEl,
         card: { get: getLiveCardRecord, show: ensureLiveCardVisible, reanchor: reanchorTaskCard, restore: restoreCardActivity,
             meta: renderLiveCardMeta, controls: syncCancelRunButton, finish: finishLiveCardMutation, note: noteTaskDetails,
@@ -608,8 +563,10 @@ export function createChatInstance({
 
     function hydrateStateSnapshot(data, snapshotRequestedAt = Infinity) {
         if (data) void refreshChildProjectHolds();
+        const before = workState;
         workState = reconcileWorkState(workState, data, chatId, ws.isConnected?.() !== false);
         applyCardWorkViews(liveCardRecords, workState);
+        changedOffers(liveCardRecords, before, workState).forEach(syncCancelRunButton);
         syncHeaderControlState(data ?? { accounting: { available: false } });
         portals.sync(data);
         mainWaiting?.snapshot(data, snapshotRequestedAt);
@@ -629,17 +586,6 @@ export function createChatInstance({
             }
         }
         syncChatStatus();
-    }
-
-    // Rooms outside the bounded sidebar still read their settings.
-    async function refreshProjectCognition() {
-        if (destroyed || cognitionRead) return;
-        cognitionRead = true;
-        try {
-            const room = await apiFetch(`/api/projects?chat_id=${encodeURIComponent(chatId)}`, { cache: 'no-store' });
-            if (room.ok && !destroyed) ownerControls?.syncState(await room.json());
-        } catch { /* Preserve the last room value, never substitute Main. */ }
-        finally { cognitionRead = false; }
     }
 
     async function refreshHeaderControlState(force = false) {
@@ -892,6 +838,7 @@ export function createChatInstance({
         }
         if (existing) {
             record.cancelRunBtn = existing;
+            if (record.finished) existing.disabled = false;
             return changed;
         }
         const actions = ensureLiveActionsEl(record);
@@ -979,6 +926,8 @@ export function createChatInstance({
                 btn.disabled = false;
             }
         } catch (exc) {
+            // Said once, by the request; 404 is the task already gone.
+            if (exc?.status !== 404) showToast(`Cancel failed: ${exc?.message || exc}`, 'error');
             if (exc?.status === 404 || record.finished) {
                 // Completion won: remove the dead action, then reconcile detail.
                 revokeManagedTaskCancelAuthority(taskId);
@@ -989,7 +938,6 @@ export function createChatInstance({
                 }
                 return;
             }
-            showToast(`Cancel failed: ${exc?.message || exc}`, 'error');
             // Reconcile durable truth before restoring any optimistic UI.
             let stored = null;
             try {
@@ -1026,19 +974,6 @@ export function createChatInstance({
         if (!id) return false;
         cancelableTaskIds.add(id);
         return syncCancelRunButton(liveCardRecords.get(id));
-    }
-
-    // A brief composer brighten when a task leaves the main chat for a project —
-    // a calm "you're free to start something else" signal (P3). The CSS
-    // animation owns the duration; the class leaves with it, no timer to dispose.
-    function signalChatFreed() {
-        const row = page.querySelector('.chat-text-row');
-        row?.classList.add('chat-freed');
-        row?.addEventListener('animationend', function done(event) {
-            if (event.target !== row) return;  // a child's animation is not this cue
-            row.classList.remove('chat-freed');
-            row.removeEventListener('animationend', done);
-        });
     }
 
     const reviewAnchorEligible = (id) => !liveCardRecords.has(id) && !activeDirectActivities.has(id);
@@ -1230,9 +1165,6 @@ export function createChatInstance({
                         <span class="chat-live-phase working" data-live-phase role="status" aria-live="polite" aria-atomic="true" aria-label="${options.isSubagent ? 'Subagent' : 'Task'} status: Working">Working</span>
                         <span class="chat-live-phase-secondary" data-live-phase-secondary hidden></span>
                         <span class="chat-live-hurry" data-live-hurry role="img" hidden></span>
-                        <div class="chat-live-typing" data-live-typing aria-hidden="true">
-                            <span></span><span></span><span></span>
-                        </div>
                     </div>
                     <span class="chat-live-title" data-live-title>Waiting for work</span>
                     <button type="button" class="chat-live-summary-side ui-hit-area" data-live-disclosure aria-expanded="false" aria-controls="${escapeHtmlAttr(timelineId)}">
@@ -1265,7 +1197,6 @@ export function createChatInstance({
             root,
             summaryButtonEl: root.querySelector('[data-live-summary-button]'),
             phaseEl: root.querySelector('[data-live-phase]'),
-            inlineTypingEl: root.querySelector('[data-live-typing]'),
             titleEl: root.querySelector('[data-live-title]'),
             episodesEl: root.querySelector('[data-live-episodes]'),
             episodeHistoryEl: root.querySelector('[data-live-episode-history]'),
@@ -1491,7 +1422,6 @@ export function createChatInstance({
         record.metaEl.innerHTML = '';
         record.timelineEl.innerHTML = '';
         record.root.dataset.finished = '0';
-        setLiveCardTypingVisible(record, true);
         const expanded = explicitCardExpansion.has(record.groupId)
             ? explicitCardExpansion.get(record.groupId)
             : Boolean(record.isSubagent && nestedSubagentsExpanded);
@@ -1752,11 +1682,7 @@ export function createChatInstance({
         ensureLiveCardVisible(record, { suppressDomInsert });
         hideTypingIndicatorOnly();
         // Log task_done bypasses finishLiveCard; settle Cancel and its marker.
-        if (record.finished) {
-            settleLiveCard(record, wasFinished);
-        } else {
-            setLiveCardTypingVisible(record, true);
-        }
+        if (record.finished) settleLiveCard(record, wasFinished);
         syncChatStatus();
         return Boolean(timelineChanged
             || typingBefore !== typingEl.style.display
@@ -2473,14 +2399,7 @@ export function createChatInstance({
                         portals.row(msg, msg.text, { historyId: msg.history_id, historyPosition: msg.history_position, taskId });
                         continue;
                     }
-                    // Render media before final handling: a mid-task delivery cannot finish its card.
-                    if (['document', 'photo', 'video', 'links', 'quiz'].includes(msg.msg_type)) {
-                        if (msg.msg_type === 'document') appendDocumentBubble(msg);
-                        else if (msg.msg_type === 'links') appendLinksMessage(msg);
-                        else if (msg.msg_type === 'quiz') appendQuizMessage(msg);
-                        else appendMediaBubble(msg);
-                        continue;
-                    }
+                    if (appendDelivery(msg)) continue;
                     if (subagentChildParents.has(taskId) && childRowPlacement(msg) === 'line') {
                         insertCardIfNeeded(taskId); routeSubagentProgressToCard(taskId, msg, true); continue;
                     }
@@ -2631,20 +2550,7 @@ export function createChatInstance({
                 }
                 syncChatStatus();
 
-                if (!inputHistorySeededFromServer) {
-                    const serverTexts = [];
-                    for (const msg of messages) {
-                        if (msg.role !== 'user') continue;
-                        let text = (msg.text || '').trim();
-                        if (text) serverTexts.push(text);
-                    }
-                    const deduped = [...new Set([...serverTexts, ...inputHistory].reverse())].reverse();
-                    inputHistory.length = 0;
-                    inputHistory.push(...deduped.slice(-50));
-                    saveChatInputHistory(sessionStorage, CHAT_INPUT_HISTORY_KEY, inputHistory);
-                    inputHistoryIndex = inputHistory.length;
-                    inputHistorySeededFromServer = true;
-                }
+                composer.seedInputHistory(messages);
 
                 const wasFirstLoad = !historyLoaded;
                 // Recovery from a failed first read still opens at the newest message.
@@ -2747,93 +2653,12 @@ export function createChatInstance({
         reconcileUnsaved();
     })();
 
-    function rememberInput(text) {
-        if (!text) return;
-        if (inputHistory[inputHistory.length - 1] !== text) inputHistory.push(text);
-        saveChatInputHistory(sessionStorage, CHAT_INPUT_HISTORY_KEY, inputHistory);
-        inputHistoryIndex = inputHistory.length;
-        inputDraft = '';
-    }
+    // The composer (composer.js): its field, Swarm, the room's capsules, attachments and the send path.
+    composer = createComposer({ page, byId, ws, replies, chatSessionId, isMain, chatId, projectId, storeKey,
+        refreshState: refreshHeaderControlState, onLayout: () => updateMessagesPadding(), onSent: showSent });
 
-    // Text height is capped by chat_input_sizing.js.
-    const inputSizing = attachChatInputSizing(input);
-    function resizeChatInput() {
-        inputSizing.sync();
-        updateMessagesPadding();
-    }
-
-    function restoreInputHistory(step) {
-        if (!inputHistory.length) return;
-        if (step < 0) {
-            if (input.selectionStart !== 0 || input.selectionEnd !== 0) return;
-            if (inputHistoryIndex === inputHistory.length) inputDraft = input.value;
-            inputHistoryIndex = Math.max(0, inputHistoryIndex - 1);
-            input.value = inputHistory[inputHistoryIndex] || '';
-        } else {
-            if (input.selectionStart !== input.value.length || input.selectionEnd !== input.value.length) return;
-            inputHistoryIndex = Math.min(inputHistory.length, inputHistoryIndex + 1);
-            input.value = inputHistoryIndex === inputHistory.length ? inputDraft : (inputHistory[inputHistoryIndex] || '');
-        }
-        resizeChatInput();
-        const cursor = input.value.length;
-        input.setSelectionRange(cursor, cursor);
-    }
-
-    async function sendMessage(planMode = false) {
-        if (sendBtn.disabled) return;  // guard against Enter re-entry during async upload
-        if (ownerControls.hasPendingSave()) {  // both room settings land before the next message
-            setSendBusy(true, 'Saving');
-            try { if (!(await ownerControls.pendingSave())) return; } finally { setSendBusy(false); }
-        }
-        let text = input.value.trim();
-        const hasAttachments = composer.count > 0;
-        let uploadedAttachments = [];
-        if (!text && !hasAttachments) return;
-        if (hasAttachments) {
-            // Upload at Send; offline queuing orphans files.
-            if (ws.ws?.readyState !== WebSocket.OPEN) {
-                showToast('Cannot attach file while offline. Reconnect and try again.', 'error');
-                return;
-            }
-            setSendBusy(true, composer.count > 1 ? 'Uploading files' : 'Uploading');
-            try {
-                uploadedAttachments = await composer.upload(() => ws.ws?.readyState === WebSocket.OPEN);
-            } catch (e) {
-                await cleanupUploadedAttachments(e.uploaded || []);
-                showToast('Upload error: ' + e.message, 'error');
-                return;  // staged files and their previews remain so the user can retry
-            } finally {
-                setSendBusy(false);
-            }
-            // Model sees file names; /restart stays exact, bubbles use server views.
-            text = composerText(text, uploadedAttachments.map((item) => item.view?.name || item.display_name));
-        }
-        if (!text) return;
-        const forcePlan = !!planMode && !text.startsWith('/');
-        const frame = {
-            type: 'chat',
-            content: text,
-            sender_session_id: chatSessionId,
-            force_plan: forcePlan,
-            ...(isMain ? {} : { chat_id: chatId }),
-            ...(projectId ? { project_id: projectId } : {}),
-            // Structured metadata rides the frame: model staging and native image blocks.
-            ...(hasAttachments ? { attachments: uploadedAttachments.map(({ filename, display_name, mime }) => ({ filename, display_name, mime })) } : {}),
-            ...replies.frameField(),
-            ...clientSurfaceField(),
-        };
-        const result = ws.send(frame, hasAttachments ? { queue: false } : undefined);
-        if (hasAttachments && result?.status !== 'sent') {
-            await cleanupUploadedAttachments(uploadedAttachments);
-            showToast('Connection lost before send. Reconnect and try again.', 'error');
-            return;
-        }
-        // Send consumes Swarm.
-        if (planMode) setSwarm(false);
-        if (hasAttachments) composer.clear();
-        rememberInput(text);
-        input.value = '';
-        clearInputDraft();
+    // A send the composer made, shown in the feed: the bubble, its doubt until the host's saved echo, `Sending...`.
+    function showSent({ text, frame, result, views }) {
         const sentTs = new Date().toISOString();
         reading.cancel(); // an accepted Send supersedes any saved place
         addMessage(text, 'user', false, sentTs, false, {
@@ -2842,13 +2667,13 @@ export function createChatInstance({
             senderSessionId: chatSessionId,
             clientMessageId: result?.clientMessageId || '',
             forceStick: true, reply: replies.echoRow(),
-            attachments: uploadedAttachments.map((item) => item.view),
+            attachments: views,
         });
         replies.clear();
         // Only the host's saved echo proves acceptance: every message's frame stays (a bare slash command is a
         // command); a queued one is the socket queue's until it is written.
-        if (hasAttachments || !text.startsWith('/')) unconfirmed.track({ ...frame, client_message_id: result.clientMessageId },
-            { views: uploadedAttachments.map((item) => item.view), ts: sentTs, queued: result?.status === 'queued' });
+        if (views.length || !text.startsWith('/')) unconfirmed.track({ ...frame, client_message_id: result.clientMessageId },
+            { views, ts: sentTs, queued: result?.status === 'queued' });
         // Chat sends carry their minted client_message_id.
         const pendingId = result?.clientMessageId || '';
         if (pendingId) {
@@ -2859,50 +2684,9 @@ export function createChatInstance({
             recordLocalEcho(pendingId, text, sentTs);
         }
         syncChatStatus();
-        resizeChatInput();
+        composer.resize();
         reading.followAfterLayout();
     }
-
-    // Send mode lives on DOM so CSS and click/Enter share one source.
-    const sendGroup = page.querySelector('.chat-send-group');
-
-    // Swarm requests planning once, then disarms.
-    const swarmBtn = byId('swarm');
-    function swarmArmed() {
-        return swarmBtn?.dataset.armed === 'true';
-    }
-    function setSwarm(armed) {
-        if (swarmBtn) swarmBtn.dataset.armed = armed ? 'true' : 'false';
-    }
-
-    function setSendBusy(busy, label = '') {
-        sendGroup.dataset.busy = busy ? '1' : '0';
-        sendBtn.disabled = busy;
-        if (busy) {
-            sendBtn.textContent = label || 'Sending';
-            sendBtn.title = label || 'Sending';
-        } else {
-            sendBtn.textContent = 'Send';
-            sendBtn.title = 'Send message';
-        }
-    }
-
-    swarmBtn?.addEventListener('click', () => { setSwarm(!swarmArmed()); haptic('tick'); });
-
-    // Each composer owns its room's Context and Effort settings.
-    ownerControls = createComposerOwnerControls({ row: page.querySelector('.chat-toolbar-row'), box: page, byId, apiFetch, showToast,
-        projectId, saveEffortRange: apiClient.ownerEffortRange, refreshState: refreshHeaderControlState, onLayout: () => updateMessagesPadding() });
-
-    // Do not pass MouseEvent as planMode.
-    sendBtn.addEventListener('click', () => sendMessage(swarmArmed()));
-    bindEnterSubmit(input, sendBtn);
-    input.addEventListener('keydown', (e) => {
-        if (e.key === 'ArrowUp' && !e.shiftKey) {
-            restoreInputHistory(-1);
-        } else if (e.key === 'ArrowDown' && !e.shiftKey) {
-            restoreInputHistory(1);
-        }
-    });
     // Dynamic CSS reserve keeps the absolute composer from covering messages.
 
     // Scroll events observe position; only positive navigation changes follow intent.
@@ -3007,33 +2791,6 @@ export function createChatInstance({
 
     installChatResizeObservers();
 
-    // Per-thread drafts survive room closure; Send clears them.
-    function saveInputDraft() {
-        try {
-            if (input.value) sessionStorage.setItem(storeKey(CHAT_DRAFT_KEY), input.value);
-            else sessionStorage.removeItem(storeKey(CHAT_DRAFT_KEY));
-        } catch {}
-    }
-
-    function clearInputDraft() {
-        try { sessionStorage.removeItem(storeKey(CHAT_DRAFT_KEY)); } catch {}
-    }
-
-    try {
-        const savedDraft = sessionStorage.getItem(storeKey(CHAT_DRAFT_KEY)) || '';
-        if (savedDraft && !input.value) {
-            input.value = savedDraft;
-            inputDraft = savedDraft;
-            resizeChatInput();
-        }
-    } catch {}
-
-    input.addEventListener('input', () => {
-        if (inputHistoryIndex === inputHistory.length) inputDraft = input.value;
-        resizeChatInput();
-        saveInputDraft();
-    });
-
     headerActions?.addEventListener('click', async (event) => {
         const button = event.target.closest('[data-chat-command]');
         if (!button) return;
@@ -3107,12 +2864,11 @@ export function createChatInstance({
     refreshHeaderControlState(true);
 
     const typingEl = document.createElement('div');
-    // Per-instance id (main stays 'typing-indicator'; panels get a unique id) so
-    // multiple open chat columns never collide on a duplicate DOM id.
+    // A per-instance id (Main's stays 'typing-indicator'): open chat columns never share one.
     typingEl.id = idPrefix === 'chat' ? 'typing-indicator' : `${idPrefix}-typing-indicator`;
     typingEl.className = 'chat-bubble assistant typing-bubble';
     typingEl.style.display = 'none';
-    typingEl.innerHTML = `<div class="typing-dots"><span></span><span></span><span></span></div>`;
+    typingEl.innerHTML = statusMarkHtml('typing-mark', { shape: 'moving', hue: 'ink' });
     messagesDiv.appendChild(typingEl);
 
     const pageHistoryIds = new Map();
@@ -3327,7 +3083,7 @@ export function createChatInstance({
     function syncChatStatus() {
         const derived = deriveChatStatus();
         setStatus(derived);
-        return setTypingIndicatorVisible(derived.showDots && foregroundCards().length === 0);
+        return setTypingIndicatorVisible(derived.mark === 'moving' && foregroundCards().length === 0);
     }
 
     function setTypingIndicatorVisible(visible) {
@@ -3465,21 +3221,6 @@ export function createChatInstance({
         }
     }
 
-    const isKnownProjectFrame = (msg) => {
-        const cid = Number(msg?.chat_id ?? 1);
-        return state.projectChatIds instanceof Set && state.projectChatIds.has(cid);
-    };
-
-    function incrementUnreadIfNeeded(msg) {
-        if (!isMain) return;  // the global unread badge tracks the main chat
-        // Project visible_revision is the sole unread authority for a Project.
-        // Project-owned frames never create a second Main unread.
-        if (isKnownProjectFrame(msg)) return;
-        if (state.activePage === 'chat') return;
-        state.unreadCount++;
-        updateUnreadBadge();
-    }
-
     onWs('typing', (msg) => {
         if (!isMyThread(msg)) return;  // each column shows typing only for its own thread
         // A typing frame is a submission receipt, never liveness: it re-reads the
@@ -3521,7 +3262,6 @@ export function createChatInstance({
                 textPlaceholder: msg.text_placeholder === true, reply: msg,
                 },
             ));
-            if (added) incrementUnreadIfNeeded(msg);
             withStableViewport(() => markIngressSaved(messagesDiv, msg) | replies.adopt(msg));
             unconfirmed.settle(msg);
             syncChatStatus();
@@ -3531,17 +3271,16 @@ export function createChatInstance({
         if (msg.role === 'assistant' || msg.role === 'system') {
             return withRemoteActivity(() => {
             const explicitTaskId = msg.task_id || '';
-            // Every path ends by syncing status; `unread` rows also count toward the badge.
-            const settled = (result, unread = result) => {
-                if (unread) incrementUnreadIfNeeded(msg);
+            // Every path ends by syncing status. Main's number is its room revision, as a Project's (DESIGN "Unread").
+            const settled = (result) => {
                 syncChatStatus();
                 return result;
             };
             if (isModelWaitReference(msg)) reread();
             const reference = admitCardMetadata(msg);
-            if (reference !== undefined) return settled(reference, false);
+            if (reference !== undefined) return settled(reference);
             const review = attachReviewFromRow(msg, msg.ts || '', true);
-            if (review !== undefined) return settled(review, false);
+            if (review !== undefined) return settled(review);
             const cardRow = attachCardRow(msg, msg.ts || '');
             if (cardRow !== undefined) return settled(cardRow);
             if (PROJECT_ROW_TYPES.has(msg.system_type)) {
@@ -3552,7 +3291,7 @@ export function createChatInstance({
                 showTaskIncidentToast(msg);
                 if (SUBAGENT_LIFECYCLE_EVENTS.has(String(msg.subagent_event || '').toLowerCase())) reread();  // members
                 const changed = updateLiveCardFromProgressMessage(msg, { grantCancelAuthority: true });
-                return settled(changed, false);
+                return settled(changed);
             }
 
             // An early final (post-task still running) is NOT the turn's
@@ -3583,7 +3322,7 @@ export function createChatInstance({
             }
             // A placed host row is never a child's answer; with no card it stays a System row.
             const placed = explicitTaskId && !msg.card_row && subagentChildParents.has(explicitTaskId) && childRowPlacement(msg);
-            if (placed === 'line') return settled(Boolean(routeSubagentProgressToCard(explicitTaskId, msg, true)), false);
+            if (placed === 'line') return settled(Boolean(routeSubagentProgressToCard(explicitTaskId, msg, true)));
             if (placed) return settled(Boolean(routeSubagentFinalMessageToCard(explicitTaskId, msg)));
             let changed = false;
             if (finalizing) changed = markLiveCardFinalizing(explicitTaskId, msg) || changed;
@@ -3599,7 +3338,7 @@ export function createChatInstance({
                 // A placed row whose card is not in this chat keeps its record link.
                 evidenceRef: isPlacedCardRow(msg) ? cardRowEvidenceRef(msg) : null,
             });
-            return settled(Boolean(added || changed || routingCleared), added || changed);
+            return settled(Boolean(added || changed || routingCleared));
             });
         }
     });
@@ -3656,23 +3395,21 @@ export function createChatInstance({
         }
     });
 
-    const { appendMediaBubble, appendDocumentBubble, appendLinksMessage, appendQuizMessage } =
-        chatMedia.wireDeliveries({
-            onWs,
-            isMyThread,
-            hideTypingIndicatorOnly,
-            syncChatStatus,
-            incrementUnreadIfNeeded,
-            seenMessageKeys,
-            rememberMessageKey,
-            chatMediaMessageKey,
-            documentMessageKey,
-            buildQuizCard: chatDecision.buildQuizCard,
-            applyQuizStateFrame: chatDecision.applyQuizStateFrame,
-            messagesRoot: () => messagesDiv,
-            deliverContentMutation: withRemoteActivity,
-            onQuestionFrame: reread,
-        });
+    const { appendDelivery, appendQuizMessage } = chatMedia.wireDeliveries({
+        onWs,
+        isMyThread,
+        hideTypingIndicatorOnly,
+        syncChatStatus,
+        seenMessageKeys,
+        rememberMessageKey,
+        chatMediaMessageKey,
+        documentMessageKey,
+        buildQuizCard: chatDecision.buildQuizCard,
+        applyQuizStateFrame: chatDecision.applyQuizStateFrame,
+        messagesRoot: () => messagesDiv,
+        deliverContentMutation: withRemoteActivity,
+        onQuestionFrame: reread,
+    });
 
     let wsHasConnectedOnce = false;
 
@@ -3744,6 +3481,8 @@ export function createChatInstance({
         page,
         chatId,
         projectId,
+        // The room's composer (composer.js): its draft, its "+" menu and its voice and chips slots.
+        composer,
         // Called by app.js when a kept panel is shown again: a room reopens at its
         // newest message (owner decision 2026-10-05).
         showLatest,
@@ -3760,7 +3499,7 @@ export function createChatInstance({
         // Unsendable client-side state (staged File objects / an in-flight
         // upload / a sent message not yet saved, whose Send again
         // lives here). app.js must hide, not destroy, an instance holding it.
-        hasPendingWork: () => composer.count > 0 || composer.busy || unconfirmed.count > 0,
+        hasPendingWork: () => composer.hasPendingWork() || unconfirmed.count > 0,
         // app.js, when this room leaves the screen without being destroyed: the
         // modal a file card opened (reader, file dialog) closes and its read
         // stops; staged attachments and uploads are untouched.
@@ -3775,7 +3514,6 @@ export function createChatInstance({
             composer.destroy();
             replies.destroy();
             rowMenu.destroy();
-            ownerControls.destroy();
             unconfirmed.release();
             emptyWelcome?.dispose();
             readReceipt.cancel();
@@ -3799,7 +3537,6 @@ export function createChatInstance({
             disposeHeaderPlacement();
             chatResizeObserver?.disconnect();
             chatResizeObserver = null;
-            inputSizing.dispose();
             historyResyncScheduler.cancel();
             if (headerControlInterval) { clearInterval(headerControlInterval); headerControlInterval = null; }
             for (const id of liveCardRecords.keys()) disposeLiveCard(id);

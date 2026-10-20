@@ -59,13 +59,11 @@ export function setReviewAnchor(record, enabled, writePhase) {
     setInertCardPresentation(record, enabled);
     if (enabled) {
         record.titleEl.textContent = record.suggestedName || 'Reviews';
-        record.inlineTypingEl.style.display = 'none';
     } else {
         writePhase(record, 'working');
         if (!record.suggestedName && !record.lastHumanHeadline) {
             record.titleEl.textContent = '';  // the chip says Working; the title waits for a name (#1369)
         }
-        record.inlineTypingEl.style.display = '';
     }
     return true;
 }

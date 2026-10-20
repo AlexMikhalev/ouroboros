@@ -498,6 +498,8 @@ def render_row_text(row: Mapping[str, Any]) -> str:
         return _quiz_text(dict(row))
     if row.get("type") == "quiz" and isinstance(quiz, dict):
         return _question_text(row, quiz)
+    if row.get("type") == "card" and isinstance(row.get("card"), Mapping):  # its id lets a later turn replace it
+        return f"[card {_text(row['card'].get('card_id'))}] " + dialogue_text(row)
     if row.get("type") == "task_summary" and not _text(row.get("text")):
         return _host_facts_text(row)
     return dialogue_text(row)

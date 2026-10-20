@@ -5,10 +5,11 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createChatReplies } from '../modules/chat_reply.js';
+import { createMessageActions } from '../modules/message_actions.js';
 import { createChatReadingPosition } from '../modules/chat_reading_position.js';
 import { installDomDouble } from './dom_double.js';
 
-function fixture() {
+function fixture({ actions = undefined } = {}) {
     const env = installDomDouble();
     const { doc, el } = env;
     const feed = el('div', { className: 'chat-messages' });
@@ -17,7 +18,7 @@ function fixture() {
     const wrap = el('div', { className: 'chat-input-wrap' }, textRow);
     doc.body.append(feed, wrap);
     const positions = [];
-    const replies = createChatReplies({ chatId: 1, feed, input, key: 'ouro_chat_reply',
+    const replies = createChatReplies({ chatId: 1, feed, input, key: 'ouro_chat_reply', actions,
         reading: () => ({ cancel() { positions.push('cancel'); }, scroll() { positions.push('scroll'); }, remember() {}, stick: true }) });
     const bubble = (role, text, { address = '', taskId = '' } = {}) => {
         const node = el('div', { className: `chat-bubble ${role}`, dataset: { ...(taskId ? { taskId } : {}) } },
@@ -364,4 +365,32 @@ test('a work card draws no Reply of its own; its row menu quotes the work by its
         assert.equal(f.replies.cardRef(record), null, 'not a root work card any more: no Reply');
         assert.equal(root.dataset.rowAddress, 'task:t-9', 'a quote of it still finds it');
     } finally { f.close(); }
+});
+
+test('the registered message actions stand between Reply and Copy on the rows they apply to, until the room goes', () => {
+    const actions = createMessageActions();
+    actions.register({ key: 'read_aloud', label: 'Read aloud', icon: 'volume', applies: (row) => row.role === 'assistant',
+        run() {} });
+    const f = fixture({ actions });
+    try {
+        const answer = f.bubble('assistant', 'The audit found three stale projects.');
+        answer.append(f.el('button', { className: 'chat-message-copy' }));
+        const mine = f.bubble('user', 'please check the logs');
+        mine.append(f.el('button', { className: 'chat-message-copy' }));
+        f.feed.append(answer, mine);
+        f.replies.decorate(answer, { row_address: 'row:1@b#2', role: 'assistant' });
+        f.replies.decorate(mine, owner('row:1@a#1'));
+        const row = (node) => node.children.find((child) => child.classList.contains('chat-message-actions'))
+            .children.map((child) => child.className.split(' ')[0]);
+        assert.deepEqual(row(answer), ['chat-message-reply', 'chat-message-action', 'chat-message-copy'],
+            'Copy keeps the corner; the registered action stands beside Reply');
+        assert.deepEqual(row(mine), ['chat-message-reply', 'chat-message-copy'], 'an action draws only where it applies');
+        const off = actions.register({ key: 'save', label: 'Save', applies: () => true, run() {} });
+        assert.deepEqual(row(mine), ['chat-message-reply', 'chat-message-action', 'chat-message-copy'],
+            'a later registration reaches the rows already drawn');
+        off();
+        f.replies.destroy();
+        actions.register({ key: 'late', label: 'Late', applies: () => true, run() {} });
+        assert.deepEqual(row(mine), ['chat-message-reply', 'chat-message-copy'], 'a destroyed room draws nothing more');
+    } finally { f.restore(); }
 });

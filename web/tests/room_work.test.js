@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { cardRowView, createRoomWork, latestRepresentedRoot, workCard } from '../modules/room_work.js';
+import { markView } from '../modules/status_mark.js';
 import { desiredLiveCardPhase } from '../modules/task_phase_chip.js';
-import { emptyWorkState, reconcileWorkState } from '../modules/work_status.js';
+import { emptyWorkState, reconcileWorkState, roomStatusView } from '../modules/work_status.js';
 import { installDom, restoreDom } from './chat_dom_fixture.js';
 import { SERVER_CASES, projection, room, work } from './work_fixture.js';
 const work_ = work;  // a test-local name where `work` is a mounted list
@@ -17,6 +18,8 @@ const running = (id, extra = {}) => work({ activity_id: id, chat_id: 1, kind: 'm
 const asking = (id, quizId) => work({ activity_id: id, chat_id: 1, kind: 'managed_task' }, { activity: 'waiting',
     release: 'owner', because: [{ code: 'owner_answer', text: 'Waiting for your answer' }],
     turn: [{ kind: 'question', task_id: id, quiz_id: quizId }], controls: [{ action: 'stop', target: id }] });
+// A row's or the control's one mark, as painted: its shape and its hue.
+const markOf = (node) => { const mark = node.querySelector('.status-mark'); return [mark.dataset.shape, mark.dataset.hue]; };
 
 test('a Project keeps its latest represented root: an unfinished one first, never a child or a removed card', () => {
     const done = { root: { isConnected: true }, finished: true };
@@ -36,13 +39,22 @@ test('an older prepended card at the same timestamp does not become the latest r
     assert.equal(latestRepresentedRoot([newer, older]), newer);
 });
 
-test('a card\'s own words as a row keep the outcome colour; an unfinished card that leads nowhere is unknown', () => {
-    assert.equal(cardRowView(desiredLiveCardPhase({ finished: true }, 'error'), { settled: true }).tone, 'failed');
-    assert.equal(cardRowView(desiredLiveCardPhase({ finished: true }, 'done'), { settled: true }).tone, 'done');
-    assert.equal(cardRowView({ phase: 'ended', text: 'No longer listed as active' }, { settled: true }).tone, 'ended');
-    assert.equal(cardRowView(desiredLiveCardPhase({}), {}).tone, 'unknown');
+test('a card\'s own words as a row keep the outcome\'s tone and dot; an unfinished card that leads nowhere is a ring', () => {
+    const settled = (phase) => {
+        const view = cardRowView(desiredLiveCardPhase({ finished: true }, phase), { settled: true });
+        return [view.word, view.tone, markView(view)];
+    };
+    assert.deepEqual(settled('error'), ['Failed', 'failed', { shape: 'dot', hue: 'failed' }]);
+    assert.deepEqual(settled('done'), ['Done', 'done', { shape: 'dot', hue: 'ok' }]);
+    // Done with warnings succeeded (its word says the warnings); Stopped was someone's decision, neither good nor bad.
+    assert.deepEqual(settled('warn'), ['Done with warnings', 'done', { shape: 'dot', hue: 'ok' }]);
+    assert.deepEqual(settled('cancelled'), ['Stopped', 'stopped', { shape: 'dot', hue: 'neutral' }]);
+    const ended = cardRowView({ phase: 'ended', text: 'No longer listed as active' }, { settled: true });
+    assert.deepEqual([ended.tone, markView(ended)], ['ended', { shape: 'ring', hue: 'ink' }]);
+    const unknown = cardRowView(desiredLiveCardPhase({}), {});
+    assert.deepEqual([unknown.tone, markView(unknown)], ['unknown', { shape: 'ring', hue: 'ink' }]);
     assert.deepEqual(cardRowView({ phase: 'error', text: 'Failed', secondary: 'Finalizing…' }),
-        { word: 'Failed', secondary: 'Finalizing…', tone: 'failed', amber: false, focus: '' });
+        { word: 'Failed', secondary: 'Finalizing…', tone: 'failed', mark: 'none', owner: false, outcome: 'error', focus: '' });
 });
 
 test('a work\'s row goes to its current episode\'s card, else another shown episode card; never a helper\'s', () => {
@@ -77,7 +89,7 @@ test('the mounted list holds its order while open, settles ended work and only n
         const badge = doc.createElement('span');
         badge.className = 'status-badge thinking';
         badge.textContent = 'Working';
-        Object.assign(badge.dataset, { tone: 'live', dots: 'moving' });  // what setStatus writes from the producer
+        Object.assign(badge.dataset, { tone: 'live', mark: 'moving', owner: '', amber: '' });  // what setStatus writes
         group.appendChild(badge);
         const messages = node('chat-messages', page);
         let works = [running('t-run')];
@@ -107,12 +119,16 @@ test('the mounted list holds its order while open, settles ended work and only n
         works = [running('t-run'), asking('t-ask', 'q-ask')];
         shade.update();
         assert.deepEqual(ids(), ['t-run', 't-ask']);
+        // Each row's one mark: moving work in its word's ink, the owner's amber dot where the question waits.
+        assert.deepEqual([markOf(list.children[0]), markOf(list.children[1])], [['moving', 'ink'], ['dot', 'owner']]);
         // Work that ends while open keeps its row, says so, and offers nothing.
         works = [asking('t-ask', 'q-ask')];
         shade.update();
         const ended = list.children[0];
         assert.equal(ended.dataset.settled, '1');
         assert.equal(ended.dataset.tone, 'ended');
+        assert.deepEqual(markOf(ended), ['ring', 'ink'], 'its outcome is not known here: a ring');
+        assert.equal(ended.querySelectorAll('.status-mark').length, 1, 'one mark node, repainted in place');
         assert.equal(ended.children.find((child) => child.classList.contains('rw-more-slot')).children.length, 0);
         // View question goes to the exact waited question, closes the list and posts nothing.
         const verb = list.children[1].children.find((child) => child.classList.contains('rw-verb'));
@@ -153,7 +169,7 @@ test('View question reaches the asking task of a work, not its first root', asyn
         const titleRow = node('div', 'app-page-title-row', node('div', 'app-page-title-block', header));
         const group = node('div', 'app-page-actions ui-chrome-group', header);
         const badge = node('span', 'status-badge online', group);
-        Object.assign(badge.dataset, { tone: 'wait', dots: 'one' });
+        Object.assign(badge.dataset, { tone: 'wait', mark: 'still', owner: '1', amber: '' });
         const messages = node('div', 'chat-messages', page);
         const reveals = [];
         const asked = (taskId) => ({ ...asking('w-first', 'q-next'), episode: { task_id: 'c-next', live: true },
@@ -302,7 +318,7 @@ test('a row names its card\'s coined name first, then its work\'s own name; a ho
     } finally { shade?.destroy(); restoreDom(prior); }
 });
 
-test('the one mark after the word turns amber for the owner\'s question beside any other word; the control paints the producer\'s tone', () => {
+test('the one mark after the word is the room\'s shape, the owner\'s amber dot in its place, Online\'s own dot at rest', () => {
     const { prior, mount } = installDom(async () => ({ ok: true, json: async () => ({}) }));
     let work;
     try {
@@ -320,36 +336,50 @@ test('the one mark after the word turns amber for the owner\'s question beside a
             ws: { isConnected: () => true }, reading: { cancel() {}, scroll() {} },
             works: () => workState(works, room('queued')), liveCardRecords: new Map(), pendingSubmissions: new Map() });
         const trigger = titleRow.children.find(el => el.classList.contains('rw-trigger'));
-        // The word leads; its one mark (three dots or one) follows it, and nothing else is a dot.
-        const order = trigger.children.map(el => el.className.split(' ').find(c => /^(status-badge|rw-mark|rw-dots|rw-caret)$/.test(c)))
+        // The word leads; its one mark follows it, then the caret, and nothing else is a mark.
+        const order = trigger.children.map(el => el.className.split(' ').find(c => /^(status-badge|status-mark|rw-caret)$/.test(c)))
             .filter(Boolean);
-        assert.deepEqual(order, ['status-badge', 'rw-mark', 'rw-dots', 'rw-caret']);
-        assert.equal(trigger.children.some(el => el.classList.contains('rw-amber')), false);
+        assert.deepEqual(order, ['status-badge', 'status-mark', 'rw-caret']);
+        const mark = trigger.children.find(el => el.classList.contains('status-mark'));
+        assert.equal(mark.getAttribute('aria-hidden'), 'true', 'the mark is drawn; the word and the note say it');
         const waitNote = trigger.children.find(el => el.classList.contains('rw-sr'));
-        // The producer (work_status.roomStatusView via setStatus) writes the word, tone, mark and amber together.
-        const paint = (text, tone, dots, amber = '') => {
-            badge.textContent = text;
-            Object.assign(badge.dataset, { tone, dots, amber });
+        // The producer (work_status.roomStatusView) hands its view through setStatus: word, tone, mark and the
+        // owner's move together, as chat.js writes them.
+        const paint = (view) => {
+            badge.textContent = view.text;
+            Object.assign(badge.dataset, { tone: view.tone, mark: view.mark, owner: view.owner ? '1' : '', amber: view.amber });
             work.update();
-            return [trigger.dataset.tone, trigger.dataset.wait !== '1'];
+            return [trigger.dataset.tone, mark.hidden ? 'hidden' : mark.dataset.shape, mark.dataset.hue,
+                waitNote.hidden ? '' : waitNote.textContent];
         };
+        const inRoom = (activity, extra = {}) => ({ ...emptyWorkState(), room: room(activity, extra) });
+        const question = { turn: [{ kind: 'question', task_id: 't-ask', quiz_id: 'q-1' }] };
+        const action = { turn: [{ kind: 'action', task_id: 't-q' }] };
         // Before the producer's first answer (no tone on the badge) the control never claims Online.
         work.update();
-        assert.equal(trigger.dataset.tone, 'offline');
-        // Queued speaks in the word; the question still turns the mark amber, said in words too.
-        assert.deepEqual(paint('Queued', 'queued', 'still', 'question'), ['queued', false]);
-        assert.equal(waitNote.hidden, false);
-        assert.equal(waitNote.textContent, 'A question waits for your answer');
-        assert.deepEqual(paint('Working', 'live', 'moving', 'question'), ['live', false]);
-        // An action only the owner takes (a spending limit, a sign-in) is amber too; a Pause by him is not.
-        assert.deepEqual(paint('Paused', 'held', 'one', 'action'), ['held', false]);
-        assert.equal(waitNote.textContent, 'Something here waits for you');
-        assert.deepEqual(paint('Paused', 'held', 'one'), ['held', true]);
-        // The word already says it: the mark keeps the word's own tone.
-        assert.deepEqual(paint('Waiting for your answer', 'wait', 'one', 'question'), ['wait', true]);
-        // Without the server's amber there is none, whatever the word or the rows.
-        assert.deepEqual(paint('Queued', 'queued', 'still'), ['queued', true]);
-        assert.equal(waitNote.hidden, true);
+        assert.deepEqual([trigger.dataset.tone, mark.hidden], ['offline', true]);
+        // The work's shape in the word's ink: it moves, holds still, stands paused, is unconfirmed.
+        assert.deepEqual(paint(roomStatusView(inRoom('working'))), ['live', 'moving', 'ink', '']);
+        assert.deepEqual(paint(roomStatusView(inRoom('queued'))), ['queued', 'still', 'ink', '']);
+        assert.deepEqual(paint(roomStatusView(inRoom('waiting'))), ['held', 'still', 'ink', '']);
+        assert.deepEqual(paint(roomStatusView(inRoom('paused'))), ['held', 'pause', 'ink', ''], 'a Pause is not the owner\'s move');
+        assert.deepEqual(paint(roomStatusView(inRoom('unknown'))), ['unknown', 'ring', 'ink', '']);
+        // Something waits for the owner: the amber dot takes the mark's place beside any word, said in words too.
+        assert.deepEqual(paint(roomStatusView(inRoom('working', question))),
+            ['live', 'dot', 'owner', 'A question waits for your answer'], 'Working keeps its word and ink');
+        assert.deepEqual(paint(roomStatusView(inRoom('queued', question))), ['queued', 'dot', 'owner', 'A question waits for your answer']);
+        assert.deepEqual(paint(roomStatusView(inRoom('paused', action))), ['held', 'dot', 'owner', 'Something here waits for you']);
+        // The word already says it: the amber dot beside the amber word, and no note repeats it.
+        assert.deepEqual(paint(roomStatusView(inRoom('waiting', question))), ['wait', 'dot', 'owner', '']);
+        // At rest the room says Online beside its green dot; the client's own facts lay their marks over the room.
+        assert.deepEqual(paint(roomStatusView(emptyWorkState())), ['online', 'dot', 'ok', '']);
+        assert.deepEqual(paint(roomStatusView(inRoom('working', question), { connected: false })), ['offline', 'ring', 'ink', '']);
+        assert.deepEqual(paint(roomStatusView(emptyWorkState(), { ready: false })), ['starting', 'hidden', 'ink', '']);
+        assert.deepEqual(paint(roomStatusView(emptyWorkState(), { sending: true })), ['live', 'moving', 'ink', '']);
+        assert.deepEqual(paint(roomStatusView(inRoom('working'), { stopping: 'finalize' })), ['live', 'moving', 'ink', '']);
+        // One mark node throughout, repainted in place.
+        assert.equal(trigger.children.filter(el => el.classList.contains('status-mark')).length, 1);
+        assert.equal(trigger.children.find(el => el.classList.contains('status-mark')), mark);
     } finally { work?.destroy(); restoreDom(prior); }
 });
 

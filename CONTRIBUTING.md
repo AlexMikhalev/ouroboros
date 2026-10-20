@@ -37,7 +37,9 @@ When in doubt whether a section is relevant, read it. Reading everything in
 full remains the strongest preparation for a large or cross-cutting change.
 
 Reuse the modules, contracts, and authorities those documents name. Do not
-invent a parallel mechanism when the repository already has one. A useful
+invent a parallel mechanism when the repository already has one. A new
+feature usually belongs in a skill: read DEVELOPMENT "Capability placement";
+a pull request that opens a seam ships its first consumer. A useful
 first instruction for a coding agent is:
 
 > Read CONTRIBUTING.md and docs/CHECKLISTS.md in full. Map BIBLE.md,

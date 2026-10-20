@@ -848,6 +848,10 @@ class PluginAPIImpl:
                     live[key] = value
                     bundle_keys.append(key)
             bundle.module_sources.update(staged.module_sources)
+            if staged.contributions is not None:
+                bundle.contributions = staged.contributions
+                bundle.contribution_problems = staged.contribution_problems
+                bundle.host_sources = staged.host_sources
             bundle.unload_callbacks.extend(staged.unload_callbacks)
             # Recorded on the bundle BEFORE the attach below so a mid-attach
             # failure's unload reaps every effect (unsubscribing a

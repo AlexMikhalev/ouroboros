@@ -80,9 +80,10 @@ try {
         instance.hydrateStateSnapshot({...body, active_chat_activities_complete: true, supervisor_ready: true},
             Infinity, generation + 1);
         const card = walkCard(document.byId.get('chat-messages'), task);
+        const mark = card.querySelector('[data-live-phase]').firstElementChild;
         return {phase: card.querySelector('[data-live-phase]').textContent,
             resume: Boolean(find(card, '[data-resume-run]')),
-            typing: card.querySelector('[data-live-typing]').style.display};
+            mark: mark.hidden ? 'none' : `${mark.dataset.shape}/${mark.dataset.hue}`};
     });
     process.stdout.write(JSON.stringify(results));
 } finally {instance.destroy(); restoreDom(env.prior);}
@@ -139,11 +140,12 @@ def test_warm_owner_pause_registry_and_fence_reach_the_rendered_card(tmp_path, m
     finally:
         registry.clear()
     # The card of the work's current episode says the work's word and who paused; Resume is its work's control.
+    # Its status mark is the server's: the owner's own Pause stands as its bars in ink, never the owner's move.
     assert _js_pause_cards(samples) == [
-        {"phase": "Paused · by you · review work finishing", "resume": True, "typing": "none"},
-        {"phase": "Paused · by you", "resume": True, "typing": "none"},
+        {"phase": "Paused · by you · review work finishing", "resume": True, "mark": "pause/ink"},
+        {"phase": "Paused · by you", "resume": True, "mark": "pause/ink"},
         # A resumed direct turn reads its own census phase (``preparing``), a managed task ``working``.
-        {"phase": "Preparing" if kind == "direct_chat" else "Working", "resume": False, "typing": ""},
+        {"phase": "Preparing" if kind == "direct_chat" else "Working", "resume": False, "mark": "moving/ink"},
     ]
 
 
@@ -271,16 +273,16 @@ def test_direct_project_model_wait_census_reaches_js_and_resumes(
         assert wait_row["state"] == "waiting"
         assert wait_row["reason"] == wait_reason
         assert wait_row["task_attempt"] == 2
-        # The room waits on the model: one dot, its reason beside the word, and amber only when the owner has to act.
+        # The room waits on the model: still dots, its reason beside the word, and amber only when the owner has to act.
         work = next(item for item in waiting_body["works"] if item["episode"]["task_id"] == task["id"])
         owner_acts = wait_row["requires_owner_action"] is True
         if wait_reason == "auth":
             assert owner_acts, "a sign-in is the owner's to do"
         assert work["because"][0]["code"] == ("model_access" if owner_acts else "model_wait")
+        note = "Something here waits for you" if owner_acts else ""
         assert _js_project_summary(waiting_body, task["chat_id"]) == {
-            "state": "dot", "motion": False, "amber": owner_acts, "word": "Waiting",
-            "label": " · ".join(["Waiting", work["because"][0]["text"],
-                                 *(["Something here waits for you"] if owner_acts else [])]),
+            "mark": "still", "owner": owner_acts, "word": "Waiting", "note": note,
+            "label": " · ".join(filter(None, ["Waiting", work["because"][0]["text"], note])),
         }
 
         catalog.available = True
@@ -294,7 +296,7 @@ def test_direct_project_model_wait_census_reaches_js_and_resumes(
         assert resumed_activity["task_attempt"] == 2
         assert list(resumed_activity["model_waits"].values())[0]["state"] == "resolved"
         resumed_summary = _js_project_summary(resumed_body, task["chat_id"])
-        assert (resumed_summary["state"], resumed_summary["motion"], resumed_summary["amber"]) == ("working", True, False)
+        assert (resumed_summary["mark"], resumed_summary["owner"]) == ("moving", False)
     finally:
         catalog.available = True
         keep_owner_open.set()

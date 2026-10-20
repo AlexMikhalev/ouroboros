@@ -96,7 +96,7 @@ def test_ordinary_matrix_requires_admitted_manual_or_tag_event(event, ref, base,
     if admitted:
         actual += [row["os"] for row in job["strategy"]["matrix"]["include"]]
     assert sorted(set(actual)) == sorted(platforms)
-    assert actual.count("windows-latest") == (4 if "windows-latest" in platforms else 0)
+    assert actual.count("windows-latest") == (8 if "windows-latest" in platforms else 0)
     assert all(actual.count(os) == 1 for os in platforms if os != "windows-latest")
     assert job["strategy"]["fail-fast"] is False
     assert job["runs-on"] == "$" + "{{ matrix.os }}"

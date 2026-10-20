@@ -340,6 +340,47 @@ def test_finalize_on_miss_delivers_the_unreviewed_salvage(qenv, monkeypatch):
     assert row["task_id"] == "miss-del"
     assert (row["outcome"], row["settled_status"]) == ("stopped", "cancelled")
 
+@pytest.mark.parametrize("fence", [False, True], ids=["owner_stop", "restore_fence"])
+@pytest.mark.parametrize("lane", ["miss", "kill"])
+def test_a_restore_fence_notice_names_why_the_task_stopped(qenv, monkeypatch, fence, lane):
+    """19.10.2026: an update's restore cancelled running work and the owner read only "Task …
+    was stopped." under his own quoted message, as if someone had pressed Stop. A fence the
+    snapshot restore minted states its cause with the card's own phrase; any other stop keeps
+    the plain word. The owed row and the enqueued message carry the same text."""
+    from supervisor import terminal_delivery as td
+    from supervisor.cancel_publication import CANCEL_SOURCE_PHRASES
+    from tests._cancel_intents_shared import _LiveProc
+
+    enqueued: list = []
+    monkeypatch.setattr(td, "enqueue_terminal_delivery", lambda _drive, event, **_kw: enqueued.append(event))
+    monkeypatch.setattr(qenv.q, "_emit_cancel_task_done", lambda *_a, **_kw: None)
+    write_task_result(qenv.drive, "miss-fence", STATUS_RUNNING, result="was working", chat_id=6)
+    proc = None
+    if lane == "kill":
+        proc = _LiveProc()
+        qenv.workers.WORKERS[0] = types.SimpleNamespace(
+            wid=0, proc=proc, busy_task_id="miss-fence", reaping=False)
+        qenv.q.RUNNING["miss-fence"] = {"task": {"id": "miss-fence", "chat_id": 6}, "worker_id": 0}
+    if fence:
+        ci.request_cancel(qenv.drive, "miss-fence", reason="server_shutdown", source="snapshot_restore")
+    else:
+        ci.request_cancel(qenv.drive, "miss-fence", reason="stop")
+    try:
+        assert qenv.tl.cancel_task_custody("miss-fence") == qenv.tl.CANCEL_CANCELLED
+        if proc:
+            assert not proc.is_alive()
+    finally:
+        if proc:
+            proc.terminate()
+    head = ("⚠️ Task miss-fence was stopped. " + CANCEL_SOURCE_PHRASES["snapshot_restore"] + "."
+            if fence else "⚠️ Task miss-fence was stopped.")
+    (owed,) = [row for row in td.pending_deliveries(qenv.drive) if row.get("task_id") == "miss-fence"]
+    assert owed["text"].startswith(head + "\n\n(no salvageable agent output was found for this task)"), owed["text"]
+    assert [event["text"] for event in enqueued] == [owed["text"]]
+    assert [event["delivery_id"] for event in enqueued] == [owed["delivery_id"]]
+    assert load_task_result(qenv.drive, "miss-fence")["cancel_receipt"]["settled_status"] == "cancelled"
+
+
 def test_finalize_on_miss_completion_wins_delivers_the_completed_result(qenv, monkeypatch):
     """AR2-5b: the completion-wins branch of the miss lane delivers the KEPT
     answer through the normal deduped seam — owed BEFORE enqueued."""

@@ -20,6 +20,7 @@ from pathlib import Path
 import pytest
 
 from tests.test_ui_smoke_playwright import direct_server_with_data  # noqa: F401 - pytest fixture
+from tests.ui_chat_viewport_smoke import wait_drawer_closed
 
 pytestmark = [pytest.mark.ui_browser, pytest.mark.serial]
 
@@ -175,7 +176,7 @@ def test_notes_reach_main_activity_and_the_live_banner(direct_server_with_data, 
             schedules.scroll_into_view_if_needed()
             page.screenshot(path=str(evidence / "activity-desktop.png"), full_page=True)
             page.set_viewport_size({"width": 390, "height": 844})
-            page.wait_for_function("() => document.querySelector('#primary-sidebar').getBoundingClientRect().right <= 1")
+            wait_drawer_closed(page)
             page.evaluate(SETTLED)
             assert waiting.locator(".activity-sub").evaluate("node => node.scrollWidth <= node.clientWidth + 1")
             page.screenshot(path=str(evidence / "activity-narrow.png"), full_page=True)

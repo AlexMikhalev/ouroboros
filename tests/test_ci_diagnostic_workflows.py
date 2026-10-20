@@ -261,7 +261,7 @@ def test_manual_ui_selection_is_fixed_partial_and_never_a_paid_or_full_check():
     assert list(shared["jobs"]) == UI_JOBS
     assert [shared["jobs"][name].get("if") for name in UI_JOBS] == [None, FULL_LANE, FULL_LANE, "${{ !cancelled() }}"]
     assert [shared["jobs"][name]["name"] for name in UI_JOBS] == [
-        "ui-scope", "ui-shard (${{ matrix.shard }}/4)", "ui-manifest", "ui-smoke"]
+        "ui-scope", "ui-shard (${{ matrix.shard }}/8)", "ui-manifest", "ui-smoke"]
     assert "with" not in _workflow("ci.yml")["jobs"]["ui-smoke"]
     shard, diagnostic = _steps("ui-browser.yml", "ui-shard"), _steps(*PARTIAL)
     full, partial = shard["ui_tests"], diagnostic["ui_diagnostic"]
@@ -334,7 +334,7 @@ def test_ui_producers_have_distinct_reports_and_only_the_public_parent_is_upload
     assert "ci-evidence/ui/host" in shard["ui_summary"]["run"]
     assert "ci-evidence/ui/host" in diagnostic["ui_summary"]["run"]
     assert "ci-evidence/ui/tools" in shard["tools_summary"]["run"]
-    assert '--label "shard ${{ matrix.shard }}/4"' in shard["ui_summary"]["run"]
+    assert '--label "shard ${{ matrix.shard }}/8"' in shard["ui_summary"]["run"]
     annotate = shard["ui_annotations"]["run"]
     assert "python -I -S tests/ci_evidence.py annotate" in annotate
     assert "ci-evidence/ui/host" in annotate and "ci-evidence/ui/tools" in annotate
@@ -346,8 +346,8 @@ def _run_shell(step, tmp_path, *, diagnostic="viewport", result=0, scope="all"):
         pytest.skip("workflow shell unavailable on this host")
     args = tmp_path / "args"
     command = step["run"].replace("${{ runner.temp }}", str(tmp_path)).replace("${{ matrix.shard }}", "2")
-    command = command.replace("${{ runner.os == 'Windows' && format('--default-suite-shard={0}/4', matrix.shard) || '' }}",
-                              "--default-suite-shard=2/4")
+    command = command.replace("${{ runner.os == 'Windows' && format('--default-suite-shard={0}/8', matrix.shard) || '' }}",
+                              "--default-suite-shard=2/8")
     stub = 'python() { printf "%s\\n" "$@" > "$ARGV_FILE"; return "$PRODUCER_EXIT"; }\n'
     env = {**os.environ, "ARGV_FILE": str(args), "PRODUCER_EXIT": str(result),
            "DIAGNOSTIC": diagnostic, "SCOPE": scope}
@@ -528,11 +528,11 @@ def test_every_added_outcome_reference_names_an_already_declared_step():
 
 
 @pytest.mark.serial
-def test_full_lane_runs_as_four_guarded_shards_under_step_ceilings(tmp_path):
+def test_full_lane_runs_as_eight_guarded_shards_under_step_ceilings(tmp_path):
     job = _workflow("ui-browser.yml")["jobs"]["ui-shard"]
     steps = _steps("ui-browser.yml", "ui-shard")
     assert job["needs"] == "scope" and job["if"] == FULL_LANE
-    assert job["strategy"] == {"fail-fast": False, "matrix": {"shard": [1, 2, 3, 4]}}
+    assert job["strategy"] == {"fail-fast": False, "matrix": {"shard": list(range(1, 9))}}
     install, lane, tools = steps["install_browsers"], steps["ui_tests"], steps["browser_tools"]
     # Every producer step has its own ceiling, and their sum stays under the job's: a step
     # ceiling fails the step and leaves the evidence steps running, the job ceiling cancels them.
@@ -544,11 +544,11 @@ def test_full_lane_runs_as_four_guarded_shards_under_step_ceilings(tmp_path):
     completed, args = _run_shell(lane, tmp_path)
     assert completed.returncode == 0, completed.stderr
     assert args[args.index("pytest") + 1:][:4] == ["tests/", "-m", "ui_browser", "--require-ui-browser"]
-    assert "--ui-browser-shard=2/4" in args and "--session-timeout=4500" in args
+    assert "--ui-browser-shard=2/8" in args and "--session-timeout=4500" in args
     # The session budget is cooperative; nothing kills a test mid-flight or narrows the lane.
     assert not any(arg.startswith(("--timeout", "-k", "--deselect", "--ignore", "--lf", "-x", "-n"))
                    for arg in args)
-    assert "--ui-browser-shard=${{ matrix.shard }}/4" in lane["run"]
+    assert "--ui-browser-shard=${{ matrix.shard }}/8" in lane["run"]
     # Browser tools keep their manual/tag condition, independent of the host lane's outcome, on one shard.
     assert "matrix.shard == 1" in tools["if"] and "steps.ui_tests" not in tools["if"]
     assert "github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')" in tools["if"]
@@ -765,7 +765,7 @@ def test_real_reconciler_fails_the_aggregator_step_when_no_shard_reported(tmp_pa
         capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60)
     assert completed.returncode == 1, completed.stdout + completed.stderr
     assert "manifest: no valid projection of the unsharded lane" in completed.stdout
-    assert all(f"shard {index}/4: no proof" in completed.stdout for index in (1, 2, 3, 4))
+    assert all(f"shard {index}/8: no proof" in completed.stdout for index in range(1, 9))
     assert "INCOMPLETE" in summary.read_text(encoding="utf-8")
 
 
@@ -806,7 +806,7 @@ def test_pull_requests_run_the_selected_scope_on_windows_and_macos():
     assert "pull_request" in job["if"] and job["strategy"]["matrix"]["os"] == ["windows-latest", "macos-latest"]
     producer = _steps("ci.yml", "pr-selected-os")["tests_selected"]
     assert "scripts/run_tests.py --selected --base ${{ github.event.pull_request.base.sha }} --sequential" in producer["run"]
-    # Unsharded Windows cannot finish a full escalation in its ceiling; its four landed shards run it.
+    # Unsharded Windows cannot finish a full escalation in its ceiling; its eight landed shards run it.
     assert producer["run"].endswith("${{ runner.os == 'Windows' && '--defer-full' || '' }}")
     evidence = next(step for step in job["steps"] if step.get("uses") == EVIDENCE_ACTION)
     # A step killed before run_tests.py writes its outputs still reports through its own outcome.

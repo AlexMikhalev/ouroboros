@@ -934,8 +934,10 @@ export function createComposerOwnerControls({ row, byId, apiFetch, saveEffortRan
     // values. If long translated values still wrap, cap the widest with an ellipsis; accessible
     // names and open strips keep full words. The closed names never flicker between fits.
     const shownKids = () => Array.from(row.children || []).filter((kid) => widthOf(kid) > 0);
+    // A phone's ☰ leads the line and never wraps, so it is not what the line is read by: while the row folds it goes
+    // down beside the field (composer_fold.js) and the line it left still holds the capsules.
     function wraps() {
-        const kids = shownKids();
+        const kids = shownKids().filter((kid) => !kid.classList?.contains?.('composer-menu'));
         const first = kids[0]?.getBoundingClientRect?.();
         return Boolean(first) && kids.some((kid) => kid.getBoundingClientRect().top >= first.bottom);
     }

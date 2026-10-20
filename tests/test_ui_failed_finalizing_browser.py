@@ -42,8 +42,10 @@ STATE_JS = """tid => {
     const chip = card.querySelector('[data-live-phase]');
     const second = card.querySelector('[data-live-phase-secondary]');
     const style = el => el ? getComputedStyle(el) : null;
+    const mark = chip.querySelector(':scope > .status-mark');
     return {count: cards.length, finished: card.dataset.finished, phase: chip.dataset.phase,
             chip: chip.textContent, chipHidden: chip.hidden, label: chip.getAttribute('aria-label'),
+            mark: mark ? `${mark.dataset.shape}/${mark.dataset.hue}` : '', tone: chip.dataset.chipTone,
             secondary: second.textContent, secondaryHidden: second.hidden,
             title: card.querySelector('[data-live-title]')?.textContent || '',
             theme: document.documentElement.dataset.theme || '',
@@ -150,6 +152,8 @@ def _holding(page, task_id, stage):
     # Outcome owns the chip; the running finalization is only the secondary fact.
     assert state["count"] == 1 and state["finished"] == "0", (stage, state)
     assert state["chip"] == "Failed" and not state["chipHidden"], (stage, state)
+    # The outcome keeps its failed dot in its red body; the running finalization moves nothing beside it.
+    assert (state["mark"], state["tone"]) == ("dot/failed", "failed"), (stage, state)
     assert state["label"] == "Task status: Failed, Finalizing…", (stage, state)
     # The name stays the task's own; the outcome is never smuggled into it.
     assert state["title"] == TITLE, (stage, state)

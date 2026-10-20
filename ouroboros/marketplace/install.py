@@ -31,7 +31,7 @@ from ouroboros.marketplace.fetcher import (
     stage as _stage_archive,
 )
 from ouroboros.marketplace.install_specs import install_specs_hash
-from ouroboros.marketplace.isolated_deps import DEPS_STATE_FILENAME, install_isolated_dependencies, read_deps_state
+from ouroboros.marketplace.isolated_deps import DEPS_STATE_FILENAME, read_deps_state
 from ouroboros.marketplace.provenance import (
     delete_provenance,
     read_provenance,
@@ -41,6 +41,15 @@ from ouroboros.skill_review_status import skill_review_gate
 from ouroboros.utils import atomic_write_json, read_json_dict
 
 log = logging.getLogger(__name__)
+
+
+def _load_clawhub_payload(skill_dir: pathlib.Path, drive_root: pathlib.Path):
+    """Load this registry target, with the source tag normally supplied by discovery."""
+    from ouroboros.skill_loader import load_skill
+    skill = load_skill(skill_dir, drive_root)
+    if skill is not None:
+        skill.source = skill.location = "clawhub"
+    return skill
 
 
 def _registry_error_status(exc: Exception) -> int:
@@ -554,16 +563,17 @@ def install_skill(
             and str(deps_state.get("specs_hash") or "") == install_specs_hash(auto_specs)
             and existing_provenance is not None
         ):
-            _progress("Already installed with current dependencies…")
-            _write_deps_state(drive_root, adapter_result.sanitized_name, deps_state)
+            from ouroboros.skill_dependencies import ensure_skill_dependencies
+            status, error = ensure_skill_dependencies(drive_root, _load_clawhub_payload(target_dir, drive_root), progress=_progress)
+            _progress("Already installed with current packages…" if status == "installed" else "Package setup incomplete")
             staged.cleanup()
             return InstallResult(
-                ok=True,
+                ok=status == "installed", error=error,
                 sanitized_name=adapter_result.sanitized_name,
                 target_dir=target_dir,
                 **package,
                 review_status="",
-                deps_status="installed",
+                deps_status=status,
                 deps_fingerprint=deps_state,
                 provenance=existing_provenance,
             )
@@ -631,13 +641,12 @@ def install_skill(
     # Seed grants.json for core settings so the owner-grant bridge has one file.
     try:
         from ouroboros.skill_loader import (
-            load_skill,
             requested_core_setting_keys,
             save_skill_grants,
         )
         # Load the payload that just landed. Global discovery would also load
         # unrelated same-name checkouts and create their lifecycle state.
-        installed_skill = load_skill(target_dir, drive_root)
+        installed_skill = _load_clawhub_payload(target_dir, drive_root)
         if installed_skill is not None:
             requested = requested_core_setting_keys(
                 list(installed_skill.manifest.env_from_settings or [])
@@ -665,23 +674,23 @@ def install_skill(
             drive_root, repo_dir, adapter_result.sanitized_name
         )
     if auto_specs:
+        from ouroboros.skill_dependencies import ensure_skill_dependencies
+
+        # A trusted/owner-skipped registry landing still owes accept_and_turn_on's preflight.
+        # Only this call's successful review permits preparing packages before that acceptance step.
         deps_status = "pending_review"
-        if skill_review_gate(review_status)["executable_review"] and not review_error:
-            _progress("Installing dependencies…")
-            try:
-                deps_fingerprint = install_isolated_dependencies(
-                    drive_root,
-                    adapter_result.sanitized_name,
-                    target_dir,
-                    auto_specs,
-                )
-                deps_status = "installed"
+        reviewed = (_load_clawhub_payload(target_dir, drive_root)
+                    if skill_review_gate(review_status)["executable_review"] and not review_error else None)
+        if reviewed is not None and not reviewed.load_error:
+            deps_status, deps_error = ensure_skill_dependencies(drive_root, reviewed, progress=_progress)
+            if deps_status == "not_admitted":
+                deps_status = "pending_review"
+            elif deps_status == "installed":
+                deps_fingerprint = read_deps_state(drive_root, adapter_result.sanitized_name)
                 provenance["dependency_fingerprint"] = deps_fingerprint
                 write_provenance(drive_root, adapter_result.sanitized_name, provenance)
-            except Exception as exc:
-                log.exception("isolated dependency install failed for %s", adapter_result.sanitized_name)
-                deps_status = "failed"
-                deps_error = f"{type(exc).__name__}: {exc}"
+            elif deps_status == "failed":
+                log.error("isolated dependency install failed for %s: %s", adapter_result.sanitized_name, deps_error)
                 restore()
     if deps_status != "failed" and not landed_record.get("pending_update"):
         if retain_update:

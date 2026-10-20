@@ -172,6 +172,9 @@ test('a running count shows its progress sentence, Stop and the measure action b
     const first = renderStorage(response({ counting: counting() }), { now: NOW });
     assert.match(first.summary, /Not counted yet/);
     assert.match(first.summary, /Measuring Agent engine · projects · 182 GB so far · 2 of 12 places\. You can leave this tab\./);
+    // The work that runs now is the shared moving mark in the line's ink (web/modules/status_mark.js).
+    assert.match(first.summary, /<p class="storage-progress"[^>]*><span class="status-mark" aria-hidden="true" data-shape="moving" data-hue="ink"><i><\/i><i><\/i><i><\/i><\/span><span>Measuring/);
+    assert.doesNotMatch(first.summary, /chat-live-typing/);
     assert.match(first.summary, /storage-first-count[\s\S]*Model call records[\s\S]*156 GB/);
     assert.deepEqual(first.measure, { label: 'Measuring…', busy: true });
     assert.equal(first.stop, true);

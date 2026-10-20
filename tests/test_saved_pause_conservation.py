@@ -13,6 +13,7 @@ from ouroboros import budget_pause, store, task_results
 from ouroboros.artifacts import read_actor_source_bytes
 from supervisor import queue_snapshot
 from tests._budget_pause_exact_helpers import _install_queue, _pause
+from tests._store_journal_shared import exclusive_hold
 from tests._store_shared import unreadable_result
 from tests.test_owner_wait_restart import restart_case  # noqa: F401
 
@@ -51,9 +52,8 @@ def _result_gap(root, monkeypatch, kind, *, task_id="saved"):
                         return original(drive, tid, **kwargs)
                     temporary_root = Path(os.environ.get("OUROBOROS_TEST_TEMP_ROOT") or tempfile.gettempdir())
                     assert root.resolve().is_relative_to(temporary_root.resolve())
-                    conn = store.connect(store.store_path(root), store.TIER_ENFORCED)
+                    conn = exclusive_hold(store.store_path(root))  # under WAL too, the read is busy
                     try:
-                        conn.execute("BEGIN EXCLUSIVE")
                         with store.acquisition_budget(0):
                             return original(drive, tid, **kwargs)
                     except store.StoreBusy as exc:

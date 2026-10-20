@@ -40,6 +40,7 @@
  * @property {Object} accounting  // physical-attempt ledger projection
  * @property {Array<ProjectEntry>} projects  // active/deleting sidebar projection
  * @property {Array<number>} project_chat_ids  // complete (uncapped) project chat_ids — WS fan-out isolation SSOT (v6.32.0)
+ * @property {?number=} main_visible_revision  // Main's room revision (its standalone messages, as a Project's visible_revision counts); null while unreadable
  * @property {Object<string, {project_id: string, chat_id: number, origin_bound?: boolean}>} task_bindings  // bound task -> its project: suppress the stray "turn into project" button (v6.33.0 P2) + render a pointer that opens the project panel (v6.33.0 F4). origin_bound marks a task the host included because its OWNER MESSAGE already has a project (#902), so one message cannot keep a second convertible card
  * @property {ActiveDirectTurn[]=} active_direct_turns  // active direct/ephemeral chat turns snapshot
  * @property {boolean=} active_chat_activities_complete
@@ -924,6 +925,7 @@
  * @property {number} span
  * @property {number} grid_span
  * @property {string} revision
+ * @property {boolean=} pinned_card  // a kept living card (skill "_cards"); presses use the card: decision family
  */
 
 /**
@@ -972,6 +974,8 @@
  * @property {string=} error
  * @property {boolean=} ok  // attest only
  * @property {number=} status_code  // attest refusal only
+ * @property {boolean=} pending  // attest only: the job outlasted the answer bound; job_id and message name it
+ * @property {string=} message  // attest only, with pending
  * @property {string[]=} reviewer_models
  * @property {string=} review_profile
  * @property {Object[]=} findings
@@ -1011,13 +1015,19 @@
  */
 
 /**
- * `POST /api/skills/{skill}/grants`; a refusal answers `SkillActionRefusal`.
+ * `POST /api/skills/{skill}/grants`; refusals use `SkillActionRefusal`, slow setup {ok, pending: true, job_id, message}.
  * @typedef {Object} SkillGrantResponse
  * @property {boolean} ok
- * @property {string} skill
+ * @property {boolean=} pending
+ * @property {string=} job_id
+ * @property {string=} message
+ * @property {string=} skill
+ * @property {boolean=} enabled
  * @property {string=} content_hash
  * @property {string[]=} granted_keys
  * @property {string[]=} granted_permissions
+ * @property {string=} turn_on_when_ready
+ * @property {string=} setup_error
  * @property {string=} extension_action
  * @property {string=} extension_reason
  * @property {string=} load_error
@@ -1440,6 +1450,9 @@
  * `POST /api/skills/{skill}/delete`; a refusal carries only ok, error and status_code.
  * @typedef {Object} SkillDeleteResponse
  * @property {boolean} ok
+ * @property {boolean=} pending  // queued behind a long job past the answer bound: {ok, pending, job_id, message}
+ * @property {string=} job_id
+ * @property {string=} message
  * @property {string=} skill
  * @property {string=} source
  * @property {string=} content_hash
@@ -1451,6 +1464,8 @@
  */
 /**
  * @typedef {Object} UiPreferencesResponse
+ * @property {{stt:string,tts:string,tts_voice:string}} voice
+ * @property {{hidden:string[],order:string[]}} contributions
  * @property {string[]} widget_order
  * @property {Object.<string,'auto'|'manual'|'retain'>} widget_start_mode  // owner per-card launch-policy override, keyed "<skill>:<tab_id>"
  * @property {Object.<string,{w:number,h:number}>} widget_size  // owner Widgets card width: w masonry columns the card spans (12 = full width), h 0 (reserved)
@@ -1458,6 +1473,7 @@
  * @property {number} sidebar_width  // px; 0 = CSS default (v6.33.0)
  * @property {number} project_panel_width  // px; 0 = CSS default
  * @property {Object.<string,number>} project_seen_revision  // monotonic paint ACK
+ * @property {?number} main_seen_revision  // Main's monotonic paint ACK; null until a client first reads Main
  * @property {{mode:'default'|'hidden'|'custom',text:string}} welcome  // install-wide empty-Main UI copy, not chat history
  * @property {boolean=} ok
  */
@@ -1579,3 +1595,6 @@ export const MAX_DECISION_COMMENT = 2000;
 export const GATEWAY_CONTRACT_VERSION = '7.7.0';
 /** @typedef {import('./client_contract_types.js').ChatHistoryPosition} ChatHistoryPosition */
 /** @typedef {import('./client_contract_types.js').ChatHistoryResponse} ChatHistoryResponse */
+
+/** @typedef {import('./management_contract_types.js').UiContribution} UiContribution */
+/** @typedef {import('./management_contract_types.js').UiContributionsResponse} UiContributionsResponse */

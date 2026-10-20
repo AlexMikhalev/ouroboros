@@ -203,7 +203,7 @@ def test_settings_footer_controls_are_reachable_at_content_breakpoints(subscript
     for width in [640, 641, 760, 768, 980, 981]:
         page.set_viewport_size({"width": width, "height": 600})
         if width <= 640:
-            page.wait_for_function("document.querySelector('#primary-sidebar').getBoundingClientRect().right<=1")
+            setup_browser.wait_drawer_closed(page)
         for sidebar in [220, 280]:
             page.evaluate("value => document.documentElement.style.setProperty('--sidebar-width',value+'px')", sidebar)
             for name, message, busy, restart in states:
@@ -274,7 +274,7 @@ def test_short_sidebar_bounds_projects_list_and_cost_cards_keep_local_table_over
     for width in [390, 641, 768, 981]:
         page.set_viewport_size({"width": width, "height": 600})
         if width <= 640:
-            page.wait_for_function("document.querySelector('#primary-sidebar').getBoundingClientRect().right<=1")
+            setup_browser.wait_drawer_closed(page)
         for card in page.locator(".costs-stats-grid > .stat-card").all():
             card.scroll_into_view_if_needed()
             box = hit_box(card)
@@ -963,8 +963,8 @@ def test_quiz_dot_and_evolution_facts_keep_their_shape_in_narrow_columns(subscri
         column.append(decision.buildQuizCard({ type: 'quiz', task_id: 'dot', quiz_id: 'expired', state: 'expired_terminal',
             question: 'How broadly should the next step change the interface?', options: ['Keep scope', 'Broaden scope'] }));
     }""")
-    dot = page.locator('.chat-quiz-dot').bounding_box()
-    assert dot['width'] == pytest.approx(8, abs=0.5) and dot['height'] == pytest.approx(8, abs=0.5), dot
+    dot = page.locator('.chat-quiz-mark').bounding_box()  # the shared status mark's 7px fact dot
+    assert dot['width'] == pytest.approx(7, abs=0.5) and dot['height'] == pytest.approx(7, abs=0.5), dot
     page.locator('#page-chat [data-mobile-nav-toggle]').click()  # a phone keeps navigation behind its menu
     page.click('[data-nav-page="dashboard"]')
     page.locator('[data-dashboard-tab="evolution"]').click()

@@ -513,6 +513,28 @@ def _handle_send_links(evt: Dict[str, Any], ctx: Any) -> None:
         _log_error(ctx, "send_links_event_error", error=repr(e))
 
 
+def _handle_send_card(evt: Dict[str, Any], ctx: Any) -> None:
+    """Publish a stored card: its chat row, or a ``card_state`` update for a replaced body."""
+    from ouroboros.card_store import load_card, record_publication
+    from supervisor.card_delivery import send_card, send_card_state
+
+    try:
+        chat_id = _delivery_chat_id(evt, ctx)
+        record = load_card(ctx.DRIVE_ROOT, evt.get("card_id"))
+        if chat_id is None or record is None:
+            return
+        if evt.get("replace") is True:
+            send_card_state(ctx.bridge, record)
+            return
+        record = record_publication(ctx.DRIVE_ROOT, record["card_id"], chat_id) or record
+        ok, err = send_card(ctx.bridge, record, chat_id, task_id=str(evt.get("task_id") or ""),
+                            interactive=evt.get("interactive") is True)
+        if not ok:
+            _log_error(ctx, "send_card_error", chat_id=chat_id, error=err)
+    except Exception as e:
+        _log_error(ctx, "send_card_event_error", error=repr(e))
+
+
 def _handle_send_quiz(evt: Dict[str, Any], ctx: Any) -> None:
     """Attempt the canonical publication debt with its persisted retry clock."""
     from ouroboros.owner_quiz import claim_quiz_delivery, quiz_states, record_quiz_delivery_failure
@@ -637,6 +659,7 @@ EVENT_HANDLERS = {
     "send_video": _handle_send_video,
     "send_document": _handle_send_document,
     "send_links": _handle_send_links,
+    "send_card": _handle_send_card,
     "send_quiz": _handle_send_quiz,
     "send_quiz_state": _handle_send_quiz_state,
 }

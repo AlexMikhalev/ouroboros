@@ -14,15 +14,26 @@ Enforcement: CHECKLISTS items 11(g) and 13 (`tool_registration`); `tests/test_to
 
 ### Skill repair and payload lanes
 
-- Repair is ordinary managed development carrying the selected skill, source request and admitted revision; the Repair-and-run request is a real owner message on the ordinary task path. The model enabling the repaired skill resolves that source, never a client `allow_enable` flag; a later direct owner disable wins and a load-error revert is not one. `skill_repair` records are selectors, never a reduced tool profile.
-- Installed payloads are ordinary directories; a delegated Git copy is optional. Check the known revision before an operation and record the observed revision after opaque process work without claiming exclusive authorship; no long shell lock, no automatic rollback.
+- Repair is ordinary managed development carrying the selected skill, source request and admitted revision; Repair-and-run is a real owner message on the ordinary task path. The model enabling the repaired skill resolves that source, never a client `allow_enable` flag; a later direct owner disable wins; a load-error revert is not one. `skill_repair` records are selectors, not a reduced tool profile.
+- Installed payloads are ordinary directories; a delegated Git copy is optional. Check the known revision before an operation and record the observed revision after opaque process work without claiming authorship; no long shell lock, no automatic rollback.
 - Every path form uses the existing payload binding owners: a valid `TaskConstraint` supplies omitted skill-name/bucket selectors, and explicit selectors must match the physical payload.
-- Review, grants, dependency readiness, desired enablement and actual execution are independent facts: a dependency or load failure never rewrites the review verdict, and an unchanged reviewed snapshot resumes via its free replay. Skill-review convergence keys on the lifecycle's group `review_round` (`snapshot_attempt` is display only).
-- UI, CLI commands and task tools call the shared operation owners. Actor identity is host-derived: an owner-only action needs a real member chat/quiz/mailbox source naming the exact skill, revision and items; a synthetic reference creates no permission, and Repair implies neither grant-all, attestation nor deletion.
+- Review, grants, package readiness, enablement and execution are independent facts: one seam readies packages by what admits the bytes (`skill_dependencies.py`); a dependency or load failure never rewrites the verdict, and an unchanged reviewed snapshot replays free. Skill-review convergence keys on the lifecycle group `review_round` (`snapshot_attempt` is display only).
+- UI, CLI and task tools call the shared operation owners. Actor identity is host-derived: an owner-only action needs a real member chat/quiz/mailbox source naming the exact skill, revision and items; a synthetic reference creates no permission, and Repair implies neither grant-all, attestation nor deletion.
 - Test the real installed script/tool/HTTP/widget/companion after review and prerequisites, repeat after corrections, inspect a widget screenshot. Execution receipts name the dispatched revision and are not PASS.
 - A bundled payload change bumps that skill's manifest version; a change to seed reconciliation semantics invalidates the `native_seed.json` receipt's schema (ARCHITECTURE §2), and the receipt never replaces review/grant binding to installed bytes (`tests/test_builtin_skill_platforms.py`: unchanged boot without payload work, new versions, dirty source, failed phases).
 
 Mechanism: ARCHITECTURE §13; §6 "Skills and extensions". Enforcement: `tests/test_skill_payload_binding.py`, `tests/test_skill_lifecycle_actions.py`; `tests/test_review_cycles_gates.py` pins the replay fingerprint; UI lane `tests/test_ui_smoke_skill_lifecycle.py`.
+
+### Capability placement
+
+Ouroboros is one open core and many installations that evolve on their own: a skill survives every core update untouched, a private core edit is re-merged at each one. Before building a capability, asked for by the owner, a user or myself:
+
+- Name the lowest rung that delivers it and offer it first: a setting; an arrangement of what exists; a declarative contribution (`contributes`); skill code (routes, tools, providers, page modules); a core seam. Offer the lower rung even when the request names core; build the higher one when the requester, informed, keeps it.
+- The core is open for extension and closed for features: it keeps the seams and the floors every rung relies on (the draft, Send and message authorship, device leases and native permissions, host-owned sessions and cognition, Panic and recovery). Vendor- or feature-specific code in core is a defect unless the plan names the floor it implements.
+- A new seam ships with its first real consumer in the same change; no seam without a consumer, no consumer-shaped seam. Core consumes the contract, never a skill's name. A shared provider contract (speech, realtime …) is minted only when more than one provider is plausible, consumers must not care which runs, and core owns selection; a fallback is never silent.
+- On an installation that evolves itself the wish becomes a skill, and a missing seam is offered upstream as a pull request instead of living on as a private core patch.
+
+Judgment, not a gate. Review: CHECKLISTS Plan Review row 6 and body item `capability_placement` (advisory). Mechanism: CREATING_SKILLS "Contributing controls and speech engines", CLIENT_CONTRACT §11.
 
 ### Extension dispatch and isolated dependencies
 
@@ -108,7 +119,7 @@ Mechanism: ARCHITECTURE §6 "Own-body candidates" and §2. Rules a change keeps:
 - Retention never deletes unique work on age: extend `unique_work` / `_preserve` together, an incomplete capture retains the directory, and a GC verdict computed outside the registry lock applies only while `verdict_holds` under it.
 - The old generation never writes the serving tree for an adoption: arm only from the existing stop owners' outcomes (PID census, `stop_owned_work`'s ownership set, reaped children); add no wait, drain or PID probe, nothing on the Panic path. Boot settles `adopted` only for a process that attested the switched tree before its imports (`sys._ouroboros_body_generation`).
 - The hook in `ouroboros/__init__.py` and `body_switch.py` stay stdlib-only and compatible with the helper an older body captured; a body without the hook receives it via an ordinary release, never by adoption.
-- No generic reset on the adoption path (`holds_checkout` covers landed, returned and open transitions); returning Git files never claims restored dependencies; a launcher whose loaded modules changed re-executes on exit 42 (`launcher_sources_changed`), never a blanket relaunch.
+- No generic adoption reset (`holds_checkout` covers landed, returned and open transitions); returning files never claims restored dependencies. Preserve the frozen-launcher versus seed-hosted source-shell handoff contract in ARCHITECTURE §2.
 - A candidate commit is never auto-pushed; the serving push sends only reachable annotated tags (`--follow-tags`). The release gate names the form from the diff, `numbered` or `neutral` (`neutral_allowed` for the prepared index lane and a bound candidate); a partial carrier move is a finding in either form. Crash recovery grants no new adoption authority.
 
 Enforcement: `tests/test_body_adoption.py` with `tests/test_body_candidate.py`. Not exercised there: Windows handover, the packaged launcher's frozen code, a native Android host, an end-to-end `commit_reviewed` with live reviewers on a candidate.

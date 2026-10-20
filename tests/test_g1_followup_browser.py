@@ -8,6 +8,7 @@ import time
 import pytest
 
 from tests.test_ui_smoke_playwright import direct_server_with_data  # noqa: F401 - pytest fixture
+from tests.ui_chat_viewport_smoke import wait_drawer_closed
 
 pytestmark = [pytest.mark.ui_browser, pytest.mark.serial]
 
@@ -71,7 +72,7 @@ def test_activity_relationship_hold_and_stale_restore(direct_server_with_data, m
             for width in (1440, 390):
                 page.set_viewport_size({'width': width, 'height': 960})
                 if width < 700:
-                    page.wait_for_function("() => document.querySelector('#primary-sidebar').getBoundingClientRect().right <= 1")
+                    wait_drawer_closed(page)
                 section.scroll_into_view_if_needed()
                 assert section.locator('.activity-sub').evaluate('(el) => el.scrollWidth <= el.clientWidth + 1')
                 page.screenshot(path=str(evidence / f'g1-activity-{width}.png'), full_page=True)

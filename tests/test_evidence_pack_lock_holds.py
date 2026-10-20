@@ -22,6 +22,7 @@ import pytest
 from ouroboros import evidence_packer as packer
 from ouroboros import evidence_packs as packs
 from ouroboros import observability, store
+from tests._store_journal_shared import use_journal
 from tests.test_evidence_packs import _handle_path, _task
 from tests.test_evidence_packs import root as root  # noqa: F401  (the shared fixture)
 
@@ -153,15 +154,21 @@ def _held_reader(root):
     return conn
 
 
-def test_the_phase_barrier_releases_without_waiting_for_readers(root):
+@pytest.mark.parametrize("journal", ["PERSIST", "WAL"])
+def test_the_phase_barrier_releases_without_waiting_for_readers(root, monkeypatch, journal):
+    use_journal(monkeypatch, journal)
     _task(root, "t1", blobs=1)  # a published store
     reader = _held_reader(root)
     try:
         with store.open_store(root, write=True, wait_sec=0, barrier=True):
             pass  # ROLLBACK: no reader drain, so no busy wait at all is needed
-        with pytest.raises(store.StoreBusy):
+        if journal == "PERSIST":
+            with pytest.raises(store.StoreBusy):
+                with store.open_store(root, write=True, wait_sec=0):
+                    pass  # a rowless COMMIT still has to wait for the reader
+        else:
             with store.open_store(root, write=True, wait_sec=0):
-                pass  # a rowless COMMIT still has to wait for the reader
+                pass  # a WAL COMMIT waits for no reader: the barrier is no exception there
     finally:
         reader.execute("ROLLBACK")
         reader.close()

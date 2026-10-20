@@ -2,8 +2,8 @@
 
 The existing shell server supplies assets and non-project APIs. Project list/update
 requests exercise the real gateway and registry in a private TestClient drive.
-Pin and Unpin are the first actions of a row's ⋯; pinned rows lead the one keyed list
-and one step of air parts them from the rest, with no caption, glyph or column.
+Pin and Unpin are the first actions of a row's menu (its ⋯ under a mouse, a long press on touch); pinned rows lead
+the one keyed list and one step of air parts them from the rest, with no caption, glyph or column.
 """
 import json
 from urllib.parse import urlparse
@@ -144,9 +144,37 @@ def until(page, predicate, rounds=200):
     raise AssertionError("the route callback never recorded the request")
 
 
-def choose(page, pid, label):
-    """Press ⋯ on a row and its first action, which must read ``label``."""
+def coarse(page):
+    return page.evaluate("matchMedia('(pointer: coarse)').matches")
+
+
+def long_press(page, target):
+    """A finger held still on ``target`` past the long press (row_menu_gesture.js), then lifted; the lifting finger's
+    click guard has run out when this returns."""
+    box = target.bounding_box()
+    finger = {"pointerType": "touch", "isPrimary": True, "pointerId": 41,
+              "clientX": box["x"] + box["width"] / 2, "clientY": box["y"] + box["height"] / 2}
+    target.dispatch_event("pointerdown", finger)
+    page.clock.run_for(500)
+    target.dispatch_event("pointerup", finger)
+    page.clock.run_for(500)
+
+
+def open_menu(page, pid):
+    """Open a row's menu as its device does: its ⋯ under a mouse, a long press on the row on touch, where the ⋯ takes
+    no room. Returns the control the menu gives focus back to."""
+    if coarse(page):
+        long_press(page, row(page, pid).locator('.nav-project-row'))
+        expect()(menu(page)).to_be_visible()
+        return row(page, pid).locator('.nav-project-row')
     row(page, pid).locator('.nav-project-kebab').click()
+    expect()(menu(page)).to_be_visible()
+    return row(page, pid).locator('.nav-project-kebab')
+
+
+def choose(page, pid, label):
+    """Open a row's menu and press its first action, which must read ``label``."""
+    open_menu(page, pid)
     item = menu(page).locator('[data-prm="pin"]')
     expect()(item).to_have_text(label)
     item.click()
@@ -239,30 +267,26 @@ def test_collapsed_list_keeps_pins_and_unpins_in_place(pins_ui, tmp_path):
     page.locator('#nav-projects-toggle').click()
     expect()(row(page, "older")).to_be_visible()
     expect()(row(page, "newer")).to_be_hidden()
-    show_all = page.locator('#nav-projects-show-all')
-    expect()(show_all).to_have_text("Show all 2")
-    # Nothing shown follows the pins, so no air waits before "Show all".
+    # All or nothing: no "Show all" offers the rest, and nothing shown follows the pins, so no air waits after them.
+    assert page.locator('#nav-projects-show-all').count() == 0
     assert page.locator('#nav-projects-list [data-after-pins]').count() == 0
     page.screenshot(path=str(evidence / f"collapsed-{ui['tag']}.png"), animations="disabled")
     kebab = row(page, "older").locator('.nav-project-kebab')
-    if ui["width"] < 720:  # coarse pointer: the one visible control keeps its own touch target
-        box = kebab.bounding_box()
-        assert box["width"] >= 44 and box["height"] >= 44
+    if coarse(page):  # touch: a long press opens the menu, so the ⋯ takes no room until the keyboard reaches it
+        assert kebab.bounding_box()["width"] == 0
+        assert row(page, "older").evaluate("item => item.querySelector('.nav-project-row').getBoundingClientRect().right"
+                                           " === item.getBoundingClientRect().right")
     assert page.locator('#primary-sidebar').evaluate("e => e.scrollWidth <= e.clientWidth")
-    # Unpin from the collapsed list by keyboard: the row stays while it holds focus, then waits behind "Show all".
+    # Unpin from the collapsed list by keyboard: the row hides at once and the keyboard goes to the Projects toggle.
     kebab.focus()
     page.keyboard.press("Enter")
     expect()(menu(page).locator('[data-prm="pin"]')).to_have_text("Unpin")
     page.keyboard.press("Enter")
     expect()(row(page, "older")).not_to_have_attribute("data-pinned", "")
     assert registry.get_project(ui["root"], "older")["pinned"] is False
-    expect()(row(page, "older")).to_be_visible()
-    assert kebab.evaluate("el => el === document.activeElement")
-    page.locator('[data-nav-page="chat"]').focus()
     expect()(row(page, "older")).to_be_hidden()
-    expect()(show_all).to_be_visible()
-    expect()(show_all).to_have_text("Show all 2")
-    show_all.click()
+    expect()(page.locator('#nav-projects-toggle')).to_be_focused()
+    page.keyboard.press("Enter")
     expect()(row(page, "older")).to_be_visible()
     assert page.locator('#nav-projects-list [data-pinned], #nav-projects-list [data-after-pins]').count() == 0
 
@@ -281,7 +305,7 @@ def test_failed_and_pending_saves_are_honest_and_late_reads_cannot_undo_them(pin
     choose(page, "older", "Pin")
     until(page, lambda: len(control["held_writes"]) == 1)
     expect()(row(page, "older")).not_to_have_attribute("data-pinned", "")  # never shown before it is saved
-    row(page, "older").locator('.nav-project-kebab').click()
+    open_menu(page, "older")
     pending = menu(page).locator('[data-prm="pin"]')
     expect()(pending).to_have_text("Pinning…")
     expect()(pending).to_have_attribute("aria-disabled", "true")
@@ -322,8 +346,7 @@ def test_menu_opened_during_save_retires_pending_state_at_settlement(pins_ui, su
     control["hold_writes"] = True
     choose(page, "older", "Pin")
     until(page, lambda: len(control["held_writes"]) == 1)
-    kebab = row(page, "older").locator('.nav-project-kebab')
-    kebab.click()
+    anchor = open_menu(page, "older")
     expect()(menu(page).locator('[data-prm="pin"]')).to_have_text("Pinning…")
     assert page.evaluate("document.activeElement.dataset.prm") == "rename"
     route, path, body = control["held_writes"].pop()
@@ -335,8 +358,8 @@ def test_menu_opened_during_save_retires_pending_state_at_settlement(pins_ui, su
         expect()(page.locator('#toast-stack')).to_contain_text("Synthetic write outage")
     # Leave the pending menu open through completion: no stale disabled action survives.
     expect()(menu(page)).to_have_count(0)
-    assert kebab.evaluate("el => el === document.activeElement")
-    kebab.click()
+    assert anchor.evaluate("el => el === document.activeElement")
+    open_menu(page, "older")
     action = menu(page).locator('[data-prm="pin"]')
     expect()(action).to_have_text("Unpin" if succeeded else "Pin")
     assert action.get_attribute("aria-disabled") is None
@@ -351,45 +374,52 @@ def test_pins_keep_unread_live_rows_menu_anchor_other_windows_and_deleting(pins_
                               "chat_id": registry.get_project(ui["root"], "newer")["chat_id"],
                               "kind": "managed_task", "phase": "working"}]
     refresh(page)
-    expect()(row(page, "newer").locator('.nav-unread-dot')).to_be_visible()
-    expect()(row(page, "newer")).to_have_attribute("data-live", "")
+    newer = row(page, "newer").locator('.nav-project-row')
+    expect()(newer).to_have_attribute("data-unread", "")
+    # Its one mark: the work moves, tinted crimson for the new messages.
+    expect()(newer.locator('.status-mark[data-shape="moving"][data-hue="unread"]')).to_be_visible()
     choose(page, "older", "Pin")
     expect()(row(page, "older")).to_have_attribute("data-pinned", "")
     assert order(page) == ["older", "newer"]
-    expect()(row(page, "newer").locator('.nav-unread-dot')).to_be_visible()
-    assert "Unread" in row(page, "newer").locator('.nav-project-row').get_attribute("aria-label")
-    # Collapsed keeps the pin and the live row, the air between them.
+    expect()(newer).to_have_attribute("data-unread", "")
+    assert newer.get_attribute("aria-label") == "Recent project · Working · new messages"
+    # Collapsed keeps the pin alone: work and new messages elsewhere keep no row; the header's count and mark say them.
     page.locator('#nav-projects-toggle').click()
-    expect()(row(page, "newer")).to_be_visible()
+    expect()(row(page, "newer")).to_be_hidden()
     groups = page.evaluate(GROUPS)
-    assert [g["id"] for g in groups] == ["older", "newer"]
+    assert [g["id"] for g in groups] == ["older"]
     assert_one_boundary(groups)
-    # Another window unpins while this one's ⋯ is open on that row: the menu follows its moved anchor, and its
-    # label still names what it does, so pressing it never flips the pin back.
-    kebab = row(page, "older").locator('.nav-project-kebab')
-    kebab.click()
+    expect()(page.locator('#nav-projects-count')).to_have_text("2")  # its two unread messages (owner Q1 = B)
+    expect()(page.locator('.nav-projects-facts .status-mark')).to_have_attribute("data-shape", "moving")
+    page.locator('#nav-projects-toggle').click()
+    # Another window unpins while this one's menu is open on that row: the menu stays with its row, and its label
+    # still names what it does, so pressing it never flips the pin back. A menu opened from the ⋯ follows its moved
+    # anchor; one a finger opened stays where the finger was.
+    anchor = open_menu(page, "older")
     expect()(menu(page).locator('[data-prm="pin"]')).to_have_text("Unpin")
-    page.evaluate("window.savedMenuAnchor = document.querySelector('[data-nav-project-id=older] .nav-project-kebab')")
-    original_anchor = kebab.bounding_box()
+    page.evaluate("window.savedMenuRow = document.querySelector('[data-nav-project-id=older]')")
+    original_anchor, original_popup = anchor.bounding_box(), menu(page).bounding_box()
     ui["client"].post('/api/projects/older/update', json={"name": "Changed elsewhere", "pinned": False})
     refresh(page)
     expect()(row(page, "older").locator('.nav-row-label')).to_have_text("Changed elsewhere")
     assert order(page) == ["newer", "older"]
-    assert page.evaluate("savedMenuAnchor.isConnected && savedMenuAnchor"
-                         " === document.querySelector('[data-nav-project-id=older] .nav-project-kebab')")
+    assert page.evaluate("savedMenuRow.isConnected && savedMenuRow === document.querySelector('[data-nav-project-id=older]')")
     expect()(menu(page)).to_be_visible()
-    anchor, popup = kebab.bounding_box(), menu(page).bounding_box()
-    assert anchor['y'] != original_anchor['y']  # a real reorder, not a same-position repaint
-    assert abs(popup['y'] - (anchor['y'] + anchor['height'] + 4)) <= 1
+    moved, popup = anchor.bounding_box(), menu(page).bounding_box()
+    assert moved['y'] != original_anchor['y']  # a real reorder, not a same-position repaint
+    if coarse(page):
+        assert popup == original_popup
+    else:
+        assert abs(popup['y'] - (moved['y'] + moved['height'] + 4)) <= 1
     with page.expect_response(lambda response: response.url.endswith('/api/projects/older/update')):
         menu(page).locator('[data-prm="pin"]').click()
     assert control["writes"][-1] == {"pinned": False}
     assert registry.get_project(ui["root"], "older")["pinned"] is False
     expect()(row(page, "older")).not_to_have_attribute("data-pinned", "")
-    page.locator('#nav-projects-toggle').click()
     control['unread'].clear()
     refresh(page)
-    expect()(row(page, 'newer').locator('.nav-unread-dot')).to_have_count(0)
+    expect()(newer).not_to_have_attribute("data-unread", "")
+    expect()(newer.locator('.status-mark')).to_have_attribute("data-hue", "ink")
     # A deleting row keeps its one trailing fact and no ⋯, so nothing can pin it.
     registry.update_project(ui["root"], "older", pinned=True)
     registry.begin_project_deletion(ui["root"], "older")
@@ -421,13 +451,13 @@ def test_many_pins_order_within_groups_long_names_and_short_windows(pins_ui, tmp
     assert_one_boundary(groups)
     assert_flat_and_unlabelled(page)
     by_id = {g["id"]: g for g in groups}
-    assert by_id["p1"]["title"] == f"{names['p1']} · Pinned · Unread" and by_id["p1"]["ellipsized"]
-    assert by_id["p8"]["title"] == f"{names['p8']} · Unread"
-    expect()(row(page, "p1").locator('.nav-unread-dot')).to_be_visible()
+    assert by_id["p1"]["title"] == f"{names['p1']} · Pinned · new messages" and by_id["p1"]["ellipsized"]
+    assert by_id["p8"]["title"] == f"{names['p8']} · new messages"
+    expect()(row(page, "p1").locator('.status-mark[data-shape="dot"][data-hue="unread"]')).to_be_visible()
     assert page.locator('#primary-sidebar').evaluate("e => e.scrollWidth <= e.clientWidth")
     page.locator('#primary-sidebar').screenshot(path=str(evidence / f"many-{ui['tag']}.png"), animations="disabled")
     page.locator('#nav-projects-toggle').click()
-    expect()(page.locator('#nav-projects-show-all')).to_have_text("Show all 12")
+    expect()(page.locator('#nav-projects-count')).to_have_text("4")  # two rooms, two unread messages each
     collapsed = page.evaluate(GROUPS)
     assert [g["id"] for g in collapsed] == ["p1", "p7", "p4"]
     assert_one_boundary(collapsed)
@@ -446,24 +476,25 @@ def test_many_pins_order_within_groups_long_names_and_short_windows(pins_ui, tmp
 
 def test_menu_repositions_after_a_hidden_pin_is_revealed(pins_ui, tmp_path):
     ui, page, control = pins_ui, pins_ui["page"], pins_ui["control"]
-    control["activities"] = [{"activity_id": "work", "project_id": "newer",
-                              "chat_id": registry.get_project(ui["root"], "newer")["chat_id"],
-                              "kind": "managed_task", "phase": "working"}]
-    refresh(page)
-    expect()(row(page, "newer")).to_have_attribute("data-live", "")
+    choose(page, "newer", "Pin")
     page.locator('#nav-projects-toggle').click()
     expect()(row(page, "older")).to_be_hidden()
-    kebab = row(page, "newer").locator('.nav-project-kebab')
-    kebab.click()
-    original_anchor = kebab.bounding_box()
+    anchor = open_menu(page, "newer")
+    original_anchor, original_popup = anchor.bounding_box(), menu(page).bounding_box()
+    # Another window pins the older room, which has new messages: it is revealed above this row.
+    control["unread"].add("older")
     response = ui["client"].post('/api/projects/older/update', json={"pinned": True})
     assert response.status_code == 200
     refresh(page)
     expect()(row(page, "older")).to_be_visible()
+    assert order(page) == ["older", "newer"]
     expect()(menu(page)).to_be_visible()
-    anchor, popup = kebab.bounding_box(), menu(page).bounding_box()
-    assert anchor['y'] != original_anchor['y']
-    assert abs(popup['y'] - (anchor['y'] + anchor['height'] + 4)) <= 1
+    moved, popup = anchor.bounding_box(), menu(page).bounding_box()
+    assert moved['y'] != original_anchor['y']
+    if coarse(page):  # a finger opened it: it stays where the finger was
+        assert popup == original_popup
+    else:
+        assert abs(popup['y'] - (moved['y'] + moved['height'] + 4)) <= 1
     assert_one_boundary(page.evaluate(GROUPS))
     evidence = producer_evidence_dir(tmp_path, "pin-menu", env="OUROBOROS_BROWSER_EVIDENCE_OUT")
     page.screenshot(path=str(evidence / f"collapsed-menu-{ui['tag']}.png"), animations="disabled")
@@ -489,13 +520,13 @@ def test_pin_real_server_updates_other_window_and_survives_reload(direct_server_
             second = browser.new_page(viewport={"width": 1172, "height": 875})
             for page in (first, second):
                 page.goto(url, wait_until="domcontentloaded")
-                expect()(row(page, "pin-new").locator('.nav-unread-dot')).to_be_visible(timeout=30000)
+                expect()(row(page, "pin-new").locator('.nav-project-row')).to_have_attribute("data-unread", "", timeout=30000)
             choose(first, "pin-old", "Pin")
             expect()(row(first, "pin-old")).to_have_attribute("data-pinned", "")
             expect()(row(second, "pin-old")).to_have_attribute("data-pinned", "", timeout=30000)
             for page in (first, second):
                 assert order(page) == ["pin-old", "pin-new"]
-                expect()(row(page, "pin-new").locator('.nav-unread-dot')).to_be_visible()
+                expect()(row(page, "pin-new").locator('.status-mark[data-hue="unread"]')).to_be_visible()
                 assert page.locator('#project-panel').is_hidden()
                 assert_flat_and_unlabelled(page)
                 assert_one_boundary(page.evaluate(GROUPS))
@@ -521,20 +552,20 @@ def test_local_pin_reveal_respects_input_and_visible_scroll_region(pins_ui, heig
     refresh(page)
     expect()(page.locator('.nav-project-item')).to_have_count(37)
     kebab = row(page, "older").locator('.nav-project-kebab')
-    kebab.scroll_into_view_if_needed()
+    row(page, "older").scroll_into_view_if_needed()
     scroll = "() => ['primary-sidebar', 'nav-projects-list'].map(id => document.getElementById(id).scrollTop)"
     if keyboard:
         kebab.focus()
         page.keyboard.press("Enter")
-    elif ui["width"] < 720:
-        kebab.tap()
+    elif coarse(page):
+        long_press(page, row(page, "older").locator('.nav-project-row'))
     else:
         kebab.click()
     expect()(menu(page).locator('[data-prm="pin"]')).to_have_text("Pin")
     before = page.evaluate(scroll)
     if keyboard:
         page.keyboard.press("Enter")
-    elif ui["width"] < 720:
+    elif coarse(page):
         menu(page).locator('[data-prm="pin"]').tap()
     else:
         menu(page).locator('[data-prm="pin"]').click()
@@ -549,6 +580,6 @@ def test_local_pin_reveal_respects_input_and_visible_scroll_region(pins_ui, heig
     else:
         # Native anchoring can shift by the moved row plus the new spacing boundary,
         # but must not follow that row hundreds of pixels to its new position.
-        allowance = kebab.evaluate("el => el.getBoundingClientRect().height + parseFloat(getComputedStyle(el).getPropertyValue('--space-2')) + 3")
+        allowance = row(page, "older").evaluate("el => el.getBoundingClientRect().height + parseFloat(getComputedStyle(el).getPropertyValue('--space-2')) + 3")
         assert max(abs(a - b) for a, b in zip(before, page.evaluate(scroll))) <= allowance, "pointer pin must not jump the list"
     expect()(page.locator('#toast-stack').filter(has_text="Could not save project pin")).to_have_count(0)

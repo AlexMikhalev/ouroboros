@@ -10,6 +10,7 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional, Union
 
 from ouroboros.gateway.widgets import ExtensionLiveSnapshot
+from ouroboros.gateway.contributions import UiContributionsResponse
 
 try:  # Python 3.11+
     from typing import Literal, NotRequired, Required, TypedDict  # type: ignore[attr-defined]
@@ -36,6 +37,7 @@ class InstalledSkill(TypedDict, total=False):
     content_hash: Required[str]  # the revision every expected_content_hash names
     payload_root: Required[str]  # skills/<bucket>/<dir>, or ""
     installed_at: Required[str]
+    removal: str  # uninstall | delete | "": the server's available removal action
     review_status: str  # clean | warnings | blockers | pending
     review_stale: bool
     review_gate: Dict[str, Any]
@@ -74,7 +76,7 @@ class InstalledSkill(TypedDict, total=False):
     category: List[str]  # the source's category ids for this skill, [] when it has none
 
 
-class ExtensionsIndexResponse(TypedDict):
+class ExtensionsIndexResponse(UiContributionsResponse):
     """``GET /api/extensions``: every installed skill and what the extension loader has live.
     A passive read: no network, no repair."""
 
@@ -132,6 +134,7 @@ class SkillGrantRequest(TypedDict, total=False):
     keys: List[Any]
     granted_keys: List[Any]
     expected_content_hash: str
+    enable_after_grant: bool  # explicit Enable intent stays in this same lifecycle job
 
 
 class SkillDeleteRequest(TypedDict, total=False):
@@ -144,10 +147,17 @@ class SkillDeleteRequest(TypedDict, total=False):
 
 class SkillToggleResponse(TypedDict, total=False):
     """``POST /api/skills/{skill}/toggle`` success. A refusal answers ``SkillActionRefusal``; a
-    toggle with an ``extension_action`` also broadcasts ``extension_lifecycle``."""
+    toggle with an ``extension_action`` also broadcasts ``extension_lifecycle`` when its job ends.
+    Enabling installs missing packages; when that outlasts the answer bound the body is
+    ``{skill, ok, pending: true, job_id, message}`` with no ``enabled`` yet: follow the job on
+    ``GET /api/skills/lifecycle-queue``."""
 
     skill: Required[str]
-    enabled: Required[bool]
+    ok: bool
+    pending: bool
+    job_id: str
+    message: str
+    enabled: bool
     review_status: str
     review_stale: bool
     review_gate: Dict[str, Any]
@@ -169,6 +179,8 @@ class SkillActionRefusal(TypedDict, total=False):
     error: Required[str]
     status_code: int
     skill: str
+    code: str
+    detail: str
     source: str
     content_hash: str
     review_status: str
@@ -244,6 +256,8 @@ class SkillReviewResponse(TypedDict, total=False):
     error: str
     ok: bool  # attest only
     status_code: int  # attest refusal only
+    pending: bool  # attest only: the job outlasted the answer bound; job_id and message name it
+    message: str  # attest only, with pending
     reviewer_models: List[str]
     review_profile: str
     findings: List[Dict[str, Any]]

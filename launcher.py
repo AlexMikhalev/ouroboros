@@ -1,4 +1,4 @@
-"""Immutable launcher: bootstrap repo, manage server.py, and optionally host UI."""
+"""Bootstrap the managed source, supervise server.py, and optionally host its UI."""
 
 from __future__ import annotations
 
@@ -13,6 +13,7 @@ import sys
 import tempfile
 import threading
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 import webbrowser
@@ -49,10 +50,11 @@ from ouroboros.launcher_bootstrap import (
     check_git as _check_git, launcher_sources_changed, remember_loaded_checkout,
     install_deps as _install_deps_impl,
     embedded_python_env, update_external_host,
-    parse_launch_options, source_handoff_argv,
+    exec_source_launcher, find_embedded_python, macos_source_entry, parse_launch_options, shell_runtime_facts,
     automatic_launch_allowed,
     sync_existing_repo_from_bundle as _sync_existing_repo_from_bundle_impl,
 )
+from ouroboros.desktop_media import attach_media_permissions, display_ready as _display_ready
 from ouroboros.runtime_venv import PREPARATION_DEPS_TIMEOUT_SEC, RuntimeVenvRefused, mark_ready, prepare_runtime_venv
 from ouroboros.launcher_onboarding import (
     prepare_first_run_settings as _prepare_first_run_settings,
@@ -78,7 +80,6 @@ from ouroboros.platform_layer import (
     close_job,
     create_kill_on_close_job,
     current_process_group_id,
-    embedded_python_candidates,
     force_kill_pid,
     git_install_hint,
     install_shutdown_signal_handlers,
@@ -100,6 +101,9 @@ from ouroboros.utils import atomic_write_json, utc_now_iso
 
 MAX_CRASH_RESTARTS = 5
 CRASH_WINDOW_SEC = 120
+# Entry protocol 1: --seed-bundle selects plain Python for the body and its
+# installs; --runtime-venv is retained separately while the shell keeps app identity.
+MACOS_SOURCE_ENTRY_PROTOCOL = 1
 # One bounded visible retry when dependency installation fails.
 _DEPS_RETRY_DELAY_SEC = 5
 _CREATE_SUSPENDED = getattr(subprocess, "CREATE_SUSPENDED", 0x4) if IS_WINDOWS else 0
@@ -163,25 +167,21 @@ def _hidden_popen(command, **kwargs):
     """subprocess.Popen() with platform-appropriate hidden-window flags."""
     return subprocess.Popen(command, **merge_hidden_kwargs(kwargs))
 
-def _find_embedded_python() -> str:
-    """Locate the embedded python-build-standalone interpreter."""
-    if getattr(sys, "frozen", False):
-        base = pathlib.Path(sys._MEIPASS)
-    else:
-        base = pathlib.Path(__file__).parent
-    for path in embedded_python_candidates(base):
-        if path.exists():
-            return str(path)
-    return sys.executable
-
-
-EMBEDDED_PYTHON = _find_embedded_python()
-
 
 def _bundle_dir() -> pathlib.Path:
     if getattr(sys, "frozen", False):
         return pathlib.Path(sys._MEIPASS)
     return _external_seed_bundle or pathlib.Path(__file__).parent
+
+
+def _exec_source_launcher() -> None:
+    exec_source_launcher(_bootstrap_context(), _launch_argv, release_lock=release_pid_lock,
+                         desktop=not _external_ui, macos=IS_MACOS)
+
+
+def _shell_facts() -> dict:
+    seed = _bundle_dir() if getattr(sys, "frozen", False) or _external_seed_bundle else None
+    return shell_runtime_facts(REPO_DIR, seed, APP_VERSION, macos=IS_MACOS)
 
 
 def _bootstrap_context() -> BootstrapContext:
@@ -234,6 +234,7 @@ _external_ui = False
 _external_host_update: Optional[pathlib.Path] = None
 _external_host_result: dict = {}
 _external_seed_bundle: Optional[pathlib.Path] = None
+EMBEDDED_PYTHON = find_embedded_python(_bundle_dir(), macos=IS_MACOS)
 _launch_argv: list[str] = []
 _launch_intent = "owner"
 _runtime_venv = None  # runtime_venv.RuntimeVenv selected by --runtime-venv
@@ -426,7 +427,7 @@ def start_agent(port: int = AGENT_SERVER_PORT) -> subprocess.Popen:
     env["OUROBOROS_SERVER_PORT"] = str(port)
     env["OUROBOROS_DATA_DIR"] = str(DATA_DIR)
     env["OUROBOROS_REPO_DIR"] = str(REPO_DIR)
-    env["OUROBOROS_APP_VERSION"] = str(APP_VERSION)
+    env["OUROBOROS_APP_VERSION"] = _shell_facts()["bundle_version"] or str(APP_VERSION)
     env["OUROBOROS_MANAGED_BY_LAUNCHER"] = "1"
     env["OUROBOROS_MANAGED_REPO_DIR"] = str(REPO_DIR.resolve())
     env["OUROBOROS_LAUNCH_INTENT"] = _launch_intent  # this launcher's parsed intent, never an inherited one
@@ -702,7 +703,7 @@ def agent_lifecycle_loop(port: int = AGENT_SERVER_PORT) -> None:
         _external_host_result = update_external_host(_external_host_update, EMBEDDED_PYTHON, log, _shutdown_event)
         if _shutdown_event.is_set():
             break  # Native preparation has reaped its owned processes before returning.
-        remember_loaded_checkout(REPO_DIR)  # the commit this launcher's own modules came from
+        remember_loaded_checkout(REPO_DIR)  # the checkout at first start, unless main() recorded macOS's generation
         proc = start_agent(port)
         if _shutdown_event.is_set():
             stop_agent()
@@ -798,12 +799,7 @@ def agent_lifecycle_loop(port: int = AGENT_SERVER_PORT) -> None:
                         MAX_CRASH_RESTARTS, CRASH_WINDOW_SEC,
                     )
             if _external_seed_bundle is not None or launcher_sources_changed(REPO_DIR, bundle_dir=_bundle_dir()):
-                # The interpreter (a --runtime-venv included) carries over; consumed options do not.
-                argv = source_handoff_argv(_launch_argv)
-                if getattr(sys, "frozen", False):
-                    argv += ["--seed-bundle", str(_bundle_dir())]
-                release_pid_lock()
-                os.execv(EMBEDDED_PYTHON, [EMBEDDED_PYTHON, str(REPO_DIR / "launcher.py"), *argv])
+                _exec_source_launcher()
             continue
 
         now = time.time()
@@ -925,10 +921,11 @@ def _request_auto_grant_reviewed_skills_change(enabled: bool, confirm_fn) -> dic
     return {"ok": True, "enabled": new_enabled}
 
 
-def _request_skill_key_grant(skill: str, keys: list, confirm_fn) -> dict:
-    from types import SimpleNamespace
+def _request_skill_key_grant(skill: str, keys: list, confirm_fn, *, enable_after_grant: bool = False,
+                             allow_pending: bool = False) -> dict:
+    from ouroboros.config import runtime_setting, SETTINGS_DEFAULTS
     from ouroboros.skill_loader import find_skill
-    from ouroboros.skill_lifecycle_actions import prepare_skill_grant, run_skill_action
+    from ouroboros.skill_lifecycle_actions import prepare_skill_grant
 
     skill_name = str(skill or "").strip()
     items = [str(key or "").strip() for key in (keys or []) if str(key or "").strip()]
@@ -942,55 +939,33 @@ def _request_skill_key_grant(skill: str, keys: list, confirm_fn) -> dict:
     message = (
         f"Grant skill {loaded.name!r} access to these settings keys / host permissions?\n\n"
         + "\n".join([*preview["keys"], *preview["permissions"]])
+        + ("\n\nThen turn this skill on." if enable_after_grant else "")
         + "\n\nOnly grant keys and permissions to reviewed skills you trust."
     )
     if not confirm_fn("Confirm Skill Grant", message):
         return {"ok": False, "error": "Skill grant cancelled."}
-
-    def reconcile_on_server(current):
-        # The immutable launcher never imports or registers the skill locally.
-        # Keep the existing server reconcile transport, after the shared grant
-        # owner has revalidated the revision confirmed above and saved its grant.
-        if not current.manifest.is_extension():
-            return {"action": None, "reason": None}
-        actual_port = _read_port_file() or AGENT_SERVER_PORT
-        req = urllib.request.Request(
-            f"http://127.0.0.1:{actual_port}/api/skills/{urllib.parse.quote(current.name)}/reconcile",
-            method="POST", data=b"{}", headers={"Content-Type": "application/json"},
-        )
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            payload = json.loads(resp.read().decode("utf-8") or "{}")
-        return {"action": payload.get("extension_action"), "reason": payload.get("extension_reason"),
-                "load_error": payload.get("load_error"), "live_loaded": payload.get("live_loaded"),
-                "process": payload.get("process"), "server_reconcile": payload.get("server_reconcile")}
-
-    ctx = SimpleNamespace(drive_root=DATA_DIR, repo_dir=REPO_DIR, task_id="", current_chat_id=0)
-    return run_skill_action(
-        ctx, loaded.name, "grant", expected_content_hash=preview["content_hash"], items=items,
-        repo_path=repo_path, _owner_actor="owner_launcher", _reconcile_grant=reconcile_on_server,
+    # The immutable launcher never imports, registers or installs packages for a skill: after its
+    # native confirm the server's grant owner revalidates the revision confirmed above, saves the
+    # grant, turns the skill on when ready and readies its packages (the same POST the browser sends).
+    actual_port = _read_port_file() or AGENT_SERVER_PORT
+    req = urllib.request.Request(
+        f"http://127.0.0.1:{actual_port}/api/skills/{urllib.parse.quote(loaded.name)}/grants", method="POST",
+        data=json.dumps({"items": items, "expected_content_hash": preview["content_hash"],
+                         **({"enable_after_grant": True} if enable_after_grant else {})}).encode("utf-8"),
+        headers={"Content-Type": "application/json", **({"Prefer": "respond-async"} if allow_pending else {})},
     )
-
-
-def _display_ready(backend) -> tuple[bool, str]:
-    """Linux: does a usable DISPLAY actually exist for the chosen backend?
-
-    `initialize()` only proves the backend MODULE imports (the first real
-    display access is `BrowserView.__init__` → `Gdk.Display.get_default()`
-    inside webview.start()), so a box WITH gi bindings but WITHOUT a display
-    passed the import probe and crashed. The session-env check runs BEFORE
-    initialize() in _webview_ready; here the chosen backend is refined: GTK's
-    display handle answers None on a dead display, never a raise. DISCLOSED
-    RESIDUAL: Qt is judged on the env alone (probing Qt constructs a
-    QGuiApplication, which ABORTS). Full rationale: ARCHITECTURE.
-    """
-    if str(getattr(backend, "__name__", "")).endswith(".gtk"):
+    try:
+        timeout = 20 if allow_pending else float(runtime_setting(
+            "OUROBOROS_SKILL_LIFECYCLE_TIMEOUT_SEC", SETTINGS_DEFAULTS["OUROBOROS_SKILL_LIFECYCLE_TIMEOUT_SEC"]))
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return json.loads(resp.read().decode("utf-8") or "{}")
+    except urllib.error.HTTPError as exc:  # a typed refusal is the server's answer, not a transport failure
         try:
-            from gi.repository import Gdk
-        except Exception as exc:  # gi vanished between import and probe
-            return False, f"GTK backend without gi.repository.Gdk: {type(exc).__name__}: {exc}"
-        if Gdk.Display.get_default() is None:
-            return False, "GTK backend has no default display (DISPLAY/WAYLAND_DISPLAY is unusable)"
-    return True, ""
+            return json.loads(exc.read().decode("utf-8") or "{}") or {"ok": False, "error": f"HTTP {exc.code}"}
+        except ValueError:
+            return {"ok": False, "error": f"HTTP {exc.code}"}
+    except (OSError, ValueError) as exc:
+        return {"ok": False, "error": f"The server did not answer the grant: {exc}"}
 
 
 def _webview_ready() -> tuple[bool, str]:
@@ -1146,6 +1121,9 @@ def main(argv=()):
     _external_ui = options.no_ui
     _external_host_update = options.host_update.resolve() if options.host_update is not None else None
     _external_seed_bundle = options.seed_bundle.resolve() if options.seed_bundle is not None else None
+    if IS_MACOS and _external_seed_bundle is not None \
+            and pathlib.Path(sys.executable) == macos_source_entry(_external_seed_bundle):
+        EMBEDDED_PYTHON = find_embedded_python(_external_seed_bundle, macos=IS_MACOS)
     if _external_ui:
         _headless = True
     if IS_WINDOWS and not _external_ui:
@@ -1200,7 +1178,7 @@ def main(argv=()):
             return
         webview.create_window(
             "Ouroboros",
-            html="<html><body style='background:#1a1a2e;color:white;font-family:system-ui;display:flex;align-items:center;justify-content:center;height:100vh;margin:0'>"
+            html="<html><body style='background:#0f0f11;color:#efeff2;font-family:system-ui;display:flex;align-items:center;justify-content:center;height:100vh;margin:0'>"
             "<div style='text-align:center'><h2>Ouroboros is already running</h2><p>Only one instance can run at a time.</p></div></body></html>",
             width=420,
             height=200,
@@ -1213,6 +1191,9 @@ def main(argv=()):
 
     if not automatic_launch_allowed(options.launch_intent, DATA_DIR, log):
         return
+    if IS_MACOS:  # the code actually imported, before bootstrap can advance the checkout (elsewhere: first start)
+        remember_loaded_checkout(pathlib.Path(__file__).parent,
+                                 bundle_dir=_bundle_dir() if getattr(sys, "frozen", False) else None)
     # Listen before the long boot: a manual second launch meanwhile is kept and opens the window once it exists.
     background = None if _headless else Background(lambda: _on_closing(), _read_port_file, _shutdown_event).listen(PID_FILE)
 
@@ -1268,7 +1249,7 @@ def main(argv=()):
         git_window = webview.create_window(
             "Ouroboros — Setup Required",
             html=(
-                """<html><body style="background:#1a1a2e;color:white;font-family:system-ui;display:flex;align-items:center;justify-content:center;height:100vh;margin:0">
+                """<html><body style="background:#0f0f11;color:#efeff2;font-family:system-ui;display:flex;align-items:center;justify-content:center;height:100vh;margin:0">
             <div style="text-align:center">
                 <h2>Git is required</h2>
                 <p>Ouroboros needs Git to manage its local repository.</p>
@@ -1278,7 +1259,7 @@ def main(argv=()):
                 <p id="status" style="color:#fbbf24;margin-top:12px"></p>
             </div></body></html>"""
                 if IS_MACOS
-                else f"""<html><body style="background:#1a1a2e;color:white;font-family:system-ui;display:flex;align-items:center;justify-content:center;height:100vh;margin:0">
+                else f"""<html><body style="background:#0f0f11;color:#efeff2;font-family:system-ui;display:flex;align-items:center;justify-content:center;height:100vh;margin:0">
             <div style="text-align:center">
                 <h2>Git is required</h2>
                 <p>Ouroboros needs Git to manage its local repository.</p>
@@ -1299,12 +1280,14 @@ def main(argv=()):
 
     if options.runtime_venv is not None:  # under the PID lock, before bootstrap and world generation
         try:
-            _runtime_venv = prepare_runtime_venv(options.runtime_venv, run=_hidden_run, log=log)
+            _runtime_venv = prepare_runtime_venv(options.runtime_venv, run=_hidden_run, log=log,
+                base_python=(EMBEDDED_PYTHON if getattr(sys, "frozen", False)
+                             else getattr(sys, "_base_executable", sys.executable)))
         except RuntimeVenvRefused as refusal:
             log.error("%s", refusal)
             print(f"Ouroboros did not start: {refusal}", file=sys.stderr, flush=True)
             sys.exit(1)
-        EMBEDDED_PYTHON = _runtime_venv.python  # the body, its installs and the source handoff
+        EMBEDDED_PYTHON = _runtime_venv.python  # the body and its installs; the macOS shell keeps app identity
         os.environ["PATH"] = os.pathsep.join([str(_runtime_venv.bin_dir), os.environ.get("PATH", "")])
     if not bootstrap_repo():
         # Disclosed, not fatal: an already-provisioned install with satisfied
@@ -1321,6 +1304,17 @@ def main(argv=()):
             log.error("%s", refusal)
             print(f"Ouroboros did not start: {refusal}", file=sys.stderr, flush=True)
             sys.exit(1)
+
+    if IS_MACOS and getattr(sys, "frozen", False):
+        # Cold launch loads updated helpers, including any it would import later from the seed, before a server
+        # or normal window; no source entry returns to this frozen bootstrap. Preserve an Open received during boot.
+        if macos_source_entry(_bundle_dir()) is None:
+            log.warning("This app lacks the macOS source entry; source restarts need a new app installation "
+                        "to preserve the app profile and notification identity.")
+        elif launcher_sources_changed(REPO_DIR, bundle_dir=_bundle_dir(), packaged=True):
+            if background is not None and background._open_pending:
+                _launch_argv += ["--launch-intent", "owner"]
+            _exec_source_launcher()
 
     # D-8: decide here, PRESENT after the gateway is healthy. Everything above
     # (single-instance lock, Git, managed-repo bootstrap/seed validation) is a
@@ -1389,7 +1383,7 @@ def main(argv=()):
         webview.create_window(
             "Ouroboros — Startup Failed",
             html=(
-                "<html><body style='background:#1a1a2e;color:white;font-family:system-ui;"
+                "<html><body style='background:#0f0f11;color:#efeff2;font-family:system-ui;"
                 "display:flex;align-items:center;justify-content:center;height:100vh;margin:0'>"
                 "<div style='text-align:center;max-width:460px;padding:24px'>"
                 "<h2>Ouroboros failed to start</h2>"
@@ -1440,6 +1434,7 @@ def main(argv=()):
 
     class MainApi(DesktopApi):  # alerts, shell facts and system notifications: launcher_background.DesktopApi
         _background = background
+        _shell_facts = _shell_facts()
         @staticmethod
         def _native_confirm(title: str, message: str) -> bool:
             return bool(_webview_window and _webview_window.create_confirmation_dialog(title, message))
@@ -1481,9 +1476,14 @@ def main(argv=()):
                 log.warning("Reviewed-skill auto-grant confirmation failed: %s", exc, exc_info=True)
                 return {"ok": False, "error": f"Native confirmation failed: {exc}"}
 
-        def request_skill_key_grant(self, skill: str, keys: list) -> dict:
+        def request_skill_key_grant_with_job(self, skill: str, keys: list, enable_after_grant: bool = False) -> dict:
+            return self.request_skill_key_grant(skill, keys, enable_after_grant, True)
+
+        def request_skill_key_grant(self, skill: str, keys: list, enable_after_grant: bool = False,
+                                   allow_pending: bool = False) -> dict:
             try:
-                return _request_skill_key_grant(skill, keys, self._native_confirm)
+                return _request_skill_key_grant(skill, keys, self._native_confirm,
+                                               enable_after_grant=enable_after_grant, allow_pending=allow_pending)
             except Exception as exc:
                 log.warning("Skill grant native confirmation failed: %s", exc, exc_info=True)
                 return {"ok": False, "error": f"Native confirmation failed: {exc}"}
@@ -1558,10 +1558,10 @@ def main(argv=()):
         width=1100,
         height=750,
         min_size=(800, 500),
-        background_color="#0d0b0f",
+        background_color="#0f0f11",
         text_select=True, hidden=background.start_hidden(options.launch_intent),
     )
-    _webview_window = background.attach(window)  # Persist cookies and website data (ouroboros.theme); rebuild/limits: ARCHITECTURE §3.
+    _webview_window = attach_media_permissions(background.attach(window), url)  # Persist cookies and website data (ouroboros.theme); rebuild/limits: ARCHITECTURE §3.
     webview.start(func=background.run, debug=False, private_mode=False,
                   menu=setup_recovery_menu(window, lambda: _generation_port))
 

@@ -60,6 +60,7 @@
  * @property {Array<WorkControl>} controls
  * @property {*} since
  * @property {boolean} confirmed
+ * @property {string} mark  // moving | still | pause | ring | none (docs/DESIGN.md "Status marks")
  * @property {string=} outcome
  * @property {WorkFocus=} focus
  * @property {Array<Object>=} gaps
@@ -72,7 +73,7 @@
  * @property {string} call
  * @property {Array<Object>} turn
  * @property {boolean} amber
- * @property {string} mark  // moving | still | dot | ring | none
+ * @property {string} mark  // moving | still | pause | ring | none
  * @property {boolean} confirmed
  * @property {Array<string>} works
  */

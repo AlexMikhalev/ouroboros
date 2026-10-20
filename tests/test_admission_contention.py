@@ -10,6 +10,7 @@ import pytest
 from ouroboros import _usage_wait, owner_pause, queue_observation, store, usage_accounting as ua
 from ouroboros.model_wait import task_model_wait_scope
 from ouroboros.task_results import write_task_result
+from tests._store_journal_shared import exclusive_hold, read_hold, use_journal, write_hold
 
 pytestmark = pytest.mark.serial
 
@@ -33,16 +34,17 @@ def publish(root, *, generation="new", fences=()):
 
 
 @contextlib.contextmanager
-def database_reader(root, *, exclusive=False, money=False, acquire_wait_sec=0.0):
-    """A real independent connection; release is controlled by the waiting consumer."""
+def database_reader(root, *, exclusive=False, write=False, money=False, acquire_wait_sec=0.0):
+    """A real independent connection; release is controlled by the waiting consumer. It makes
+    every other read and write busy (``exclusive``), or the next write (``write``), in the
+    store's journal mode, else it holds a read (``tests/_store_journal_shared.py``)."""
     entered, release = threading.Event(), threading.Event()
     errors = []
     path = root / "state" / ("usage.sqlite" if money else "current.sqlite")
+    hold = exclusive_hold if exclusive else write_hold if write else read_hold
     def run():
         try:
-            with contextlib.closing(store.connect(path, store.TIER_ENFORCED, wait_sec=acquire_wait_sec)) as conn:
-                conn.execute("BEGIN EXCLUSIVE" if exclusive else "BEGIN")
-                conn.execute("SELECT 1 FROM meta LIMIT 1").fetchone()
+            with contextlib.closing(hold(path, wait_sec=acquire_wait_sec)) as conn:
                 entered.set()
                 if not release.wait(8):
                     raise AssertionError("consumer never released its database fixture")
@@ -134,6 +136,9 @@ def test_real_control_poll_does_not_wait_for_legacy_sql_latch(root, monkeypatch,
 
 
 def test_dispatch_commit_busy_rolls_back_before_waiting_on_root_lock(root, monkeypatch):
+    # A held reader makes only a rollback-journal COMMIT busy (a WAL COMMIT waits for no reader):
+    # the subject is that journal's, which every install WAL is not proven safe on keeps.
+    use_journal(monkeypatch, "PERSIST")
     original_commit = ua.usage_store.Txn.commit
     held = contextlib.ExitStack()
     waits, sends = [], []

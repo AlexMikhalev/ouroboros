@@ -18,6 +18,7 @@
  * @property {string} content_hash
  * @property {string} payload_root
  * @property {string} installed_at
+ * @property {string=} removal  // uninstall | delete | ''
  * @property {string=} review_status
  * @property {boolean=} review_stale
  * @property {{status: string, stale: boolean, executable_review: boolean, blocking_reason: string, review_enforcement: string, summary: string, author_accepted: (boolean|undefined), reviewed_content_hash: (string|undefined), author_disposition: (Object|undefined), preflight_failed: (boolean|undefined), preflight_failed_stale: (boolean|undefined)}=} review_gate
@@ -92,6 +93,7 @@
  * @property {Array<string|Object>=} keys
  * @property {Array<string|Object>=} granted_keys
  * @property {string=} expected_content_hash
+ * @property {boolean=} enable_after_grant
  */
 
 /**
@@ -103,7 +105,11 @@
 /**
  * @typedef {Object} SkillToggleResponse
  * @property {string} skill
- * @property {boolean} enabled
+ * @property {boolean=} ok
+ * @property {boolean=} pending  // enabling still installs packages: follow job_id on the lifecycle queue; no enabled yet
+ * @property {string=} job_id
+ * @property {string=} message
+ * @property {boolean=} enabled
  * @property {string=} review_status
  * @property {boolean=} review_stale
  * @property {Object=} review_gate
@@ -120,6 +126,8 @@
  * @typedef {Object} SkillActionRefusal
  * @property {boolean=} ok
  * @property {string} error
+ * @property {string=} code
+ * @property {string=} detail
  * @property {number=} status_code
  * @property {string=} skill
  * @property {string=} source
@@ -703,6 +711,12 @@
 /**
  * `GET /api/extensions`: every installed skill and what the extension loader has live.
  * @typedef {Object} ExtensionsIndexResponse
+ * @property {UiContribution[]} contributions
+ * @property {Object.<string,Object[]>} offers
+ * @property {Object} preferences
+ * @property {Object.<string,{key:string,available:boolean,reason:string}>} voice
+ * @property {string[]} icons
+ * @property {Object.<string,string[]>} problems
  * @property {InstalledSkill[]} skills
  * @property {ExtensionLiveSnapshot} live
  */
@@ -754,10 +768,48 @@
 /**
  * `extension_loader.snapshot()` — the `live` block of `GET /api/extensions`.
  * @typedef {Object} ExtensionLiveSnapshot
+ * @property {UiContribution[]} contributions
  * @property {string[]} extensions
  * @property {string[]} tools
  * @property {string[]} routes
  * @property {string[]} ws_handlers
  * @property {Object[]} ui_tabs
  * @property {Object[]} settings_sections
+ */
+
+/**
+ * Manifest contribution, projected from one live revision. Optional provider fields stay absent.
+ * @typedef {Object} UiContribution
+ * @property {string} key
+ * @property {string} skill
+ * @property {string} skill_label
+ * @property {string} id
+ * @property {string=} placement
+ * @property {string=} provides
+ * @property {string} label
+ * @property {string} title
+ * @property {string} icon
+ * @property {number} order
+ * @property {Object=} action
+ * @property {{url:string,refresh_s:number}=} source
+ * @property {string=} runtime
+ * @property {string=} route_url
+ * @property {string=} destination
+ * @property {string[]=} languages
+ * @property {string[]=} formats
+ * @property {string=} install_size
+ * @property {number=} max_bytes
+ * @property {number=} max_seconds
+ * @property {{kind:string,url:string}} render
+ * @property {string=} revision
+ */
+/**
+ * GET /api/ui/contributions (no-store). A missing chosen engine remains selected.
+ * @typedef {Object} UiContributionsResponse
+ * @property {UiContribution[]} contributions
+ * @property {Object.<string,Object[]>} offers
+ * @property {Object} preferences
+ * @property {Object.<string,{key:string,available:boolean,reason:string}>} voice
+ * @property {string[]} icons
+ * @property {Object.<string,string[]>} problems
  */

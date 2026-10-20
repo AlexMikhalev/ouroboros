@@ -63,7 +63,7 @@ test('one episode is not a chain; several are one meta line each, the current on
         { started: new Date(2026, 9, 10, 19, 42).getTime(), ended: '' },
     ]), true);
     assert.equal(el.hidden, false);
-    assert.match(el.innerHTML, /Episode 1<\/span> · <span class="chat-live-episode-span">17:33–18:15<\/span> · <span class="chat-live-episode-outcome" data-tone="error">Failed<\/span><span class="chat-live-episode-cause">: The model provider failed<\/span>/);
+    assert.match(el.innerHTML, /Episode 1<\/span> · <span class="chat-live-episode-span">17:33–18:15<\/span> · <span class="chat-live-episode-outcome" data-tone="failed">Failed<\/span><span class="chat-live-episode-cause">: The model provider failed<\/span>/);
     assert.match(el.innerHTML, /data-episode="2" data-current="1"><span class="chat-live-episode-label">Episode 2<\/span> · <span class="chat-live-episode-span">since 19:42<\/span><\/div>/,
         'the current episode shows only its time: the chip is its');
     renderEpisodes(el, [{ started: 0, phase: 'error', cause: '<b>x</b>' }, {}]);
@@ -71,6 +71,10 @@ test('one episode is not a chain; several are one meta line each, the current on
     renderEpisodes(el, [{ name: '<b>old</b>' }, { name: 'Continue: check totals' }]);
     assert.match(el.innerHTML, /&lt;b&gt;old&lt;\/b&gt;/);
     assert.match(el.innerHTML, /chat-live-episode-name">Continue: check totals/);
+    // An earlier episode's outcome takes the chips' tones: warnings succeed, a stop is neutral, a failure red.
+    renderEpisodes(el, [{ phase: 'warn' }, { phase: 'cancelled' }, { phase: 'timeout' }, {}]);
+    assert.deepEqual([...el.innerHTML.matchAll(/episode-outcome" data-tone="(\w+)">([^<]+)</g)].map((m) => `${m[2]}:${m[1]}`),
+        ['Done with warnings:ok', 'Stopped:neutral', 'Failed:failed']);
 });
 
 function card(id, ts, name) {

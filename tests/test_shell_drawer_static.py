@@ -37,7 +37,7 @@ def test_drawer_is_a_layer_with_one_close_control_where_the_menu_button_was():
     # A room's ☰ is its composer's first control; its header opts out; every other page keeps ☰ in its header.
     assert "body.project-panel-open .mobile-nav-toggle" not in css
     chat_js = _read("web/modules/chat.js")
-    row = chat_js.split('<div class="chat-toolbar-row">', 1)[1]
+    row = _read("web/modules/composer.js").split('<div class="chat-toolbar-row">', 1)[1]  # the room's composer markup
     assert row.lstrip().startswith("${renderMobileNavToggle({ inComposer: true })}"), "the composer row starts with ☰"
     assert "showMobileNav: false,  // a room's ☰ is its composer row's first control" in chat_js
     assert "showMobileNav: false," in app_js.split("projectPanel?.insertAdjacentHTML('afterbegin', renderPageHeader({", 1)[1].split("}));", 1)[0]
@@ -64,14 +64,19 @@ def test_the_room_is_the_card_the_drawer_pushes_aside():
     assert "z-index: var(--z-room);" in room and "background: var(--bg-primary);" in room, "the opaque card over the drawer"
     card = css.split('html[data-layout="stack"] body.nav-drawer-open :is(#content, .project-panel.open) {', 1)[1].split("}", 1)[0]
     assert "transform: translateX(var(--drawer-w)) scale(0.96);" in card and "border-radius: var(--room-card-radius);" in card
-    dragged = css.split('html[data-layout="stack"] :is(#content, .project-panel.open).dragging {', 1)[1].split("}", 1)[0]
+    dragged = css.split('html[data-layout="stack"] body :is(#content, .project-panel.open).dragging {', 1)[1].split("}", 1)[0]
     assert "var(--drawer-p, 0) * var(--drawer-w)" in dragged, "the card follows the finger by the drawer's number"
+    # As specific as the open card's and the open veil's rules, and after them: a finger on the open drawer moves both.
+    for opened, held in (('body.nav-drawer-open :is(#content, .project-panel.open) {',
+                          'body :is(#content, .project-panel.open).dragging {'),
+                         ('body.nav-drawer-open .room-veil {', 'body .room-veil.dragging {')):
+        assert css.index(f'html[data-layout="stack"] {opened}') < css.index(f'html[data-layout="stack"] {held}'), held
     scrim = css.split('html[data-layout="stack"] .nav-drawer-backdrop {', 1)[1].split("}", 1)[0]
     assert "inset: 0 0 0 var(--drawer-w);" in scrim and "background: transparent;" in scrim, "a clear way back over the quarter"
     assert "rgba(0, 0, 0, 0.48)" not in scrim
     project_scrim = css.split('html[data-layout="stack"] .project-panel-backdrop {', 1)[1].split("}", 1)[0]
     assert "display: none;" in project_scrim, "a Project's scrim never lies over the drawer"
-    veil = css.split('html[data-layout="stack"] .room-veil.dragging {', 1)[1].split("}", 1)[0]
+    veil = css.split('html[data-layout="stack"] body .room-veil.dragging {', 1)[1].split("}", 1)[0]
     assert "var(--drawer-p, 0)" in veil, "the veil fades the words by the same number"
     # The finger moves the rooms and their veils with the drawer (drawer_drag.js `also`).
     assert "also: movingRooms," in app_js and "veil.className = 'room-veil';" in app_js

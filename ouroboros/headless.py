@@ -769,8 +769,10 @@ def _build_deliverable_manifest(
     Read/change gaps are disclosed, not delivery failures; actual copies stay strict.
     """
     from ouroboros.artifacts import stream_artifact_file
+    from ouroboros.store import is_wal_index
 
     contents: List[Dict[str, Any]] = []
+    excluded: List[Dict[str, Any]] = []  # a WAL index: shared memory never read, rebuilt from the log
     def failed(exc: OSError) -> None:
         path = pathlib.Path(exc.filename) if exc.filename else workspace_root
         contents.append({"rel": path.relative_to(workspace_root).as_posix(), "type": "directory",
@@ -780,6 +782,9 @@ def _build_deliverable_manifest(
         for fname in sorted(files):
             fpath = pathlib.Path(root) / fname
             entry = {"rel": fpath.relative_to(workspace_root).as_posix()}
+            if is_wal_index(fpath):
+                excluded.append({**entry, "reason": "SQLite WAL index"})
+                continue
             try:
                 if fpath.is_symlink():
                     entry.update(symlink=True, sha256="")
@@ -794,7 +799,7 @@ def _build_deliverable_manifest(
         "project_root": str(workspace_root), "created_at": utc_now_iso(),
         "file_count": sum(item.get("type") != "directory" for item in contents),
         "complete": gap_count == 0, "gap_count": gap_count,
-        "truncated": False, "contents": contents,
+        "truncated": False, "contents": contents, **({"excluded": excluded} if excluded else {}),
     }
 
 

@@ -319,9 +319,9 @@ def accept_and_turn_on(drive_root: pathlib.Path, name: str, *, repo_path: Option
     from ouroboros.config import REPO_DIR
     from ouroboros.marketplace.install import _MarketplaceReviewCtx
     from ouroboros.skill_lifecycle_actions import reconcile_turn_on_when_ready
+    from ouroboros.skill_dependencies import ensure_skill_dependencies
     from ouroboros.skill_loader import auto_grant_if_enabled, find_skill
     from ouroboros.skill_review import run_acceptance_preflight
-    from ouroboros.skill_review_runner import _reconcile_deps_after_pass_review
 
     drive = pathlib.Path(drive_root)
     if repo_path is None:
@@ -331,17 +331,22 @@ def accept_and_turn_on(drive_root: pathlib.Path, name: str, *, repo_path: Option
     out: Dict[str, Any] = {"accepted": False, "granted_keys": [], "granted_permissions": [], "deps_status": ""}
     preflight = run_acceptance_preflight(_MarketplaceReviewCtx(drive, pathlib.Path(repo_dir or REPO_DIR)), drive, name)
     if not preflight.get("ok"):
-        return {**out, "turn_on": "not_ready", "preflight_error": str(preflight.get("error") or "")[:500]}
+        return {**out, "turn_on": "not_ready", "preflight_error": str(preflight.get("error") or "")[:500],
+                "setup_error": "Its files did not pass the check; it remains off."}
     loaded = find_skill(drive, name, repo_path=repo_path)
     if loaded is not None and not loaded.load_error and loaded.review.gate_for(loaded.content_hash)["executable_review"]:
         grant = auto_grant_if_enabled(drive, loaded)
         out.update(accepted=True, granted_keys=list(grant.granted_keys),
                    granted_permissions=list(grant.granted_permissions))
-        out["deps_status"], deps_error = _reconcile_deps_after_pass_review(drive, name, repo_path=repo_path)
+        out["deps_status"], deps_error = ensure_skill_dependencies(drive, loaded)
         if deps_error:
             out["deps_error"] = deps_error
-    out["turn_on"] = reconcile_turn_on_when_ready(drive, name, repo_path=repo_path,
-                                                  reason="installed release accepted")["action"]
+            out["setup_error"] = "Its packages did not install; it remains unavailable."
+    if out["deps_status"] in {"installed", "not_required"}:  # only proven readiness permits turn-on
+        out["turn_on"] = reconcile_turn_on_when_ready(drive, name, repo_path=repo_path,
+                                                      reason="installed release accepted")["action"]
+    else:
+        out["turn_on"] = "not_ready"
     return out
 
 
@@ -634,16 +639,18 @@ def uninstall_installed(drive_root: pathlib.Path, name: str) -> Dict[str, Any]:
     from ouroboros.config import get_skills_repo_path
     from ouroboros.marketplace.isolated_deps import DEPS_STATE_FILENAME
     from ouroboros.skill_loader import find_skill, skill_state_dir_path
-    from ouroboros.skill_uninstall_state import write_uninstall_tombstone
+    from ouroboros.skill_uninstall_state import removal_action, write_uninstall_tombstone
 
     loaded = find_skill(pathlib.Path(drive_root), name, repo_path=get_skills_repo_path())
     if loaded is None:
         raise SkillInstallError("not_installed", f"{name} is not installed.", 404)
-    if loaded.identity_collision:
-        raise SkillInstallError("name_collision", f"Several folders use the name {name}; rename one first.")
-    if loaded.location == "user_repo":
-        raise SkillInstallError("local_folder", f"{name} lives in your local skills folder; remove it there.")
     record = read_install_record(pathlib.Path(drive_root), name)
+    if removal_action(loaded, record) != "uninstall":  # the one admission rule; the words are this remover's
+        if loaded.identity_collision:
+            raise SkillInstallError("name_collision", f"Several folders use the name {name}; rename one first.")
+        if loaded.location == "user_repo":
+            raise SkillInstallError("local_folder", f"{name} lives in your local skills folder; remove it there.")
+        raise SkillInstallError("not_from_source", f"{name} was made on this computer; use Delete to remove it.")
     skill_dir = pathlib.Path(loaded.skill_dir)
     if loaded.location == "clawhub" and (skill_dir / ".clawhub.json").is_file():
         from ouroboros.marketplace.install import uninstall_skill
@@ -652,8 +659,6 @@ def uninstall_installed(drive_root: pathlib.Path, name: str) -> Dict[str, Any]:
         if not result.ok:
             raise SkillInstallError("uninstall_failed", result.error)
         return {"ok": True, "name": name, "source": "clawhub"}
-    if loaded.location == "external" and record is None:
-        raise SkillInstallError("not_from_source", f"{name} was made on this computer; use Delete to remove it.")
     _unload(name)
     shutil.rmtree(skill_dir)  # nothing seeds built-ins at startup, so a removed one stays removed
     discard_update_snapshot(pathlib.Path(drive_root), name)

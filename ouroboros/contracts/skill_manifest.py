@@ -47,6 +47,7 @@ VALID_SKILL_PERMISSIONS = frozenset(
         # sentence shown in the owner's chat as a System row signed with the
         # skill's name; never a model turn. Narrower than inject_chat, granted separately.
         "notify_owner",
+        "page_module",  # Trusted same-origin JavaScript in the owner's page.
         "context_snapshot",
     }
 )
@@ -123,6 +124,7 @@ class SkillManifest:
     companion_processes: List[Dict[str, Any]] = field(default_factory=list)
     scheduled_tasks: List[Dict[str, Any]] = field(default_factory=list)
     ui_tab: Optional[Dict[str, Any]] = None
+    contributes: List[Dict[str, Any]] = field(default_factory=list)
     # ABI-1 (PluginAPI 2.0): optional declared generation, normalized to
     # {"version": "M.m", "capabilities": [...]}. Absent (None) means the
     # payload binds against the LEGACY generation by construction.
@@ -457,6 +459,26 @@ def _parse_scheduled_tasks(scheduled_raw: Any) -> List[Dict[str, Any]]:
     return scheduled_tasks
 
 
+def _parse_contributions(raw: Any) -> List[Dict[str, Any]]:
+    """Shape only; the UI catalog drops individual semantic mistakes later."""
+    hint = "use at most 32 mappings with unique lowercase ids and exactly one of placement or provides"
+    if not isinstance(raw, list) or len(raw) > 32:
+        raise SkillManifestError("'contributes' must be a list of at most 32 entries", fix_hint=hint)
+    seen: set[str] = set()
+    for item in raw:
+        if not isinstance(item, dict):
+            raise SkillManifestError("each 'contributes' entry must be a mapping", fix_hint=hint)
+        ident = item.get("id")
+        if not isinstance(ident, str) or not re.fullmatch(r"[a-z0-9_]{1,40}", ident):
+            raise SkillManifestError("contributes.id must match [a-z0-9_]{1,40}", fix_hint=hint)
+        if ident in seen:
+            raise SkillManifestError(f"duplicate contributes.id {ident!r}", fix_hint=hint)
+        seen.add(ident)
+        if ("placement" in item) == ("provides" in item):
+            raise SkillManifestError(f"contributes.{ident} needs exactly one of placement/provides", fix_hint=hint)
+    return [dict(item) for item in raw]
+
+
 def _manifest_from_mapping(data: Dict[str, Any], *, body: str) -> SkillManifest:
     known = {
         "name",
@@ -477,6 +499,7 @@ def _manifest_from_mapping(data: Dict[str, Any], *, body: str) -> SkillManifest:
         "companion_processes",
         "scheduled_tasks",
         "ui_tab",
+        "contributes",
         "plugin_api",
         "model_experience",
         "context_snapshot",
@@ -624,6 +647,7 @@ def _manifest_from_mapping(data: Dict[str, Any], *, body: str) -> SkillManifest:
         companion_processes=companion_processes,
         scheduled_tasks=scheduled_tasks,
         ui_tab=ui_tab,
+        contributes=_parse_contributions(data.get("contributes", [])),
         plugin_api=plugin_api,
         model_experience=model_experience,
         context_snapshot=context_snapshot,

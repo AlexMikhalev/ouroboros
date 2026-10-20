@@ -168,7 +168,7 @@ def bootstrap_process_path() -> list[str]:
 def request_native_attention(
     show_window: Optional[Callable[[], None]] = None, *, sound: bool = True,
 ) -> dict[str, object]:
-    """Request one best-effort window/sound cue without claiming a banner."""
+    """Legacy attention bridge. macOS has no separate sound: notifications own it."""
     window_attention = ""
     if show_window is not None:
         try:
@@ -176,21 +176,13 @@ def request_native_attention(
             window_attention = "launcher"
         except Exception as exc:
             log.debug("Native window attention failed: %s", exc)
-    if not sound:
+    if not sound or IS_MACOS:
         if window_attention:
             return {"ok": True, "status": "window_only", "sound_played": False,
                     "window_attention": window_attention}
         return {"ok": False, "status": "unsupported", "reason": "no_window_attention"}
     try:
-        if IS_MACOS:
-            path = "/System/Library/Sounds/Glass.aiff"
-            if not pathlib.Path(path).is_file():
-                raise FileNotFoundError(path)
-            proc = subprocess.run(["/usr/bin/afplay", path], check=False,
-                                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=2)
-            if proc.returncode:
-                raise RuntimeError(f"sound_exit_{proc.returncode}")
-        elif IS_WINDOWS:
+        if IS_WINDOWS:
             import winsound
             winsound.MessageBeep(winsound.MB_ICONASTERISK)
         elif IS_LINUX and (command := shutil.which("canberra-gtk-play")):

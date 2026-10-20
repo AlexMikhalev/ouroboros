@@ -8,7 +8,7 @@ Close keeps the daemon; Restart stops generation work before transfer; Panic nev
 |---|---|---|---|
 | Window close with keep-running on (desktop, live indicator) | nothing: the window hides | every task, schedule, companion and the daemon | none |
 | Close, quit, SIGTERM, launcher gone (pipe EOF, POSIX too) | this generation's workers, services and owned executor/task processes, unfinished reviews included | the shared daemon and its clients; saved pauses; saved work, held for Resume | `server_shutdown.cause`: `external_signal`, `launcher_quit` or `launcher_gone` |
-| Planned restart (self-restart, update, rollback) | the same; the daemon only when the landed checkout pins another engine | saved pauses; saved work and the runnable queue, returned; a same-pin daemon | the restart handoff |
+| Planned restart (self-restart, update, rollback) | the same; an off-pin daemon unless newer | saved pauses; saved work and the runnable queue, returned; a same-pin or newer daemon | the restart handoff |
 | Manual Restart (owner) | the same plus the installation daemon and every delegated run it serves, other clients' included | saved pauses; saved work and the runnable queue, returned | `owner_restart_no_resume.flag` |
 | Panic | all owned work | nothing resumes until the owner acts | `panic_stop.flag` |
 

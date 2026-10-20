@@ -24,7 +24,7 @@ from tests.test_ui_document_reader_browser import (
     _enter_room, _feed_scroll, _open as _open_document, _reader_place, _send_files_mock, _wait_reader_footer,
 )
 from tests.test_ui_smoke_playwright import direct_server_with_data  # noqa: F401 - pytest fixture import
-from tests.ui_chat_viewport_smoke import _CAPTURE_TEST_SOCKET
+from tests.ui_chat_viewport_smoke import _CAPTURE_TEST_SOCKET, set_viewport
 
 pytestmark = [pytest.mark.ui_browser, pytest.mark.serial]
 
@@ -280,7 +280,7 @@ def test_image_preview_in_main_live_and_after_reload(direct_server_with_data, mo
             _escape(page)
 
             # Phone, light: a full sheet. The opener is half above the fold and stays where it was.
-            page.set_viewport_size(NARROW)
+            set_viewport(page, NARROW["width"], NARROW["height"])
             page.emulate_media(color_scheme="light")
             state = _open(page, wide, at=_half_visible(page, wide))
             assert [round(value) for value in state["rect"]] == [0, 0, NARROW["width"], NARROW["height"]], state["rect"]
@@ -298,6 +298,9 @@ def test_image_preview_in_main_live_and_after_reload(direct_server_with_data, mo
             page.goto(url, wait_until="domcontentloaded")
             wide = page.locator("#chat-messages .chat-gallery-item").filter(has_text="Wide chart").locator(".chat-photo-open")
             wide.wait_for(state="visible", timeout=30_000)
+            # The room lands at its newest message once its history is read; the press is made on the landed feed.
+            page.wait_for_selector('#chat-messages[data-history-hydrated="true"]', state="attached")
+            _feed_scroll(page)
             state = _open(page, wide)
             assert state["opened"] == [] and state["title"] == "Wide chart"
             _check_fit(state, (2400, 1600))
@@ -307,7 +310,7 @@ def test_image_preview_in_main_live_and_after_reload(direct_server_with_data, mo
             _escape(page)
             assert page.evaluate(FOCUSED_TILE) == "Wide chart"
             assert abs(_feed_scroll(page) - state["opening_scroll"]) <= 1
-            page.set_viewport_size(NARROW)
+            set_viewport(page, NARROW["width"], NARROW["height"])
             page.emulate_media(color_scheme="dark")
             # The file card lies lower in the conversation, so it can be left half past an edge here.
             chart = page.locator("#chat-messages .chat-file-card").filter(has_text="chart.png")
@@ -702,6 +705,9 @@ def test_owner_files_and_photos_read_in_place_with_a_head_that_wraps(direct_serv
                 touch.goto(url, wait_until="domcontentloaded")
                 item = touch.locator(f'{feed} .chat-gallery-item:has(img[alt="{TINY}"])')
                 item.wait_for(state="visible", timeout=30_000)
+                # The room lands at its newest message once its history is read; the place is taken after that.
+                touch.wait_for_selector(f'{feed}[data-history-hydrated="true"]', state="attached")
+                _feed_scroll(touch)
                 item.evaluate("el => el.scrollIntoView({ block: 'center' })")
                 item.locator("img").evaluate("img => img.decode()")
                 before = _feed_scroll(touch)

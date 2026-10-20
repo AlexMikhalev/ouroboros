@@ -3,15 +3,20 @@
  *
  * On a phone (the stack layout) the row (☰, Swarm, Context, Effort) takes its own line above the field. While the
  * owner scrolls back through the history it folds away: the composer keeps only the field, and ☰, still the row's
- * first control, waits beside it. Scrolling toward the latest, reaching it, a press on the composer, focusing the
- * field or opening a capsule brings the row back, and so does any other layout. Like Safari's bars, a direction decides: FOLD.run px one way.
+ * first control, waits beside it. Scrolling toward the latest, reaching it, focusing the field or opening a capsule
+ * brings the row back, and so does any other layout. Like Safari's bars, a direction decides: FOLD.run px one way.
+ * A press on ☰, ↓, 📎 or Send is that control's own: the row stays as it is, so nothing slides under the finger
+ * before the tap lands. While the owner writes, or the field holds the focus, the row never folds.
  *
- * The direction is read from where the newest row stands below the feed's visible bottom, not from the scroll
- * position: older history prepended above keeps the reader's place (and so the newest row's), and the room the
- * composer reserves after the newest row moves nothing, so neither folds the row nor brings it back by itself.
+ * Only the owner's own scroll is a step. It is read from where the newest row stands below the feed's visible
+ * bottom, and only between two reads of the same content: older history paged in or let go, a message or a newer
+ * page arriving, a row growing and the composer's own reserve change the feed's content height, so the read that
+ * sees them starts again from there and neither folds the row nor brings it back by itself.
  * style.css draws the fold from two facts on the composer: the row's measured height (`--fold-row-h`, so the line
- * collapses from what it was) and how far ☰ goes down to the field's middle (`--fold-menu-dy`); `data-fold`
- * holds from the fold until the row is back, `data-folded` while it is folded. */
+ * collapses from what it was) and how far ☰ goes down to the field's middle (`--fold-menu-dy`: past a reply staged
+ * between them, read at every fold, and again whenever the folded field's height changes, as a draft of several lines
+ * wraps anew in the narrower field); `data-fold` holds from the fold until the row is back, `data-folded` while it is
+ * folded. */
 
 import { isStackLayout, onLayoutChange } from './layout.js';
 
@@ -27,28 +32,48 @@ export function createComposerFold({ feed, wrap, row, win = globalThis.window, d
     if (!feed || !wrap || !row) return { destroy() {}, folded: () => false };
     let destroyed = false;
     let folded = false;
-    let last = null;
+    // The last read: how far the newest row lay below the visible bottom, and the feed's content height then.
+    let last = { away: null, height: 0 };
     let run = 0;
     let releaseTimer = 0;
     let frame = 0;
+    // ☰'s way down: the depth of ☰'s centre on the line, measured when the line is first held, and what lies between
+    // the line and the field (a staged reply's strip, chat_reply.js), read at every fold.
+    let aim = null;
     const text = wrap.querySelector?.('.chat-text-row');
+    const field = wrap.querySelector?.('textarea');
 
-    // How far the newest row lies below the feed's visible bottom (negative: above it). The newest row with a box:
-    // the typing indicator sits last and is hidden most of the time.
-    function away() {
+    // Where the newest row with a box stands (the typing indicator sits last and is hidden most of the time): how far
+    // it lies below the feed's visible bottom (negative: above it), and the feed's content height.
+    function measure() {
         let newest = feed.lastElementChild;
         while (newest && !newest.getClientRects?.().length) newest = newest.previousElementSibling;
-        if (!newest?.getBoundingClientRect) return null;
-        return newest.getBoundingClientRect().bottom - feed.getBoundingClientRect().bottom;
+        const away = newest?.getBoundingClientRect
+            ? newest.getBoundingClientRect().bottom - feed.getBoundingClientRect().bottom : null;
+        return { away, height: feed.scrollHeight };
     }
     const atLatest = () => feed.scrollHeight - feed.clientHeight - feed.scrollTop < FOLD.latest;
-    // While the owner writes (the keyboard is up: app.js's keyboard-open), or works a capsule, the row stays. A field
-    // that merely holds the focus is not writing: a room focuses it when it opens, with no keyboard on a phone.
-    const busy = () => Boolean(doc?.body?.classList?.contains?.('keyboard-open'))
-        || Boolean(row.dataset?.ownerSolo) || Boolean(row.querySelector?.('[data-open="true"]'));
+    // While the owner writes or works a capsule the row stays: the keyboard is up (app.js's keyboard-open), the field
+    // holds the focus (with or without a keyboard), or a capsule is open, focused or has the line alone. ☰ stays in
+    // sight folded, so its focus (the drawer gives it back on closing) keeps nothing.
+    const busy = () => {
+        const focused = doc?.activeElement;
+        const menu = row.querySelector?.(':scope > .composer-menu');
+        return Boolean(doc?.body?.classList?.contains?.('keyboard-open'))
+            || Boolean(focused && (focused === field || (row.contains?.(focused) && !menu?.contains?.(focused))))
+            || Boolean(row.dataset?.ownerSolo) || Boolean(row.querySelector?.('[data-open="true"]'));
+    };
+
+    // Folded, the line starts where what lay between it and the field does (the wrap's gap goes with the line), and ☰
+    // keeps its place on the line: it goes down by that, then by half the field's height less its own centre's depth
+    // on the line, to the field's middle.
+    function aimMenu(fieldHeight) {
+        if (aim) wrap.style.setProperty('--fold-menu-dy', `${Math.round(aim.between + fieldHeight / 2 - aim.depth)}px`);
+    }
 
     function release() {
         delete wrap.dataset.fold;
+        aim = null;
         wrap.style.removeProperty('--fold-row-h');
         wrap.style.removeProperty('--fold-menu-dy');
     }
@@ -57,19 +82,24 @@ export function createComposerFold({ feed, wrap, row, win = globalThis.window, d
         if (folded) return;
         folded = true;
         if (releaseTimer) { win?.clearTimeout?.(releaseTimer); releaseTimer = 0; }
+        const line = row.getBoundingClientRect();
+        const field = text?.getBoundingClientRect?.();
         // The line collapses from the height it has: measured and held before the fold starts.
         if (!('fold' in wrap.dataset)) {
-            const line = row.getBoundingClientRect();
             wrap.style.setProperty('--fold-row-h', `${Math.ceil(line.height)}px`);
-            // Folded, the line starts where the field does, and ☰ keeps its place on the line: it goes down by half
-            // the field's height less its own centre's depth on the line, to the field's middle.
             const menu = row.querySelector?.(':scope > .composer-menu')?.getBoundingClientRect?.();
-            const field = text?.getBoundingClientRect?.();
-            if (menu && field) {
-                wrap.style.setProperty('--fold-menu-dy', `${Math.round(field.height / 2 - (menu.top + menu.height / 2 - line.top))}px`);
-            }
+            aim = menu ? { between: 0, depth: menu.top + menu.height / 2 - line.top } : null;
             wrap.dataset.fold = '';
             void wrap.offsetHeight;  // the held height is the transition's start
+        }
+        // A fold inside the hold (the row back for less than FOLD.settle) keeps the held line, but a reply staged or
+        // cancelled meanwhile (each brings the row back first) has moved the field: what lies between is read again at
+        // every fold. Read past the line's height and margin as they stand now, it is the same mid-motion as at rest.
+        if (aim && field) {
+            const gap = parseFloat(win?.getComputedStyle?.(wrap)?.rowGap) || 0;
+            const margin = parseFloat(win?.getComputedStyle?.(row)?.marginBottom) || 0;
+            aim.between = Math.max(0, field.top - (line.top + line.height + margin) - gap);
+            aimMenu(field.height);
         }
         wrap.dataset.folded = '';
     }
@@ -85,16 +115,18 @@ export function createComposerFold({ feed, wrap, row, win = globalThis.window, d
     function read() {
         frame = 0;
         if (destroyed) return;
-        const now = away();
-        const prev = last;
+        const now = measure();
+        // Between two reads of the same content only the scroll moved the newest row; otherwise this read is a new
+        // start (history paged in or let go, rows arriving or growing, the reserve), never the owner's step.
+        const prev = now.height === last.height ? last.away : null;
         last = now;
         if (!isStack?.() || busy()) { run = 0; unfold(); return; }
         if (atLatest()) { run = 0; unfold(); return; }
-        if (now === null || prev === null) return;
-        const step = now - prev;  // > 0: the newest row went further down, the owner reads back
+        if (now.away === null || prev === null) return;
+        const step = now.away - prev;  // > 0: the newest row went further down, the owner reads back
         if (!step) return;
         run = Math.sign(step) === Math.sign(run) ? run + step : step;
-        if (run >= FOLD.run && now > FOLD.away) fold();
+        if (run >= FOLD.run && now.away > FOLD.away) fold();
         else if (run <= -FOLD.run) unfold();
     }
     // One read per frame, however many scroll events the frame brings.
@@ -102,14 +134,18 @@ export function createComposerFold({ feed, wrap, row, win = globalThis.window, d
         if (frame || destroyed) return;
         frame = typeof win?.requestAnimationFrame === 'function' ? win.requestAnimationFrame(read) : (read(), 0);
     };
-    // A press on the composer (the field the owner is about to write in, which may hold the focus already) or its
-    // focus brings the row back.
-    const onFocus = () => { run = 0; unfold(); };
+    // Focusing the field (the owner is about to write; a folded row means it did not hold the focus) brings the row
+    // back. The focus or press of another control in the composer is that control's own and moves nothing.
+    const onFocus = (event) => { if (field && event?.target === field) { run = 0; unfold(); } };
 
     feed.addEventListener('scroll', onScroll, { passive: true });
     wrap.addEventListener('focusin', onFocus);
-    wrap.addEventListener('pointerdown', onFocus);
-    const unwatchLayout = onLayout(() => { run = 0; last = away(); unfold(); });
+    // Folded, the field is narrower by ☰'s place, so a draft of several lines may take one more (its bottom stays where
+    // it was), and the mic, a busy Send or words put in change its height too: ☰ follows it to its middle.
+    const resized = text && typeof win?.ResizeObserver === 'function'
+        ? new win.ResizeObserver(() => { if (folded) aimMenu(text.offsetHeight); }) : null;
+    resized?.observe(text);
+    const unwatchLayout = onLayout(() => { run = 0; last = measure(); unfold(); });
 
     return {
         folded: () => folded,
@@ -118,7 +154,7 @@ export function createComposerFold({ feed, wrap, row, win = globalThis.window, d
             destroyed = true;
             feed.removeEventListener('scroll', onScroll);
             wrap.removeEventListener('focusin', onFocus);
-            wrap.removeEventListener('pointerdown', onFocus);
+            resized?.disconnect();
             if (frame && typeof win?.cancelAnimationFrame === 'function') win.cancelAnimationFrame(frame);
             if (releaseTimer) win?.clearTimeout?.(releaseTimer);
             unwatchLayout?.();

@@ -299,6 +299,16 @@ def _outcome(row: Mapping[str, Any]) -> str:
     return str(lifecycle.get("status") or row.get("status") or "")
 
 
+def mark_of(activity: str, confirmed: bool) -> str:
+    """The shape a work or a room shows on every surface (docs/DESIGN.md "Status marks"): what the work does, never
+    whose move it is (that is ``turn``). Work that is observed running keeps moving even in an incomplete read."""
+    if activity == "working":
+        return "moving"
+    if not confirmed:
+        return "ring"
+    return {"queued": "still", "waiting": "still", "paused": "pause", "idle": "none"}.get(activity, "ring")
+
+
 def roll_up_work(work_id: str, members: List[Dict[str, Any]], *, episode: Mapping[str, Any],
                  name: str = "", room: Any = None, focus: Any = None, delegated: int = 0,
                  outcome: str = "", gaps: Iterable[Dict[str, Any]] = ()) -> Dict[str, Any]:
@@ -364,6 +374,7 @@ def roll_up_work(work_id: str, members: List[Dict[str, Any]], *, episode: Mappin
                     "delegated": int(delegated), "ids": [member["task_id"] for member in members]},
         "confirmed": all(member["confirmed"] for member in members) and not gaps,
     }
+    work["mark"] = mark_of(activity, work["confirmed"])
     if outcome:
         work["outcome"] = outcome
     if isinstance(focus, dict) and str(focus.get("text") or "").strip():
@@ -391,9 +402,8 @@ def roll_up_room(works: List[Mapping[str, Any]], *, complete: bool = True) -> Di
     calls = {work["call"] for work in working if work.get("call")}
     turn = [{"work_id": work["work_id"], **item} for work in works for item in work["turn"]]
     confirmed = complete and all(work["confirmed"] for work in works)
-    mark = {"working": "moving", "queued": "still"}.get(activity, "dot" if activity in {"waiting", "paused"} else "ring")
     return {"activity": activity, "transition": transition, "call": calls.pop() if len(calls) == 1 else "",
-            "turn": turn, "amber": bool(turn), "mark": mark if confirmed or activity == "working" else "ring",
+            "turn": turn, "amber": bool(turn), "mark": mark_of(activity, confirmed),
             "confirmed": confirmed, "works": [work["work_id"] for work in works]}
 
 

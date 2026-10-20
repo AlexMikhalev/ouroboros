@@ -5,7 +5,7 @@ issuing chat's own standalone System row: counted, the newest arrival, never the
 child's words or result. A child's own typed words are lines of its card: never
 counted, never its final, one line each, the same words said again included. Only
 the child's final concludes it, and a photo it delivers stands alone (DESIGN
-"Project unread dot"; the origin-addressed routing notices stay ordinary rows).
+"Unread"; the origin-addressed routing notices stay ordinary rows).
 
 Every row comes from a real producer on its allowed branch: an acting child under
 Cyber Pro (the only access that grants a child ``send_user_message``/``send_photo``;

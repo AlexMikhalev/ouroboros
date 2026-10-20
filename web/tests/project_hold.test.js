@@ -2,10 +2,18 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { computeHydratedDirectActivities } from '../modules/chat_activity.js';
 import { summarizeRoom } from '../modules/project_activity.js';
-import { censusTaskPhase, desiredLiveCardPhase, setHistoricalUnavailable, setLiveCardPhase, setLiveCardTypingVisible, syncParkedPhase } from '../modules/task_phase_chip.js';
+import { censusTaskPhase, desiredLiveCardPhase, setHistoricalUnavailable, setLiveCardPhase, syncParkedPhase } from '../modules/task_phase_chip.js';
 import { emptyWorkState, roomStatusView, workRowView } from '../modules/work_status.js';
 import { readFileSync } from 'node:fs';
+import { ElementStub, TextStub } from './chat_dom_fixture.js';
 import { projection, room, work } from './work_fixture.js';
+
+// A chip as the page has it: the shared status mark first, its words one text node beside it.
+const chipDoc = { createElement: (tag) => new ElementStub(tag, chipDoc), createTextNode: (data) => new TextStub(data) };
+const markOf = (chip) => {
+    const mark = chip.firstElementChild;
+    return mark && !mark.hidden ? `${mark.dataset.shape}/${mark.dataset.hue}` : 'none';
+};
 
 const hold = { label: 'Waiting for Project verification', reason: 'project_routing_fence_lookup_failed', detail: 'Authority is unreadable.' };
 const held = { activity_id: 'same-id', chat_id: 7, kind: 'managed_task', phase: 'queued', project_admission_hold: hold };
@@ -24,20 +32,20 @@ test('a known non-Project wait keeps its scope label, on its row: the header say
 
 test('a held task is stationary in Chat and the sidebar, its label beside the word', () => {
     assert.deepEqual(roomStatusView(inRoom('waiting')),
-        { kind: 'online', text: 'Waiting', tone: 'held', showDots: false, dots: 'one', amber: '', mark: 'dot' });
+        { kind: 'online', text: 'Waiting', tone: 'held', mark: 'still', owner: false, amber: '' });
     const sidebar = summarizeRoom({ ...room('waiting'), works: ['same-id'] }, [heldWork(held)]);
-    assert.deepEqual(sidebar, { state: 'dot', motion: false, amber: false, word: 'Waiting', label: `Waiting · ${hold.label}` });
+    assert.deepEqual(sidebar, { mark: 'still', owner: false, word: 'Waiting', note: '', label: `Waiting · ${hold.label}` });
 });
 
-for (const [activity, extra, text, kind, showDots, tone] of [
-    ['working', { transition: 'pausing' }, 'Pausing…', 'thinking', true, 'held'],
-    ['paused', {}, 'Paused', 'online', false, 'held'],
-    ['unknown', {}, 'Activity unconfirmed', 'online', false, 'unknown'],
-    ['waiting', {}, 'Waiting', 'online', false, 'held'],
+for (const [activity, extra, text, kind, mark, tone] of [
+    ['working', { transition: 'pausing' }, 'Pausing…', 'thinking', 'moving', 'held'],
+    ['paused', {}, 'Paused', 'online', 'pause', 'held'],
+    ['unknown', {}, 'Activity unconfirmed', 'online', 'ring', 'unknown'],
+    ['waiting', {}, 'Waiting', 'online', 'still', 'held'],
 ]) {
     test(`a held task's room says ${text}; a card's hold never sets the header`, () => {
         const view = roomStatusView(inRoom(activity, extra));
-        assert.deepEqual([view.kind, view.text, view.tone, view.showDots], [kind, text, tone, showDots]);
+        assert.deepEqual([view.kind, view.text, view.tone, view.mark], [kind, text, tone, mark]);
         // Same-id recovery: the server's room works again.
         assert.equal(roomStatusView(inRoom('working')).text, 'Working');
     });
@@ -50,7 +58,7 @@ test('same-ID recovery clears the hold on its row; independent work and a pause 
     assert.equal(roomStatusView(inRoom('working')).text, 'Working');
     const sibling = { ...held, activity_id: 'sibling', phase: 'working', project_admission_hold: undefined };
     const mixed = summarizeRoom({ ...room('working'), works: ['sibling', 'same-id'] }, [work(sibling), heldWork(held)]);
-    assert.deepEqual([mixed.state, mixed.motion], ['working', true]);
+    assert.equal(mixed.mark, 'moving');
     // One room word: a budget pause, the owner's Pause and a Restart hold all read Paused; the row says which.
     assert.equal(roomStatusView(inRoom('paused')).text, 'Paused');
 });
@@ -58,52 +66,46 @@ test('same-ID recovery clears the hold on its row; independent work and a pause 
 test('the census phase (a Main portal\'s chip source) keeps a budget pause beside the Project wait, as the sidebar does', () => {
     const paused = { ...held, phase: 'budget_paused' };
     assert.equal(censusTaskPhase(paused, null).text, `Paused · ${hold.label}`);
-    assert.equal(censusTaskPhase(paused, null).motion, false);
+    assert.equal(censusTaskPhase(paused, null).mark, 'pause');
     assert.equal(censusTaskPhase({ ...held, phase: 'budget_pausing' }, null).text, `Pausing… · ${hold.label}`);
-    assert.equal(censusTaskPhase({ ...held, phase: 'budget_pausing' }, null).motion, false);
+    assert.equal(censusTaskPhase({ ...held, phase: 'budget_pausing' }, null).mark, 'moving');
     assert.equal(censusTaskPhase(held, null).text, hold.label);
+    assert.deepEqual([censusTaskPhase(held, null).mark, censusTaskPhase(held, null).tone], ['still', 'neutral']);
     assert.equal(censusTaskPhase(paused, { status: 'cancelled' }).text, 'Stopped');
 });
 
 test('a held card with retained progress waits statically; Stop, terminal and same-ID recovery outrank it', () => {
     const card = { finished: false, isSubagent: false, root: { dataset: {} },
-        phaseEl: { hidden: false, dataset: {}, attrs: {}, textContent: '', className: '',
-            getAttribute(key) { return this.attrs[key]; }, setAttribute(key, value) { this.attrs[key] = value; } },
-        phaseSecondaryEl: { hidden: true, textContent: '', isConnected: true },
-        inlineTypingEl: { style: { display: '' }, isConnected: true } };
+        phaseEl: new ElementStub('span', chipDoc),
+        phaseSecondaryEl: { hidden: true, textContent: '', isConnected: true } };
     setLiveCardPhase(card, 'working', 'Working', 'chat-live-phase working');  // replayed progress
-    assert.equal(card.inlineTypingEl.style.display, '');
+    assert.equal(markOf(card.phaseEl), 'moving/ink');
     assert.equal(setHistoricalUnavailable(card, false, hold.label), true);  // census restore
     assert.equal(card.phaseEl.textContent, hold.label);
-    assert.equal(card.phaseEl.className, 'chat-live-phase warn');  // static amber, no pulse class
+    assert.equal(card.phaseEl.className, 'chat-live-phase warn');
+    // A hold goes on by itself: neutral and still, never the owner's amber, nothing that moves.
+    assert.deepEqual([markOf(card.phaseEl), card.phaseEl.dataset.chipTone], ['still/ink', 'neutral']);
     assert.equal(card.phaseEl.dataset.phase, 'working');  // still unfinished, never a terminal phase
-    assert.equal(card.inlineTypingEl.style.display, 'none');
-    setLiveCardTypingVisible(card, true);  // a later typing writer cannot animate the wait
-    assert.equal(card.inlineTypingEl.style.display, 'none');
     assert.equal(setHistoricalUnavailable(card, false), false);  // no census fact: the hold stays
     assert.equal(desiredLiveCardPhase({ ...card, cancelPendingPolicy: 'immediate' }).text, 'Cancelling…');
     assert.equal(desiredLiveCardPhase({ ...card, finished: true }, 'error').phase, 'error');
     assert.equal(setHistoricalUnavailable(card, false, ''), true);  // same-ID recovery
     assert.equal(card.phaseEl.textContent, 'Working');
-    assert.equal(card.inlineTypingEl.style.display, '');
+    assert.deepEqual([markOf(card.phaseEl), card.phaseEl.dataset.chipTone], ['moving/ink', 'live']);
     const chat = readFileSync(new URL('../modules/chat.js', import.meta.url), 'utf8');
     assert.match(chat, /restoreCardActivity\(liveCardRecords\.get\(k\), v\.project_admission_hold\)/);
     assert.match(chat, /function restoreCardActivity\(record, held = \{\}\) \{\r?\n\s+if \(!setHistoricalUnavailable\(record, false, held\)\)/);
 });
 
 
-for (const [parkedPhase, phase, label] of [
-    ['budget_paused', 'paused', 'Paused'], ['unknown', 'unknown', 'Activity unconfirmed'],
+for (const [parkedPhase, phase, label, mark] of [
+    ['budget_paused', 'paused', 'Paused', 'pause/ink'], ['unknown', 'unknown', 'Activity unconfirmed', 'ring/ink'],
 ]) {
     for (const releaseFirst of ['Project', 'parked']) {
         test(`Project hold and ${parkedPhase} recover independently (${releaseFirst} first)`, () => {
-            const attrs = new Map();
-            const card = { finished: false, root: { dataset: {} },
-                phaseEl: { hidden: false, dataset: {}, textContent: '', className: '',
-                    getAttribute: key => attrs.get(key), setAttribute: (key, value) => attrs.set(key, value) },
-                inlineTypingEl: { style: { display: '' }, isConnected: true } };
+            const card = { finished: false, root: { dataset: {} }, phaseEl: new ElementStub('span', chipDoc) };
             setLiveCardPhase(card, 'working', 'Working', 'chat-live-phase working');
-            assert.equal(card.inlineTypingEl.style.display, '');
+            assert.equal(markOf(card.phaseEl), 'moving/ink');
             syncParkedPhase(card, parkedPhase);
             setHistoricalUnavailable(card, false, hold);
             assert.equal(card.parkedPhase, parkedPhase);
@@ -111,8 +113,7 @@ for (const [parkedPhase, phase, label] of [
             assert.equal(card.projectHoldDetail, hold.detail);
             assert.equal(card.phaseEl.dataset.phase, phase);
             assert.ok(card.phaseEl.textContent.includes(label), 'the parked fact remains visible');
-            setLiveCardTypingVisible(card, true);
-            assert.equal(card.inlineTypingEl.style.display, 'none');
+            assert.equal(markOf(card.phaseEl), mark);
 
             if (releaseFirst === 'Project') {
                 setHistoricalUnavailable(card, false, {});
@@ -121,8 +122,7 @@ for (const [parkedPhase, phase, label] of [
                 assert.equal(card.parkedPhase, parkedPhase, 'Project recovery cannot release another hold');
                 assert.equal(card.phaseEl.dataset.phase, phase);
                 assert.equal(card.phaseEl.textContent, label);
-                setLiveCardTypingVisible(card, true);
-                assert.equal(card.inlineTypingEl.style.display, 'none', 'the remaining parked phase stays still');
+                assert.equal(markOf(card.phaseEl), mark, 'the remaining parked phase keeps its own mark');
                 syncParkedPhase(card, 'working');
             } else {
                 syncParkedPhase(card, 'working');
@@ -130,8 +130,7 @@ for (const [parkedPhase, phase, label] of [
                 assert.equal(card.projectHold, hold.label, 'a positive task phase cannot clear the Project hold');
                 assert.equal(card.phaseEl.textContent, hold.label);
                 assert.equal(card.phaseEl.className, 'chat-live-phase warn');
-                setLiveCardTypingVisible(card, true);
-                assert.equal(card.inlineTypingEl.style.display, 'none', 'the remaining Project hold stays still');
+                assert.equal(markOf(card.phaseEl), 'still/ink', 'the remaining Project hold stays still');
                 setHistoricalUnavailable(card, false, {});
             }
             assert.equal(card.parkedPhase, '');
@@ -139,7 +138,7 @@ for (const [parkedPhase, phase, label] of [
             assert.equal(card.phaseEl.dataset.phase, 'working');
             assert.equal(card.phaseEl.textContent, 'Working');
             assert.equal(card.phaseEl.className, 'chat-live-phase working');
-            assert.equal(card.inlineTypingEl.style.display, '', 'clearing both causes restores real activity');
+            assert.equal(markOf(card.phaseEl), 'moving/ink', 'clearing both causes restores real activity');
         });
     }
 }
@@ -221,16 +220,17 @@ test('actual child queue hydration refreshes room status once and reconciles dep
         connected = false; handlers.get('close')();
         snapshot(); await settle();
         assert.equal(child.querySelector('[data-live-phase]').textContent, 'Activity unconfirmed');
-        assert.equal(child.querySelector('[data-live-phase]').dataset.motion, '0');
+        assert.equal(markOf(child.querySelector('[data-live-phase]')), 'ring/ink');
         connected = true;
         snapshot(); await settle();
         assert.equal(child.querySelector('[data-live-phase]').textContent, hold.label,
             'a fresh child queue read restores its own hold after reconnect');
-        assert.equal(child.querySelector('[data-live-phase]').dataset.motion, '0');
+        assert.equal(markOf(child.querySelector('[data-live-phase]')), 'still/ink');
         queue.pending[0].task.project_admission_hold = {};
         snapshot(); await settle();
         assert.equal(child.querySelector('[data-live-phase]').textContent, 'Queued');
-        assert.equal(child.querySelector('[data-live-phase]').dataset.motion, '0');
+        assert.deepEqual([markOf(child.querySelector('[data-live-phase]')),
+            child.querySelector('[data-live-phase]').dataset.chipTone], ['still/ink', 'neutral']);
         queue.pending[0].task.project_admission_hold = hold;
         snapshot(); await settle();
         frame('working-sibling');

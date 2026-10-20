@@ -497,17 +497,20 @@ def _entry_for_record(record: Dict[str, Any], snapshots: Dict[str, tuple]) -> tu
 
 
 def install_listing(drive_root: pathlib.Path, loaded: Any, snapshots: Dict[str, tuple]) -> Dict[str, Any]:
-    """``install`` and ``category`` fields of one ``GET /api/extensions`` row (passive)."""
+    """``install``, ``category`` and ``removal`` fields of one ``GET /api/extensions`` row (passive);
+    ``removal`` is the host's word (``skill_uninstall_state.removal_action``) on both return paths."""
     from ouroboros.skill_install_record import install_listing_fields, read_install_record
+    from ouroboros.skill_uninstall_state import removal_action
 
     record = read_install_record(pathlib.Path(drive_root), loaded.name)
     category: List[str] = []
+    removal = removal_action(loaded, record)
     if record is None:
         builtin = snapshots.get("builtin")
         if builtin and builtin[1] and getattr(loaded, "source", "") == "native":
             entry = next((e for e in builtin[1]["entries"] if e["name"] == loaded.name), None)
             category = list((entry or {}).get("category") or [])
-        return {"install": None, "category": category}
+        return {"install": None, "category": category, "removal": removal}
     known, entry = _entry_for_record(record, snapshots)
     base = str(record.get("base_digest") or "")
     current = installed_release_digest(loaded)
@@ -519,7 +522,7 @@ def install_listing(drive_root: pathlib.Path, loaded: Any, snapshots: Dict[str, 
                                                          "left_source": False}
     category = list((entry or {}).get("category") or [])
     source = record.get("source") or {}
-    return {"category": category, "install": {
+    return {"category": category, "removal": removal, "install": {
         "source": {key: source[key] for key in ("id", "name", "kind", "part") if source.get(key)},
         "official": official, "release": dict(record.get("release") or {}),
         "basis": record.get("basis"), "base_known": bool(base),
@@ -549,7 +552,7 @@ def listing_install_fields(drive_root: pathlib.Path, loaded: Any, snapshots: Dic
         return install_listing(drive_root, loaded, snapshots)
     except Exception:
         log.debug("install facts unavailable for %s", getattr(loaded, "name", ""), exc_info=True)
-        return {"install": None, "category": []}
+        return {"install": None, "category": [], "removal": ""}
 
 
 def cached_snapshots(drive_root: pathlib.Path, rows: List[Dict[str, Any]], *,

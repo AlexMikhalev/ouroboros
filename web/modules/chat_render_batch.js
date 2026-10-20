@@ -278,7 +278,7 @@ export function captureLiveCardProjection(record) {
         record.phaseEl?.hidden, record.phaseEl?.className, record.phaseEl?.textContent,
         record.titleEl?.textContent, record.activityEl?.textContent,
         record.metaEl?.innerHTML, record.countEl?.hidden, record.countEl?.textContent,
-        record.inlineTypingEl?.style?.display, record.toggleEl?.textContent,
+        record.phaseEl?.dataset?.chipTone, record.toggleEl?.textContent,
         record.disclosureEl?.getAttribute?.('aria-expanded'),
         root.querySelector?.('.chat-live-actions')?.innerHTML || '',
     ];

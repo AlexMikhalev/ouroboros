@@ -186,3 +186,44 @@ def test_smoke_decides_notarization_from_configuration_and_proves_it(
         assert probed == ""
     if expected == "notarized":
         assert probed.count("stapler validate") == 2 and probed.count("spctl --assess") == 2
+
+
+ENTRY = "$MOUNT/Ouroboros.app/Contents/MacOS/ouroboros-shell"
+PLAIN_PYTHON = "$MOUNT/Ouroboros.app/Contents/Frameworks/python-standalone/bin/python3"
+
+
+def test_final_dmg_smoke_imports_the_desktop_modules_in_the_app_entry_without_a_window(tmp_path: Path):
+    """The source launcher runs in the C app entry (packaging/macos/ouroboros_shell.c), not in plain python3:
+    the smoke runs that entry on an import-only ``-c``, never launcher.py or a window, and proves its base is
+    the bundled plain Python. The workflow's own check runs here over stub desktop modules; only a macOS CI
+    build executes the native entry itself."""
+    jobs = yaml.safe_load((REPO / ".github/workflows/ci.yml").read_text(encoding="utf-8"))["jobs"]
+    run = next(step for step in jobs["build"]["steps"] if step.get("name") == "Smoke final macOS DMG")["run"]
+    lines = [line for line in run.replace("\\\n", " ").splitlines()
+             if ENTRY in line and not line.lstrip().startswith("#")]
+    assert len(lines) == 1, "one entry invocation"
+    argv = shlex.split(lines[0])
+    assert argv[:5] == ["HOME=$HOME_DIR", ENTRY, "-I", "-B", "-c"], "isolated, no user site, a command only"
+    code, args = argv[5], argv[6:]
+    assert args == [ENTRY, PLAIN_PYTHON]
+    assert "import os, sys, webview, objc, AppKit, WebKit, PyObjCTools.AppHelper;" in code
+    for launch in ("launcher", "webview.start", "create_window", "main("):
+        assert launch not in code
+    assert run.index(lines[0].split(" -I ", 1)[0]) < run.index("codesign --verify"), "before the signing proofs"
+
+    stubs = tmp_path / "stubs"
+    for module in ("webview/__init__.py", "PyObjCTools/__init__.py", "PyObjCTools/AppHelper.py",
+                   "objc.py", "AppKit.py", "WebKit.py"):
+        (stubs / module).parent.mkdir(parents=True, exist_ok=True)
+        (stubs / module).write_text("", encoding="utf-8")
+    python, base = sys.executable, getattr(sys, "_base_executable", sys.executable)
+
+    def check(entry: str, plain: str) -> subprocess.CompletedProcess:
+        return subprocess.run([python, "-B", "-c", code, entry, plain], cwd=stubs, capture_output=True, text=True,
+                              env=dict(os.environ, PYTHONPATH=str(stubs)))
+
+    assert check(python, base).returncode == 0, check(python, base).stderr
+    other = str(stubs / "objc.py")
+    for entry, plain in ((python, other), (other, base)):
+        refused = check(entry, plain)
+        assert refused.returncode != 0 and "AssertionError" in refused.stderr, (entry, plain)

@@ -107,8 +107,9 @@ def test_skills_does_not_redeclare_shared_helpers():
     assert "safeExternalHrefAttr as safeExternalUrl" in renderer
     assert "function boundedText(" not in src
     assert "function safeExternalUrl(" not in src + renderer
-    # Delete is offered only for a skill made here, inside the editable external bucket.
-    assert "['external', 'self_authored'].includes(sourceTag(skill)) && String(skill.payload_root || '').startsWith('skills/external/')" in renderer
+    # The host names the removal (listing `removal`); the card renders it and derives none itself (inverted pin).
+    assert "skill.removal === 'delete'" in renderer and "skill.removal === 'uninstall'" in renderer
+    assert "startsWith('skills/external/')" not in renderer and "if (!isBuiltIn(skill))" not in renderer
     assert "skills-delete-local" in renderer
     assert "apiClient.deleteSkill(name, payloadRoot || skill.payload_root, skill.content_hash)" in src
     assert "/api/skills/${encodeURIComponent(skill)}/delete" in api_client
@@ -117,10 +118,11 @@ def test_skills_does_not_redeclare_shared_helpers():
 
 
 def test_widgets_uses_shared_render_markdown():
-    src = _read("widgets.js")
+    # The declarative renderer, split out of widgets.js, renders the markdown.
+    src = _read("widget_render.js")
     assert "renderMarkdownSafe" in src
     # Local declaration removed in v5.8.3-rc.5.
-    assert "function renderMarkdownSafe(" not in src
+    assert "function renderMarkdownSafe(" not in src + _read("widgets.js")
 
 
 def test_onboarding_wizard_is_loaded_as_an_es_module():

@@ -120,6 +120,7 @@ def test_blocking_review_lifecycle_uses_single_progress_card(tmp_path, monkeypat
         sent.append((args, kwargs))
 
     def fake_review(_ctx, skill_name):
+        save_review_state(drive_root, skill_name, SkillReviewState(status="clean", content_hash=content_hash))
         return SkillReviewOutcome(
             skill_name=skill_name,
             status="pass",
@@ -134,7 +135,11 @@ def test_blocking_review_lifecycle_uses_single_progress_card(tmp_path, monkeypat
         return reconcile_receipt("extension_loaded", "review_passed")
 
     monkeypatch.setattr("supervisor.message_bus.send_with_budget", fake_send)
-    monkeypatch.setattr("ouroboros.skill_review_runner._reconcile_deps_after_pass_review", lambda *_a, **_k: ("installed", ""))
+    def fake_prepare(*_args, progress, **_kwargs):
+        progress("Installing packages…")
+        return "installed", ""
+
+    monkeypatch.setattr("ouroboros.skill_dependencies.ensure_skill_dependencies", fake_prepare)
     monkeypatch.setattr("ouroboros.skill_review_runner._reconcile_extension_payload", fake_reconcile)
 
     payload = run_skill_review_lifecycle_blocking(
@@ -157,7 +162,7 @@ def test_blocking_review_lifecycle_uses_single_progress_card(tmp_path, monkeypat
         and str(kwargs.get("task_id") or "").startswith("skill_lifecycle_review_alpha_")
     ]
     assert any("Running skill review" in message for message in progress_messages)
-    assert any("Installing dependencies" in message for message in progress_messages)
+    assert any("Installing packages" in message for message in progress_messages)
     assert any("Reloading extension" in message for message in progress_messages)
     assert any("completed" in message and "Review executable (clean): PASS manifest_schema" in message for message in progress_messages)
     assert not any(kwargs.get("task_id") in {"skill_lifecycle_review", "api_skill_review"} for _args, kwargs in sent)
@@ -177,6 +182,7 @@ def test_review_lifecycle_installs_deps_after_warnings(tmp_path, monkeypatch):
     ctx = SimpleNamespace(drive_root=drive_root, repo_dir=repo_dir, messages=[])
 
     def fake_review(_ctx, skill_name):
+        save_review_state(drive_root, skill_name, SkillReviewState(status="warnings", content_hash=content_hash))
         return SkillReviewOutcome(
             skill_name=skill_name,
             status="warnings",
@@ -191,7 +197,7 @@ def test_review_lifecycle_installs_deps_after_warnings(tmp_path, monkeypatch):
         return "installed", ""
 
     monkeypatch.setattr("supervisor.message_bus.send_with_budget", lambda *a, **kw: None)
-    monkeypatch.setattr("ouroboros.skill_review_runner._reconcile_deps_after_pass_review", fake_deps)
+    monkeypatch.setattr("ouroboros.skill_dependencies.ensure_skill_dependencies", fake_deps)
     monkeypatch.setattr("ouroboros.skill_review_runner._reconcile_extension_payload", lambda *_a, **_k: reconcile_receipt())
 
     payload = run_skill_review_lifecycle_blocking(
@@ -307,7 +313,7 @@ def test_self_authored_review_lifecycle_uses_triad(tmp_path, monkeypatch):
         lambda: {"OPENROUTER_API_KEY": "sk-test"},
     )
     monkeypatch.setattr(
-        "ouroboros.skill_review_runner._reconcile_deps_after_pass_review",
+        "ouroboros.skill_dependencies.ensure_skill_dependencies",
         lambda *_a, **_k: ("not_required", ""),
     )
     monkeypatch.setattr(
@@ -373,7 +379,7 @@ def test_review_lifecycle_payload_surfaces_auto_flow_grants(tmp_path, monkeypatc
 
     monkeypatch.setattr("supervisor.message_bus.send_with_budget", lambda *a, **kw: None)
     monkeypatch.setattr(
-        "ouroboros.skill_review_runner._reconcile_deps_after_pass_review",
+        "ouroboros.skill_dependencies.ensure_skill_dependencies",
         lambda *_a, **_k: ("not_required", ""),
     )
     monkeypatch.setattr(
@@ -430,7 +436,7 @@ def test_self_authored_review_does_not_enable_when_deps_fail(tmp_path, monkeypat
     ctx = SimpleNamespace(drive_root=drive_root, repo_dir=repo_dir, messages=[])
 
     monkeypatch.setattr("supervisor.message_bus.send_with_budget", lambda *a, **kw: None)
-    monkeypatch.setattr("ouroboros.skill_review_runner._reconcile_deps_after_pass_review", lambda *_a, **_k: ("failed", "pip exploded"))
+    monkeypatch.setattr("ouroboros.skill_dependencies.ensure_skill_dependencies", lambda *_a, **_k: ("failed", "pip exploded"))
 
     def fake_review(_ctx, _skill):
         outcome = SkillReviewOutcome(
@@ -519,7 +525,7 @@ def test_lifecycle_finish_writes_compact_provenance_to_chat_jsonl(tmp_path, monk
 
     monkeypatch.setattr("supervisor.message_bus.send_with_budget", lambda *a, **k: None)
     monkeypatch.setattr(
-        "ouroboros.skill_review_runner._reconcile_deps_after_pass_review",
+        "ouroboros.skill_dependencies.ensure_skill_dependencies",
         lambda *_a, **_k: ("not_required", ""),
     )
     monkeypatch.setattr(
@@ -718,7 +724,7 @@ def test_review_round_and_snapshot_attempt_are_group_scoped(tmp_path, monkeypatc
     skill_dir = _build_extension(skills_root, "alpha")
     monkeypatch.setattr("supervisor.message_bus.send_with_budget", lambda *a, **k: None)
     monkeypatch.setattr(
-        "ouroboros.skill_review_runner._reconcile_deps_after_pass_review",
+        "ouroboros.skill_dependencies.ensure_skill_dependencies",
         lambda *_a, **_k: ("not_required", ""),
     )
     monkeypatch.setattr(
@@ -801,7 +807,7 @@ def test_review_rebinds_snapshot_hash_after_waiting_for_lifecycle_lock(tmp_path,
     monkeypatch.setattr(review_runner, "_skill_content_hash", mutate_after_initial_hash)
     monkeypatch.setattr("supervisor.message_bus.send_with_budget", lambda *a, **k: None)
     monkeypatch.setattr(
-        "ouroboros.skill_review_runner._reconcile_deps_after_pass_review",
+        "ouroboros.skill_dependencies.ensure_skill_dependencies",
         lambda *_a, **_k: ("not_required", ""),
     )
     monkeypatch.setattr(
@@ -1067,7 +1073,7 @@ def _passing_review_fixture(tmp_path, monkeypatch):
     skill_dir = _build_extension(skills_root, "alpha")
     content_hash = compute_content_hash(skill_dir, manifest_entry="plugin.py")
     monkeypatch.setattr("supervisor.message_bus.send_with_budget", lambda *a, **k: None)
-    monkeypatch.setattr("ouroboros.skill_review_runner._reconcile_deps_after_pass_review", lambda *_a, **_k: ("installed", ""))
+    monkeypatch.setattr("ouroboros.skill_dependencies.ensure_skill_dependencies", lambda *_a, **_k: ("installed", ""))
     monkeypatch.setattr(
         "ouroboros.skill_review_runner._reconcile_extension_payload",
         lambda *_a, **_k: reconcile_receipt("extension_loaded", "review_passed"),

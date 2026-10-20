@@ -384,6 +384,27 @@ def test_unrecorded_files_are_carried_at_their_relpaths_without_invented_rows_an
     assert len(kept) == 1 and Path(kept[0]["path"]).read_text(encoding="utf-8") == "child notes"
 
 
+def test_a_file_named_like_the_index_of_a_link_to_a_database_is_stored(tmp_path):
+    """The child's folder holds actual.sqlite, a link report -> actual.sqlite and the user's own
+    report-shm. SQLite's index of actual.sqlite would be actual.sqlite-shm, beside the real file, so
+    report-shm is an ordinary artifact the settlement stores before the drive goes (taken for an index
+    through the link, it was left out and removed with the drive, never stored)."""
+    data, drive, _record = _cancelled_with_capture(tmp_path)
+    store = artifacts.task_artifact_dir_path(drive, TASK)
+    conn = sqlite3.connect(store / "actual.sqlite")
+    conn.execute("CREATE TABLE t(v)")
+    conn.close()
+    try:
+        (store / "report").symlink_to("actual.sqlite")
+    except OSError:
+        pytest.skip("symbolic links need a privilege here")
+    (store / "report-shm").write_text("the user's report\n", encoding="utf-8")
+
+    assert _settle(data, drive)["status"] == "removed"
+    assert _canonical(data, "report-shm").read_text(encoding="utf-8") == "the user's report\n"
+    assert _canonical(data, "actual.sqlite").is_file()
+
+
 def test_admission_rollback_removes_only_a_never_started_drive(tmp_path):
     data = tmp_path / "data"
     drive = _drive(data, "headless")

@@ -198,7 +198,7 @@ def test_pause_notice_translation_and_historical_wake_status(direct_server_with_
                 status = next_status
                 page.locator("#evo-refresh").click()
                 expect(pill).to_have_text(f"Consciousness {label}")
-                expect(pill).to_have_class("evo-runtime-pill starting")
+                expect(pill).to_have_class("evo-runtime-pill offline")  # goes on by itself: the plain pill
                 expect(page.locator("#evo-runtime-detail")).to_contain_text(details[status])
                 page.screenshot(path=str(diagnostic_directory(root.parent, "task-evidence") / f"evolution-{status}.png"), full_page=True)
         finally:

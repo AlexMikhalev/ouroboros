@@ -4,13 +4,13 @@ packing authority."""
 from __future__ import annotations
 
 import json
-import sqlite3
 import threading
 import time
 
 import pytest
 
 from ouroboros import evidence_packer as packer, evidence_packs as packs, maintenance, store, store_switch
+from tests._store_journal_shared import exclusive_hold
 from tests.test_evidence_packs import REPO, _FakeChild, _task, root as root
 
 pytestmark = pytest.mark.serial
@@ -144,9 +144,7 @@ def test_real_contention_never_waits_and_discovery_defers_without_recording(root
         if busy in {"facts", "packs_sql", "packs_sql_cached"}:
             path = {"facts": root / "state/current.sqlite",
                     "packs_sql": packs.packs_dir(root) / packs.INDEX_NAME}[busy.removesuffix("_cached")]
-            conn = sqlite3.connect(path, timeout=0)
-            conn.execute("BEGIN EXCLUSIVE")
-            return conn
+            return exclusive_hold(path)  # reads busy too, under WAL as under the rollback journal
         return None
 
     conn = held()

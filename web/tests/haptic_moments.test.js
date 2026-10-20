@@ -1,6 +1,6 @@
 // The owner's 2A haptic moments (19.10; haptics.js): Stop on a work is felt as one rigid tap and its other actions are
 // silent; an error toast plays the error haptic unless it is a notice the owner did not cause; a widget picked up to be
-// moved plays a medium tap. Swarm's tick rides its click in chat.js (tests/test_chat_row_gestures_browser.py).
+// moved plays a medium tap. Swarm's tick rides its click in composer.js (tests/test_chat_row_gestures_browser.py).
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { ACTION_FINALIZE, ACTION_STOP_EARLIER, ACTION_STOP_NOW, closeTaskControlMenu, openTaskControlMenu } from '../modules/task_control_menu.js';

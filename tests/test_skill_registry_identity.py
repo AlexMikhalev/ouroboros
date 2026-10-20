@@ -75,7 +75,7 @@ def test_registry_owner_skip_accepts_the_confirmed_real_payload(tmp_path, monkey
     from ouroboros.skill_loader import SkillReviewState, save_review_state
     drive, storage, latest = _registry(tmp_path, monkeypatch, dependencies)
     # Dependency execution is outside this identity test; it must not install packages.
-    monkeypatch.setattr('ouroboros.skill_review_runner._reconcile_deps_after_pass_review',
+    monkeypatch.setattr('ouroboros.skill_dependencies.ensure_skill_dependencies',
                         lambda *a, **kw: ('installed', ''))
     assert storage.install_skill(drive, tmp_path, slug='demo', auto_review=False).ok
     latest['version'] = '2.0.0'

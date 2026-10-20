@@ -15,6 +15,9 @@ const LISTING = fixture('extensions_v4.json').skills;
 const item = (id) => structuredClone(CATALOG.items.find((entry) => entry.id === id));
 const installed = (name) => structuredClone(LISTING.find((skill) => skill.name === name));
 const text = (html) => html.replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim();
+const tone = (html) => html.match(/^<span class="ui-status skills-status" data-tone="([^"]+)"/)?.[1];
+// Work that runs now: the shared moving mark in the sentence's ink (web/modules/status_mark.js).
+const MOVING = /data-work><span class="status-mark" aria-hidden="true" data-shape="moving" data-hue="ink">/;
 
 test('Popular sorts by votes with unknown counts last; Name and Recently updated are stable', () => {
     const items = CATALOG.items;
@@ -76,11 +79,13 @@ test('not installed: the trust of the source is the consequence sentence', () =>
 
 test('install in flight: Installing… (trusted) or Reviewing with Skip review, never a timer or percent', () => {
     const installing = browseCardState(item('ouroboros/duckduckgo'), { source: SOURCES.get('ouroboros'), pending: { phase: 'installing', startedAt: Date.now() } });
-    assert.match(installing.status, /data-work/);
+    assert.match(installing.status, MOVING);
+    assert.equal(tone(installing.status), 'muted', 'an install goes on by itself: a neutral sentence');
     assert.equal(text(installing.status), 'Installing…');
     assert.match(installing.action, /<button disabled/);
     const reviewing = browseCardState(item('ouroboros-community/whoop-health'), { pending: { phase: 'reviewing', startedAt: Date.now() } });
     assert.equal(text(reviewing.status), 'Reviewing · started just now');
+    assert.deepEqual([tone(reviewing.status), MOVING.test(reviewing.status)], ['muted', true]);
     assert.match(reviewing.action, /data-browse-action="skip"[^>]*>.*Skip review/s);
     assert.match(reviewing.note, /you can leave this page/);
 });
@@ -104,8 +109,12 @@ test('installed from this source: On, Off · Turn on, an update, needs you, modi
     assert.equal(text(browseCardState(item('ouroboros/weather'), { installed: off }).status), 'Off · v0.3.1');
     const needs = browseCardState(item('ouroboros-community/whoop-health'), { installed: { ...installed('whoop-health'), skill_review: {} } });
     assert.equal(text(needs.status), 'Installed v0.3.1 · needs you');
+    assert.equal(tone(needs.status), 'warn', 'the owner\'s move stays amber');
     const reviewing = browseCardState(item('ouroboros-community/whoop-health'), { installed: installed('whoop-health') });
     assert.equal(text(reviewing.status), 'Reviewing · you can skip');
+    assert.deepEqual([tone(reviewing.status), MOVING.test(reviewing.status)], ['muted', true]);
+    assert.equal(tone(on.status), 'ok');
+    assert.doesNotMatch(on.status, /status-mark/, 'at rest the sentence keeps its own dot');
     const modified = browseCardState({ ...item('ouroboros/weather'), name: 'anime_studio', source_id: 'ouroboros-community' }, { installed: installed('anime_studio') });
     assert.equal(text(modified.status), 'Installed · modified here');
 });

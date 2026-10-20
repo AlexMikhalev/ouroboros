@@ -19,6 +19,7 @@ import pytest
 
 from ouroboros import usage_store
 from ouroboros.startup_historical_audit import HistoricalAudit, _report_fields
+from tests._store_journal_shared import store_state
 from tests._usage_store_testing import ledger_rows
 from tests.fixtures_usage_store import (  # noqa: F401  (pytest fixtures)
     ARCHIVE_SEGMENT_REL,
@@ -92,8 +93,11 @@ def archived_root(data_root, monkeypatch):
 
 
 def _money_bytes(root: pathlib.Path) -> list:
-    paths = [root / usage_store.STORE_REL, root / usage_store.LEDGER_REL, root / ARCHIVE_SEGMENT_REL]
-    return [(path.name, path.read_bytes()) for path in paths]
+    """The money's bytes; the store stands as its rows and any write's trace (``store_state``), the
+    header fields a first WAL open rewrites aside."""
+    store = root / usage_store.STORE_REL
+    return [(store.name, store_state(store))] + [
+        (path.name, path.read_bytes()) for path in (root / usage_store.LEDGER_REL, root / ARCHIVE_SEGMENT_REL)]
 
 
 # --------------------------------------------------------------------------

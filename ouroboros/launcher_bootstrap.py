@@ -9,6 +9,7 @@ import os
 import pathlib
 import shutil
 import subprocess
+import sys
 import time
 import uuid
 from dataclasses import dataclass
@@ -53,15 +54,20 @@ def checkout_sha(repo_dir: pathlib.Path) -> str:
 _LOADED_CHECKOUT_SHA = ""  # the checkout whose modules the launcher process imported (its first launch)
 
 
-def remember_loaded_checkout(repo_dir: pathlib.Path) -> str:
-    """Record once, at the launcher's first agent start, which commit its own modules came from."""
+def remember_loaded_checkout(repo_dir: pathlib.Path, *, bundle_dir: pathlib.Path | None = None) -> str:
+    """Record the loaded generation once: macOS before bootstrap can advance the checkout, elsewhere at first start."""
     global _LOADED_CHECKOUT_SHA
-    _LOADED_CHECKOUT_SHA = _LOADED_CHECKOUT_SHA or checkout_sha(repo_dir)
+    if _LOADED_CHECKOUT_SHA:
+        return _LOADED_CHECKOUT_SHA
+    # Frozen helpers came from the seed, even when the managed checkout is newer.
+    loaded = (_read_json_file(bundle_dir / BUNDLE_MANIFEST_NAME).get("source_sha", "")
+              if bundle_dir is not None else checkout_sha(repo_dir))
+    _LOADED_CHECKOUT_SHA = str(loaded or "")
     return _LOADED_CHECKOUT_SHA
 
 
 def launcher_sources_changed(repo_dir: pathlib.Path, loaded_sha: str | None = None, *,
-                             bundle_dir: pathlib.Path | None = None) -> bool:
+                             bundle_dir: pathlib.Path | None = None, packaged: bool = False) -> bool:
     """True when the landed checkout changed a module the launcher process has loaded.
 
     The launcher imports its helpers once; a body adoption (or any release) that
@@ -76,6 +82,12 @@ def launcher_sources_changed(repo_dir: pathlib.Path, loaded_sha: str | None = No
     paths. A path counts as named or resolved: a macOS app's bundle is
     ``Contents/Frameworks``, whose ``<pkg>`` links into ``Contents/Resources``, so
     there only the named path lies inside the bundle.
+
+    ``packaged`` (a frozen launcher's cold check) counts the whole packaged trees,
+    ``ouroboros`` and ``supervisor``, not only what is loaded so far: later imports
+    (Panic sweep, restart acknowledgement, server records) would come from the seed
+    too. Conservative by design: a body-only change there hands off as well, while a
+    ``server.py``-only update keeps the frozen launcher.
     """
     import sys
 
@@ -85,7 +97,7 @@ def launcher_sources_changed(repo_dir: pathlib.Path, loaded_sha: str | None = No
         return False
     roots = [pathlib.Path(os.path.abspath(root)) for root in (repo_dir, bundle_dir) if root]
     roots += [root.resolve() for root in roots]
-    loaded = {"launcher.py"}
+    loaded = {"launcher.py", *(("ouroboros", "supervisor") if packaged else ())}
     for module in list(sys.modules.values()):
         source = getattr(module, "__file__", None)
         if not source:
@@ -705,11 +717,103 @@ def parse_launch_options(argv):
     return options
 
 
-def source_handoff_argv(argv) -> list[str]:
+def macos_source_entry(bundle_dir: pathlib.Path) -> pathlib.Path | None:
+    """The installed, signed Python host in Contents/MacOS; never a python symlink.
+
+    Its location keeps the ordinary app's WebKit profile. Its explicit signing
+    identifier keeps notification authorization. An older bundle has no entry;
+    updating source alone cannot add one to a sealed application.
+    """
+    if bundle_dir.name != "Frameworks" or bundle_dir.parent.name != "Contents" \
+            or bundle_dir.parent.parent.suffix != ".app":
+        return None
+    entry = bundle_dir.parent / "MacOS" / "ouroboros-shell"
+    return entry if entry.is_file() and not entry.is_symlink() and os.access(entry, os.X_OK) else None
+
+
+def find_embedded_python(bundle_dir: pathlib.Path, *, macos: bool) -> str:
+    """Select plain Python for the body/probes; an app entry must never replace it."""
+    from ouroboros.platform_layer import embedded_python_candidates
+
+    for path in embedded_python_candidates(bundle_dir):
+        if path.exists():
+            return str(path)
+    if macos and macos_source_entry(bundle_dir) is not None:
+        raise RuntimeError("The app's bundled Python is missing; the source entry cannot run the server.")
+    return sys.executable
+
+
+def shell_runtime_facts(repo_dir: pathlib.Path, seed: pathlib.Path | None, shell_version: str, *, macos: bool) -> dict:
+    """Installed seed and loaded source provenance; neither asserts native permission."""
+    frozen = getattr(sys, "frozen", False)
+    try:
+        bundle_version = (seed / "VERSION").read_text().strip() if seed else ""
+    except OSError:
+        bundle_version = ""
+    entry = macos_source_entry(seed) if macos and seed else None
+    return {"shell_version": shell_version, "bundle_version": bundle_version,
+            "source_launcher": not frozen,
+            "source_revision": remember_loaded_checkout(repo_dir, bundle_dir=seed if frozen and macos else None),
+            "macos_source_entry": bool(entry and pathlib.Path(sys.executable) == entry) if macos and seed else None}
+
+
+def exec_source_launcher(context: BootstrapContext, argv: list[str], *, release_lock: Callable[[], None],
+                         desktop: bool, macos: bool) -> None:
+    """Hand off to compatible managed source, keeping the running shell if the probe fails."""
+    entry = macos_source_entry(context.bundle_dir) if macos else None
+    frozen = getattr(sys, "frozen", False)
+    if entry is not None and not source_launcher_importable(
+            context, desktop=desktop, python=find_embedded_python(context.bundle_dir, macos=macos),
+            require_macos_entry=True):
+        return  # old/rollback source or a missing dependency must not lose the working shell
+    handoff = source_handoff_argv(argv, keep_runtime_venv=entry is not None)
+    if frozen:
+        handoff += ["--seed-bundle", str(context.bundle_dir)]
+    command = [str(entry) if entry else context.embedded_python, str(context.repo_dir / "launcher.py"), *handoff]
+    context.log.info("Loading managed source launcher through %s", command[0])
+    # The source shell needs the dependencies bootstrap installed in the userbase,
+    # too. Do not export PYTHONHOME or change any child's process/bundle identity.
+    if entry is not None:
+        os.environ.update(embedded_python_env(context.data_dir))
+    release_lock()
+    os.execv(command[0], command)
+
+
+def source_launcher_importable(context: BootstrapContext, *, desktop: bool, python: str | None = None,
+                               require_macos_entry: bool = False) -> bool:
+    """Bounded handoff check using plain Python, before losing the running shell.
+
+    Import only: no main(), window, server or notification center. A source update
+    with missing dependencies can keep using the running shell until repaired.
+    Entry compatibility is explicit, not inferred from version or Git ancestry:
+    an older launcher can import yet use sys.executable (the entry) for its body.
+    """
+    code = "import launcher" + ("; import webview" if desktop else "")
+    if require_macos_entry:
+        code += ("\nif getattr(launcher, 'MACOS_SOURCE_ENTRY_PROTOCOL', None) != 1:\n"
+                 "    raise SystemExit('Source launcher does not support macOS source entry protocol 1')\n")
+    env = embedded_python_env(context.data_dir, {**os.environ, "PYTHONPATH": str(context.repo_dir)})
+    try:
+        result = context.hidden_run([python or context.embedded_python, "-c", code], cwd=str(context.repo_dir),
+                                    env=env, capture_output=True, text=True, timeout=30)
+        if result.returncode == 0:
+            return True
+        reason = _pip_output_tail(result)
+    except (OSError, subprocess.SubprocessError) as exc:
+        reason = str(exc)
+    context.log.warning("Source launcher probe failed; keeping the running shell: %s", reason)
+    return False
+
+
+def source_handoff_argv(argv, *, keep_runtime_venv: bool = False) -> list[str]:
     """The argv a relaunch hands to the checkout's own launcher.
 
     ``--runtime-venv`` was consumed here: the relaunch interpreter IS that venv, and
-    an older rollback launcher must not receive an option it never knew."""
+    an older rollback launcher must not receive an option it never knew. The macOS
+    app entry instead hosts the shell on bundled Python, so it must retain the
+    option selecting the body's separate interpreter."""
+    if keep_runtime_venv:
+        return list(argv)
     handoff, items = [], iter(argv)
     for item in items:
         if item == "--runtime-venv":

@@ -3,8 +3,10 @@ import contextlib
 import ctypes
 import os
 import pathlib
+import shutil
 import sqlite3
 import sys
+import threading
 
 import pytest
 
@@ -285,3 +287,155 @@ def test_a_store_that_cannot_hand_off_refuses_the_door_reset(tmp_path, monkeypat
         reset=lambda: pytest.fail("the checkout moved past a store still in WAL"))
     assert (ok, deferred) == (False, False) and "checkpoint busy" in message
     assert handed not in store._HANDED_OFF, "a refused door hands every store back to this process"
+
+
+def test_the_log_identity_moves_with_every_commit(tmp_path):
+    """Read from the log's header and frame headers beside its size and time: a commit adds a commit
+    frame, a rolled-back transaction's spilled frames add none (only the log's size and time move),
+    and a log reused in place at the same size after a checkpoint carries a new generation's salts."""
+    path = tmp_path / "log.sqlite"
+    writer = sqlite3.connect(path, isolation_level=None)
+    assert writer.execute("PRAGMA journal_mode=WAL").fetchone()[0] == "wal"
+    writer.execute("PRAGMA wal_autocheckpoint=0")
+    writer.execute("CREATE TABLE t(v)")
+    held = sqlite3.connect(path, isolation_level=None)  # stays open: no last close removes the log
+    log = path.with_name(path.name + "-wal")
+
+    def commit(rows, connection=writer):
+        connection.execute("BEGIN IMMEDIATE")
+        connection.executemany("INSERT INTO t VALUES (?)", [("x" * 900,)] * rows)
+        connection.execute("COMMIT")
+        return store.log_identity(path)
+
+    first = commit(20)
+    assert first[1] > 1 and commit(1)[1] > first[1]  # every commit adds its frames
+    committed = store.log_identity(path)
+    spiller = sqlite3.connect(path, isolation_level=None)
+    spiller.execute("PRAGMA cache_size = 5")  # the transaction spills frames into the log before it ends
+    spiller.execute("BEGIN IMMEDIATE")
+    spiller.executemany("INSERT INTO t VALUES (?)", [("y" * 3000,)] * 300)
+    spiller.execute("ROLLBACK")
+    spilled = store.log_identity(path)
+    assert log.stat().st_size > 32 + 4096 * committed[1] and spilled[:3] == committed[:3] and spilled[3] > committed[3]
+    small = commit(1)
+    assert small[0] == committed[0] and small[1] > committed[1]  # over the spilled frames, one commit further
+    assert writer.execute("PRAGMA wal_checkpoint(PASSIVE)").fetchone()[0] == 0
+    size = log.stat().st_size
+    reused = commit(1)  # every frame is in the database: the log restarts in place
+    assert log.stat().st_size == size and reused[0] != small[0] and reused[1] < small[1]
+    for connection in (spiller, held, writer):
+        connection.close()
+
+
+def test_a_killed_writer_s_unseen_commit_frame_does_not_hide_the_next_commit(tmp_path):
+    """A writer killed between writing its commit frame and publishing it in the index leaves a frame
+    that looks committed, which no reader sees while another connection keeps the index alive; the
+    next commit of the same length overwrites it at the same frame number (Opus reproduced it with
+    SIGKILL). Here the orphan is a real commit frame of the same update, taken from a copy of the
+    store, so the frame and the salts stay the same: the frame's checksum moves the identity even
+    while the log's size and time stay, as a coarse or a held file's time may."""
+    path = tmp_path / "log.sqlite"
+    with contextlib.closing(sqlite3.connect(path, isolation_level=None)) as setup:
+        setup.execute("CREATE TABLE t(v)")
+        setup.execute("INSERT INTO t VALUES ('start')")
+    writer = store.connect(path, store.TIER_ENFORCED, journal_mode="WAL")  # counted: its file reads borrow
+    writer.execute("PRAGMA wal_autocheckpoint = 0")
+    writer.execute("UPDATE t SET v = 'committed'")
+    held = sqlite3.connect(path, isolation_level=None)  # keeps the index: no recovery adopts the orphan
+    assert held.execute("SELECT v FROM t").fetchone() == ("committed",)
+    log = path.with_name(path.name + "-wal")
+    published = store.log_identity(path)
+    copy = tmp_path / "copy.sqlite"
+    copy.write_bytes(store.read_file_bytes(path))
+    shutil.copyfile(log, copy.with_name(copy.name + "-wal"))
+    with contextlib.closing(sqlite3.connect(copy, isolation_level=None)) as other:  # recovers the same log
+        other.execute("PRAGMA wal_autocheckpoint = 0")
+        other.execute("UPDATE t SET v = 'killed'")  # the killed writer's commit, one frame further
+        orphan = copy.with_name(copy.name + "-wal").read_bytes()[log.stat().st_size:]
+    with open(log, "r+b") as raw:  # it reached the log, never the index
+        raw.seek(log.stat().st_size)
+        raw.write(orphan)
+    seen, size, written = store.log_identity(path), log.stat().st_size, log.stat().st_mtime_ns
+    assert seen[1] == published[1] + 1 and held.execute("SELECT v FROM t").fetchone() == ("committed",)
+    writer.execute("UPDATE t SET v = 'next'")  # the next commit of the same length overwrites the orphan
+    os.utime(log, ns=(written, written))  # the log's time as a coarse or held file time keeps it
+    after = store.log_identity(path)
+    assert held.execute("SELECT v FROM t").fetchone() == ("next",) and log.stat().st_size == size
+    assert after[:2] == seen[:2], "the same frame of the same generation"
+    assert after != seen, "the commit frame's checksum must move the identity"
+    for connection in (held, writer):
+        connection.close()
+
+
+def test_a_shorter_commit_over_a_killed_writer_s_longer_one_moves_only_the_log_s_time(tmp_path):
+    """A killed writer's unseen commit spans four frames, and the next commit writes one: the
+    unseen commit frame stays the log's last, so the frame, its checksum and the log's size stay the
+    same, and only the log's time moves the identity (pinned: with the time constant, it would not
+    move at all; on a volume that keeps a held file's time it stays until the next commit)."""
+    path = tmp_path / "log.sqlite"
+    with contextlib.closing(sqlite3.connect(path, isolation_level=None)) as setup:
+        setup.execute("CREATE TABLE t(k INTEGER PRIMARY KEY, v)")
+        setup.executemany("INSERT INTO t VALUES (?, ?)", [(k, "a" * 3000) for k in range(4)])  # a leaf page each
+    writer = store.connect(path, store.TIER_ENFORCED, journal_mode="WAL")  # counted: its file reads borrow
+    writer.execute("PRAGMA wal_autocheckpoint = 0")
+    writer.execute("UPDATE t SET v = 'b' || substr(v, 2) WHERE k = 0")
+    held = sqlite3.connect(path, isolation_level=None)  # keeps the index: no recovery adopts the orphan
+    log = path.with_name(path.name + "-wal")
+    published = store.log_identity(path)
+    copy = tmp_path / "copy.sqlite"
+    copy.write_bytes(store.read_file_bytes(path))
+    shutil.copyfile(log, copy.with_name(copy.name + "-wal"))
+    with contextlib.closing(sqlite3.connect(copy, isolation_level=None)) as other:  # recovers the same log
+        other.execute("PRAGMA wal_autocheckpoint = 0")
+        other.execute("UPDATE t SET v = 'k' || substr(v, 2)")  # the killed writer's commit: four leaf pages
+        orphan = copy.with_name(copy.name + "-wal").read_bytes()[log.stat().st_size:]
+    with open(log, "r+b") as raw:  # it reached the log, never the index
+        raw.seek(log.stat().st_size)
+        raw.write(orphan)
+    then = log.stat().st_mtime_ns - 10 ** 10
+    os.utime(log, ns=(then, then))  # written ten seconds ago, past any file time's grain
+    seen = store.log_identity(path)
+    rows = "SELECT group_concat(substr(v, 1, 1), '') FROM t"
+    assert seen[1] - published[1] == 4 and held.execute(rows).fetchone() == ("baaa",)  # the orphan unseen
+    writer.execute("UPDATE t SET v = 'n' || substr(v, 2) WHERE k = 3")  # one frame: shorter than the orphan
+    moved = store.log_identity(path)
+    assert held.execute(rows).fetchone() == ("baan",)
+    assert [part for part, (now, before) in enumerate(zip(moved, seen)) if now != before] == [4], (seen, moved)
+    for connection in (held, writer):
+        connection.close()
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="needs FIFOs")
+def test_a_fifo_in_the_log_s_place_is_never_opened(tmp_path):
+    """Opening a FIFO for reading waits for a writer: the log's identity looks at a regular file only,
+    as ``is_sqlite_file`` does, on the history page's request thread and in recovery alike."""
+    path = tmp_path / "log.sqlite"
+    fifo = path.with_name(path.name + "-wal")
+    os.mkfifo(fifo)
+    result = []
+    reader = threading.Thread(target=lambda: result.append(store.log_identity(path)), daemon=True)
+    reader.start()
+    reader.join(timeout=10)
+    blocked = reader.is_alive()
+    if blocked:  # a writer's open ends the reader's wait
+        os.close(os.open(fifo, os.O_WRONLY | os.O_NONBLOCK))
+        reader.join(timeout=10)
+    assert not blocked and result == [None]
+
+
+@pytest.mark.parametrize("mode", ["PERSIST", "WAL"])
+def test_the_store_state_sees_a_vacuum_that_keeps_every_row(tmp_path, monkeypatch, mode):
+    """``committed_content`` cannot show that nothing wrote: a VACUUM keeps every row. The store
+    state also holds the write's trace, which a first WAL open's header fields do not count as."""
+    from tests._store_journal_shared import committed_content, store_state, use_journal
+    from tests.test_store import document
+
+    use_journal(monkeypatch, mode)
+    path = publish(tmp_path, document("t1"), document("t2"))  # a rollback-journal build, as the importer leaves it
+    before = store_state(path)
+    with store.open_store(tmp_path, write=False) as txn:  # the first open sets the journal up: WAL rewrites the header
+        assert txn.load("t1")["status"] == "completed"
+    assert store_state(path) == before
+    with contextlib.closing(store.connect(path, store.TIER_ENFORCED)) as conn:
+        conn.execute("VACUUM")
+    assert committed_content(path) == before.content and store_state(path) != before

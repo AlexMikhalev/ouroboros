@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
-    catalogWhoHtml, factsText, officialMarkHtml, officialPromise, permissionWords, popularityText, relativeAge,
+    catalogWhoHtml, chipHtml, factsText, officialMarkHtml, officialPromise, permissionWords, popularityText, relativeAge,
     routeExternalLink, sourceAboutText, statusHtml, trayHtml, trustSentence, trustValueText, versionText,
 } from '../modules/skill_presentation.js';
 
@@ -82,7 +82,13 @@ test('permissions read as plain words, once each', () => {
 });
 
 test('status sentences and trays are markup the page styles, with escaped words', () => {
-    assert.match(statusHtml('Installing…', 'warn', { work: true }), /data-work><span class="chat-live-typing skills-dots"/);
+    // Live work is the shared moving mark (web/modules/status_mark.js) in the sentence's or chip's own ink.
+    const moving = '<span class="status-mark" aria-hidden="true" data-shape="moving" data-hue="ink"><i></i><i></i><i></i></span>';
+    assert.equal(statusHtml('Installing…', 'muted', { work: true }),
+        `<span class="ui-status skills-status" data-tone="muted" data-work>${moving}<span class="skills-status-text">Installing…</span></span>`);
+    assert.equal(chipHtml('Reviewing…', 'neutral', { work: true }),
+        `<span class="ui-chip skills-chip" data-tone="neutral">${moving}Reviewing…</span>`);
+    assert.doesNotMatch(statusHtml('On · v1', 'ok') + chipHtml('On', 'ok'), /status-mark|data-work/, 'at rest a sentence keeps its own dot');
     assert.equal(trayHtml({ sentence: '' }), '');
     assert.match(trayHtml({ sentence: 'One sentence.', note: 'A note.', tone: 'danger' }), /data-tone="danger"[\s\S]*One sentence\.<div class="skills-tray-note">A note\.<\/div>/);
 });

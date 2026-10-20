@@ -401,25 +401,51 @@ CARD = """sel => {
     return {x: room.getBoundingClientRect().x, transform: cs.transform, radius: cs.borderTopLeftRadius,
             shadow: cs.boxShadow, veil: Number(getComputedStyle(veil).opacity), drawerUnder: side.contains(at(120, 400)),
             quarter: at(350, 400)?.id || '', open: side.classList.contains('open'),
+            p: Number(side.style.getPropertyValue('--drawer-p') || 0),
             project: document.getElementById('project-panel').classList.contains('open'),
             projectScrim: getComputedStyle(document.getElementById('project-panel-backdrop')).display};
 }"""
+
+
+def held(page, sel, xs, y):
+    """A finger put down at the first x and moved through the rest, still down: the room card where the finger has it.
+    Then the finger lifts and the drawer settles."""
+    cdp = page.context.new_cdp_session(page)
+    try:
+        for i, x in enumerate(xs):
+            cdp.send('Input.dispatchTouchEvent', {'type': 'touchStart' if i == 0 else 'touchMove',
+                                                  'touchPoints': [{'x': x, 'y': y, 'id': 1}]})
+            page.wait_for_timeout(16)
+        facts = page.evaluate(CARD, sel)
+        cdp.send('Input.dispatchTouchEvent', {'type': 'touchEnd', 'touchPoints': []})
+    finally:
+        cdp.detach()
+    page.wait_for_timeout(600)
+    return facts
 
 
 @pytest.mark.parametrize('room', ['main', 'project'])
 def test_the_room_is_the_card_the_drawer_pushes_aside(chromium_ui, tmp_path, room):
     """Owner 19.10 (the iOS board, 1A): ☰ pushes the room (Main, or the Project open over it) right by three quarters of
     the screen as a card with rounded corners, a shadow and faded words; the drawer under it takes the finger, the
-    quarter left showing is the way back, and a finger moves the card and its veil with it."""
+    quarter left showing is the way back, and a finger moves the card and its veil with it: opening the drawer,
+    taking the open one back from the drawer or from the quarter, and pulling it past open, where the card gives like
+    a rubber band. (While the drawer was open the open card's rule outranked the finger's, and both stood still.)"""
     page = seed_page(chromium_ui, 390, 844)
     sel = '#content' if room == 'main' else '#project-panel'
+    menu = f'{"#page-chat" if room == "main" else "#project-panel"} .chat-toolbar-row [data-mobile-nav-toggle]'
     facts = {'room': room}
+
+    def reopen():
+        if not page.evaluate(CARD, sel)['open']:
+            page.locator(menu).click()
+            page.wait_for_timeout(700)
     try:
         boot(page, chromium_ui)
         if room == 'project':
             open_project(page)
         facts['closed'] = page.evaluate(CARD, sel)
-        page.locator(f'{"#page-chat" if room == "main" else "#project-panel"} .chat-toolbar-row [data-mobile-nav-toggle]').click()
+        page.locator(menu).click()
         page.wait_for_timeout(700)
         facts['open'] = page.evaluate(CARD, sel)
         page.mouse.click(350, 400)  # the room's quarter
@@ -428,25 +454,36 @@ def test_the_room_is_the_card_the_drawer_pushes_aside(chromium_ui, tmp_path, roo
         # A finger halfway, still down: the card and the veil are where the finger is.
         feed = page.locator(f'{sel} .chat-messages, {sel} #chat-messages').first.bounding_box()
         y = feed['y'] + feed['height'] / 2
-        cdp = page.context.new_cdp_session(page)
-        try:
-            for i, x in enumerate((40, 60, 100, 140, 180)):
-                cdp.send('Input.dispatchTouchEvent', {'type': 'touchStart' if i == 0 else 'touchMove',
-                                                      'touchPoints': [{'x': x, 'y': y, 'id': 1}]})
-                page.wait_for_timeout(16)
-            facts['held'] = page.evaluate(CARD, sel)
-            cdp.send('Input.dispatchTouchEvent', {'type': 'touchEnd', 'touchPoints': []})
-        finally:
-            cdp.detach()
-        page.wait_for_timeout(600)
+        facts['held'] = held(page, sel, (40, 60, 100, 140, 180), y)
+        # The open drawer taken back 90 px, from the drawer and from the quarter, and pulled past open.
+        reopen()
+        facts['closing'] = held(page, sel, (200, 190, 170, 150, 130, 110), y)
+        reopen()
+        facts['closing_quarter'] = held(page, sel, (370, 360, 340, 320, 300, 280), y)
+        reopen()
+        facts['past'] = held(page, sel, (100, 80, 160, 260, 380), y)
+        facts['after'] = page.evaluate(CARD, sel)
     finally:
         evidence(tmp_path, f'shell-room-card-{room}', facts)
         page.close()
-    closed, opened, back, held = facts['closed'], facts['open'], facts['back'], facts['held']
+    closed, opened, back, held_open = facts['closed'], facts['open'], facts['back'], facts['held']
     assert closed['x'] == 0 and closed['radius'] == '0px' and closed['veil'] == 0, ('closed, the room is the screen', closed)
     assert abs(opened['x'] - 0.75 * 390) < 1 and opened['radius'] == '44px' and opened['shadow'] != 'none', opened
     assert abs(opened['veil'] - 0.42) < 0.01, ('its words are faded', opened)
     assert opened['drawerUnder'] and opened['quarter'] == 'nav-drawer-backdrop', ('the drawer takes the finger, the quarter closes', opened)
     assert opened['projectScrim'] == 'none', opened
     assert back['open'] is False and back['x'] == 0 and back['project'] is (room == 'project'), ('the quarter brought it back', back)
-    assert 40 < held['x'] < 0.75 * 390 - 40 and 0.02 < held['veil'] < 0.4, ('the card and its veil follow the finger', held)
+    assert 40 < held_open['x'] < 0.75 * 390 - 40 and 0.02 < held_open['veil'] < 0.4, (
+        'the card and its veil follow the finger', held_open)
+    # The open drawer under a finger: the card moves 1:1 by the drawer's own number and its veil fades by it.
+    for name in ('closing', 'closing_quarter'):
+        taken = facts[name]
+        assert taken['open'] is True and 0.6 < taken['p'] < 0.85, (f'setup: {name} holds the open drawer partway', taken)
+        assert abs(taken['x'] - taken['p'] * 0.75 * 390) < 1, (f'{name}: the card follows the finger back', taken)
+        assert abs(taken['veil'] - 0.42 * taken['p']) < 0.01, (f'{name}: the veil fades with it', taken)
+    past = facts['past']
+    assert past['p'] > 1 and abs(past['x'] - past['p'] * 0.75 * 390) < 1 and past['x'] > opened['x'] + 8, (
+        'past open the card gives like a rubber band', past)
+    assert abs(past['veil'] - 0.42) < 0.01, past
+    assert facts['after']['open'] is True and abs(facts['after']['x'] - opened['x']) < 1, (
+        'released past open, it settles back open', facts['after'])
