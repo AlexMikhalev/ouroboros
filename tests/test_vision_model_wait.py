@@ -36,7 +36,7 @@ def _install_child_fixture(mode, events_path):
         polls = 0
         lost = False
 
-        def operations(self):
+        def operations(self, **_kwargs):
             return []  # Legacy model-operation catalog.
 
         def upload_model_request(self, payload, *, idempotency_key):
@@ -95,7 +95,7 @@ def _install_child_fixture(mode, events_path):
             event("close")
 
     gateway = Gateway()
-    transport.ensure_owned_gateway = lambda: gateway
+    transport.ensure_owned_gateway = lambda **_kw: gateway
     transport.config.CLAUDEXOR_MODEL_POLL_INTERVAL_SEC = 0.01
     pricing._fetch_live_rows = lambda *_: pytest.fail("VLM fixture must never fetch live pricing")
     original_write = vision_process._private_json
@@ -202,21 +202,19 @@ def test_private_ipc_publication_never_exposes_an_empty_control_file(tmp_path, m
         assert path.stat().st_mode & 0o777 == 0o600
 
 
-@pytest.mark.parametrize("mode", ["success", "slow", "lose_create", "checkpoint_fail", "checkpoint_retry"])
+@pytest.mark.parametrize("mode", ["success", "slow", "checkpoint_fail", "checkpoint_retry"])
 def test_real_child_retains_one_generation_and_unknown_cost(child_fixture, mode):
     state, events, root = child_fixture
     state["mode"] = mode
-    # Lost-create recovery must survive ordinary cold imports on its first
-    # control outage. The other cases keep 20ms to prove that transport bounds
-    # do not become logical inference deadlines.
-    text, usage = _call(timeout=1.0 if mode == "lose_create" else 0.02)
+    # A transport bound does not become a logical inference deadline.
+    text, usage = _call(timeout=0.02)
     assert text == "pixels read exactly once 🐍"
     assert usage["cost"] is None and usage["cost_final"] is False
     assert len(usage["ledger_attempt_ids"]) == 1
     assert ua.last_physical_attempt_capture().state == "settled"
     rows = _events(events)
     assert len([row for row in rows if row["kind"] == "generation"]) == 1
-    assert len({row["key"] for row in rows if row["kind"] == "create"}) == 1
+    assert len([row for row in rows if row["kind"] == "create"]) == 1
     assert any(row["kind"] == "ack" for row in rows)
     custody = [row for row in rows if row["kind"] == "custody"]
     if mode != "checkpoint_fail":
@@ -227,6 +225,20 @@ def test_real_child_retains_one_generation_and_unknown_cost(child_fixture, mode)
         assert state["timeouts"][0] > 90
     request = next((root / "observability" / "calls" / "image-task").glob("*_model_request.json"))
     assert json.loads(request.read_text())["operation_id"] == "operation-exact"
+
+
+def test_real_child_never_repeats_an_uncertain_create(child_fixture):
+    state, events, root = child_fixture
+    state["mode"] = "lose_create"
+    with pytest.raises(ClaudexorModelError) as caught:
+        _call()
+    error = caught.value
+    assert error.code == "model_outcome_unknown" and error.operation_id == ""
+    assert error.physical_attempt_capture.state == "unresolved"
+    rows = _events(events)
+    assert sum(row["kind"] == "create" for row in rows) == sum(row["kind"] == "generation" for row in rows) == 1
+    assert not any(row["kind"] in {"poll", "ack"} for row in rows)
+    assert [row["state"] for row in ledger_rows(root)] == ["unresolved"]
 
 
 @pytest.mark.parametrize("mode,code", [("quota", "subscription_window_exhausted"), ("auth", "auth_required"),

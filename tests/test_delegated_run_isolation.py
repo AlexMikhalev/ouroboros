@@ -772,11 +772,9 @@ class TestOrphanReconciliation:
 
 
 class _AbsentGateway:
-    """A daemon that answers 404 for every run — the reconcile 'absent' branch.
+    """The owning store answers 404; absence supplies no terminal output or patch."""
 
-    Across the D30 owned-daemon provisioning boundary this answer can come from a
-    DIFFERENT daemon than the one that accepted the run, whose child may still be
-    alive and writing to the snapshot."""
+    store_identity = "store-a"
 
     def handshake(self, **_kw):
         return {"compatible": True}
@@ -813,11 +811,8 @@ class _HealthEnv:
 
 
 class TestLazyCaptureAtDisposition:
-    """C1-R2: where terminal truth is ABSENT, capture is lazy and disposition is
-    the retry point. An absent run's state is unknowable from here (the child may
-    still be writing across the D30 provisioning boundary), so an eager capture
-    there would freeze a potentially incomplete patch — and the idempotent
-    early return would make the incompleteness permanent."""
+    """C1-R2: absence contains no terminal source; disposition captures the current
+    preserved workspace, never an eager patch frozen by the closing fact."""
 
     def _stranded_absent(self, tmp_path, *, snapshot_id, task_id):
         """A stranded mutating run whose daemon answers 404 (state unknowable)."""
@@ -831,7 +826,7 @@ class TestLazyCaptureAtDisposition:
         assert custody.record_start_requested(
             data, **_binding_request_row(task_id, snapshot_id, handle))
         entry = custody.RunCustody(
-            run_id=f"run-{snapshot_id}", task_id=task_id, route_id="some-route",
+            run_id=f"run-{snapshot_id}", task_id=task_id, route_id="some-route", daemon_store_id="store-a",
             project_id=f"prj-{snapshot_id}", project_owned=True, ledger_root=str(data),
             idempotency_key=f"k-{snapshot_id}", invocation_id=snapshot_id,
             snapshot_id=handle.snapshot_id, execution_root=handle.path,
@@ -886,7 +881,7 @@ class TestLazyCaptureAtDisposition:
         (exec_root / "tracked.txt").write_text("one\ntwo\nEARLY-EDIT\n", encoding="utf-8")
         drive = custody.custody_root(ctx)
         entry = custody.RunCustody(
-            run_id="run-lazy", task_id="t-nanny", route_id="some-route",
+            run_id="run-lazy", task_id="t-nanny", route_id="some-route", daemon_store_id="store-a",
             snapshot_id=handle.snapshot_id, execution_root=handle.path,
             baseline_sha=handle.baseline_sha, target_root=str(target),
             authority_source="external_workspace_root")
@@ -895,7 +890,7 @@ class TestLazyCaptureAtDisposition:
         outcomes = custody.reconcile_orphaned_runs(
             drive, set(), gateway_factory=lambda: _AbsentGateway())
         assert [o["action"] for o in outcomes] == ["absent"]
-        # The still-alive child (other daemon's process) writes AFTER the 404.
+        # Workspace changes AFTER the 404 must still reach the later inspection.
         (exec_root / "tracked.txt").write_text(
             "one\ntwo\nEARLY-EDIT\nLATE-WRITE\n", encoding="utf-8")
         custody._CUSTODY.clear()
@@ -923,7 +918,7 @@ class TestLazyCaptureAtDisposition:
             "one\ntwo\nCHILD-EDIT\n", encoding="utf-8")
         drive = custody.custody_root(ctx)
         entry = custody.RunCustody(
-            run_id="run-fail", task_id="t-nanny", route_id="some-route",
+            run_id="run-fail", task_id="t-nanny", route_id="some-route", daemon_store_id="store-a",
             snapshot_id=handle.snapshot_id, execution_root=handle.path,
             baseline_sha=handle.baseline_sha, target_root=str(target),
             authority_source="external_workspace_root")

@@ -571,7 +571,7 @@ def _reconcile_one(drive_root: Any, gateway: Any, custody: RunCustody, *,
     try:
         detail = gateway.get_run(custody.run_id)
     except ClaudexorUnavailable as exc:
-        if _custody().daemon_says_absent(exc):
+        if _custody().daemon_says_absent(exc, gateway=gateway, run=custody):
             _custody().close_absent_run(drive_root, gateway, custody, "reconcile_absent")
             result = {"run_id": custody.run_id, "task_id": custody.task_id, "action": "absent"}
         else:
