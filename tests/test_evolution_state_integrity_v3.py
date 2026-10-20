@@ -144,10 +144,11 @@ print(json.dumps({
             [sys.executable, "-c", code],
             cwd=repo,
             env=child_env,
-            check=True,
             capture_output=True,
             text=True,
         )
+        # A bare exit 1 from a CI runner is undiagnosable: name the child's own words.
+        assert proc.returncode == 0, f"scrubbed child exited {proc.returncode}; stderr tail: {proc.stderr[-2000:]!r}"
 
         payload = json.loads(proc.stdout.strip().splitlines()[-1])
         assert payload["pytest_loaded"] is False
