@@ -38,7 +38,7 @@ def test_the_window_counts_holds_per_kind_and_side_and_drain_resets_it(tmp_path)
             assert bucket["max_site"].split(":")[0] not in {"ouroboros.store", "ouroboros.task_store", "contextlib"}
     assert store_timing.drain() == {}
     with store.open_store(tmp_path, write=True):
-        time.sleep(0.05)  # the window's longest hold names the frame that opened it
+        time.sleep(0.07)  # the window's longest hold names the frame that opened it (a Windows tick's margin)
     longest = store_timing.drain()["current"]["write"]
     assert longest["max_sec"] >= 0.05 and longest["max_site"].startswith("tests.test_store_timing:test_the_window")
 
