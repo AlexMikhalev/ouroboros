@@ -1199,8 +1199,10 @@ class TaskEvent(TypedDict, total=False):
 
 
 class TaskPauseRequest(TypedDict):
-    """Text-free tree Pause; reuse request_id on retry."""
+    """Tree Pause; reuse request_id on retry. ``actor`` (owner|ouroboros) and ``reason`` declare who and why."""
     request_id: str
+    actor: NotRequired[str]
+    reason: NotRequired[str]
 
 
 class TaskPauseResponse(TypedDict, total=False):

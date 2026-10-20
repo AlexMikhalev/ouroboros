@@ -1,4 +1,4 @@
-// Browser twin of ouroboros/gateway/work_contracts.py: the /api/state work projection (v1, additive).
+// Browser twin of ouroboros/gateway/work_contracts.py: the /api/state work projection (v1).
 // One row per work (a request with its Continue episodes and live members) and one status per room.
 // Words come from the server's codes through tr(); a client never derives a state, mark or control.
 
@@ -9,6 +9,22 @@
  * @property {number=} count
  * @property {Array<string>=} ids
  * @property {*=} since
+ * @property {PauseAuthor=} by  // the declared author of a decided Pause
+ */
+/**
+ * @typedef {Object} PauseAuthor
+ * @property {string} actor  // owner | ouroboros
+ * @property {string} text  // Ouroboros's own sentence; '' for the owner's press
+ * @property {*} at  // the press time
+ */
+/**
+ * @typedef {Object} WorkTail
+ * @property {string} kind  // helper | run | review
+ * @property {string} state  // live | unknown
+ * @property {string} code
+ * @property {string} text  // its English sentence, said beside the work's word, never as it
+ * @property {number=} count
+ * @property {Array<string>=} ids
  */
 /**
  * @typedef {Object} WorkTurn
@@ -31,9 +47,6 @@
  */
 /**
  * @typedef {Object} WorkMembers
- * @property {number} working
- * @property {number} waiting
- * @property {number} delegated
  * @property {Array<string>} ids  // every member task id (episode roots and helpers): a card of another id re-reads the state
  */
 /**
@@ -52,10 +65,11 @@
  * @property {string} activity  // working | queued | waiting | paused | unknown
  * @property {string} transition  // none | finalizing | pausing
  * @property {string} call  // preparing | sending | thinking | working, when every working member agrees
- * @property {Array<WorkReason>} because
+ * @property {Array<WorkReason>} because  // the current episode's own reason (or, once it ended, nothing)
+ * @property {Array<WorkTail>} tails  // what still runs beside or after it
+ * @property {boolean} live  // something of the work actually executes now
  * @property {Array<WorkTurn>} turn
  * @property {string} release  // self | owner | mind | none
- * @property {?string} paused_by  // owner | mind | host
  * @property {WorkMembers} members
  * @property {Array<WorkControl>} controls
  * @property {*} since

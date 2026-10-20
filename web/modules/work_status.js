@@ -2,9 +2,10 @@
  * One work, one status in the browser (DESIGN "Room work status"): readers over the `/api/state` work projection
  * (ouroboros/gateway/work_status.py; shapes in work_types.js). The server groups every live member into works, rolls
  * works into rooms, decides each work's controls with their exact targets and names each work's and room's mark
- * (`mark`: moving | still | pause | ring | none); this module says those facts in the product's short words, keeps
- * what an incomplete body did not list again (unconfirmed: a ring), and lays a work's controls on the shared
- * task-control doors. It derives no word, mark or control of its own. Four facts only this client knows stay
+ * (`mark`: moving | still | pause | ring | none); this module says those facts in the product's short words (a work's
+ * word, and beside it its line: the episode's own reason, then what still runs beside it), keeps what an incomplete
+ * body did not list again (unconfirmed: a ring), and lays a work's controls on the shared task-control doors. It
+ * derives no word, mark or control of its own. Four facts only this client knows stay
  * overlays, each with its mark: the socket closed (Reconnecting…, a ring), the owner's own unconfirmed send (Sending,
  * moving), the supervisor not ready yet (Starting…, no mark) and the owner's own Stop press on a card (Cancelling… /
  * Finalizing…, moving). Whether something waits for the owner (`owner`: the server's `turn`) is a separate fact;
@@ -13,7 +14,7 @@
 import { fmt, tr } from './i18n.js';
 import { taskPresentation, taskTerminalPhase } from './log_events.js';
 import { startingStatus } from './host_starting_status.js';
-import { chipWord, shortReason } from './task_phase_chip.js';
+import { chipWord } from './task_phase_chip.js';
 import {
     ACTION_FINALIZE, ACTION_HURRY, ACTION_PAUSE, ACTION_RESUME, ACTION_STOP_EARLIER, ACTION_STOP_NOW, REUSABLE_TASK_IDS,
     hurryTaskAction, openTaskControlMenu, openTaskControls, requestStop, requestStopAll, resumeTaskAction, taskControlActions,
@@ -36,10 +37,10 @@ export function emptyWorkState() {
     return { room: IDLE_ROOM, works: [], episodes: new Map(), members: new Set(), attempts: new Map(), complete: false };
 }
 
-// What an incomplete body did not list again: still shown, never as confirmed work and never with controls; its mark
-// is the ring of unconfirmed state.
-const unconfirmedWork = (work) => ({ ...work, activity: 'unknown', transition: 'none', call: '', because: [],
-    turn: [], controls: [], confirmed: false, mark: 'ring' });
+// What an incomplete body did not list again: still shown, never as confirmed work and never with controls or a line;
+// its mark is the ring of unconfirmed state.
+const unconfirmedWork = (work) => ({ ...work, activity: 'unknown', transition: 'none', call: '', because: [], tails: [],
+    live: false, turn: [], controls: [], confirmed: false, mark: 'ring' });
 
 /**
  * One body applied to an instance's work state. `room` and `works` are this chat's (`works[].room`, keyed as the
@@ -101,28 +102,62 @@ const COUNTED_REASONS = {
         : fmt('{count} helpers still working', { count: n, n })),
     delegated_running: (n) => (n === 1 ? tr('work.because.delegated_running', '1 external run still working')
         : fmt('{count} external runs still working', { count: n, n })),
+    external_runs_unconfirmed: (n) => (n === 1 ? tr('work.because.external_runs_unconfirmed', '1 external run may still be running')
+        : fmt('{count} external runs may still be running', { count: n, n })),
 };
+
+// Helpers and external runs still working side by side are said in one sentence, so the line never says it twice.
+function tailWords(tails) {
+    const counted = (code) => tails.find((tail) => tail?.code === code && Number.isInteger(tail.count));
+    const helpers = counted('helpers_running');
+    const runs = counted('delegated_running');
+    if (!helpers || !runs) return tails.map(reasonText);
+    const both = fmt('{helpers} and {runs} still working', {
+        helpers: helpers.count === 1 ? tr('work.because.one_helper', '1 helper')
+            : fmt('{count} helpers', { count: helpers.count, n: helpers.count }),
+        runs: runs.count === 1 ? tr('work.because.one_external_run', '1 external run')
+            : fmt('{count} external runs', { count: runs.count, n: runs.count }),
+    });
+    return tails.flatMap((tail) => (tail === helpers ? [both] : tail === runs ? [] : [reasonText(tail)]));
+}
 
 /** One reason in the owner's words: the server's code read through the catalog, its sentence as the English (a
  *  code this client has never seen still reads its sentence). A count stays a parameter of its template; a counted
- *  code this client does not know keeps the server's sentence as it is. */
+ *  code this client does not know keeps the server's sentence as it is. An empty sentence (a Pause that declared
+ *  nobody) says nothing, and Ouroboros's own sentence is its prose: only the frame around it is translated. */
 export function reasonText(reason) {
     if (!reason || typeof reason !== 'object') return '';
     const code = String(reason.code || '');
-    const text = String(reason.text || code);
-    if (!code) return text;
+    const text = typeof reason.text === 'string' ? reason.text : code;
+    if (!code || !text) return text;
     if (Number.isInteger(reason.count)) return COUNTED_REASONS[code] ? COUNTED_REASONS[code](reason.count) : text;
+    if (code === 'paused_by_mind' && reason.by?.text) return fmt('Ouroboros: {reason}', { reason: String(reason.by.text) });
     return tr(`work.because.${code}`, text);
 }
 
-/** The reason said beside a word: its short word where one exists (Paused · by you), else its sentence. */
-export const reasonBeside = (reason) => shortReason(reason?.code) || reasonText(reason);
+/** A moment in the viewer's clock (epoch seconds or an ISO instant): its time today, its date as well on another day,
+ *  so an old one never reads as today's; '' when there is none. */
+export function clock(at) {
+    const ms = Number.isFinite(Number(at)) ? Number(at) * 1000 : Date.parse(String(at ?? ''));
+    const date = new Date(ms);
+    if (!ms || !Number.isFinite(date.getTime())) return '';
+    return new Date().toDateString() === date.toDateString()
+        ? date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+        : date.toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+}
 
-/** The reason said beside `word`, '' when the word already says it (an answer wait's own words, in any language). */
-export function reasonBesideWord(reason, word) {
-    if (!reason || (reason.code === 'owner_answer' && word === chipWord('ownerWait'))) return '';
-    const said = reasonBeside(reason);
-    return said === word ? '' : said;
+/**
+ * A work's line, said beside its word (the card's quieter line, the Shade row's, the sidebar's name after the word):
+ * the current episode's own sentence (the owner's Pause with the time it was pressed), then what still runs beside
+ * it, one sentence per tail, joined " · ". The line never repeats `word`: an answer wait's own words are compared by
+ * their code, in any language.
+ */
+export function workLine(work = {}, word = activityWord(work)) {
+    const first = list(work.because)[0];
+    const said = first?.code === 'owner_answer' && word === chipWord('ownerWait') ? '' : reasonText(first);
+    const sentence = said === word ? '' : said;
+    const pressed = sentence && first.code === 'paused_by_owner' ? clock(first.since) : '';
+    return [sentence, pressed, ...tailWords(list(work.tails))].filter(Boolean).join(' · ');
 }
 
 /** What waits for the owner in a room ('question' | 'action'), '' when nothing does or its own word says so. */
@@ -172,7 +207,7 @@ export function ownStopPress(state, records) {
 }
 
 /**
- * One work's row in the room's Shade: its word (an outcome beside Finalizing…), the reason beside it, the row's tone
+ * One work's row in the room's Shade: its word (an outcome beside Finalizing…), its line beside it, the row's tone
  * (the word's ink), its `mark` (the work's shape as the server names it; the owner's own Stop press moves it), `owner`
  * whether something in the work waits for the owner (its turn: the amber dot takes the mark's place; a Pause by the
  * owner or by Ouroboros is not the owner's move) and `outcome`, the known outcome said beside Finalizing… (its dot in
@@ -188,8 +223,7 @@ export function workRowView(work = {}, { stopping = '' } = {}) {
     const outcome = work.transition === 'finalizing' && work.outcome
         ? taskPresentation(taskTerminalPhase({ status: work.outcome })) : null;
     const word = outcome ? outcome.headline : activityWord(work);
-    const reason = reasonBesideWord(list(work.because)[0], word);
-    const secondary = [outcome ? chipWord('finalizing') : '', reason].filter(Boolean).join(' · ');
+    const secondary = [outcome ? chipWord('finalizing') : '', workLine(work, word)].filter(Boolean).join(' · ');
     const pausing = work.activity === 'working' && work.transition === 'pausing';
     const tone = outcome ? OUTCOME_TONES[outcome.phase] || 'live'
         : !work.confirmed || work.activity === 'unknown' ? 'unknown'
@@ -207,25 +241,22 @@ export function workQuestion(work) {
 }
 
 /**
- * What the card of a work's current episode says (one work, one status): the work's word with its short
- * reason in the chip, or its reason sentence beside it. Plain running work, finalizing work (its outcome beside
- * Finalizing…) and unconfirmed work keep the card's own words; so does a card whose episode is not live. The word
- * is the live one only while the work plainly runs; its mark is the work's own (applyCardWorkViews keeps it).
+ * What the card of a work's current episode says (one work, one status): the work's word alone in the chip, and its
+ * line as the chip's quieter second fact (the episode's reason, then what still runs beside it: reviews a Pause lets
+ * finish, helpers, external runs). Plain running work with nothing to say beside it, finalizing work (its outcome
+ * beside Finalizing…) and unconfirmed work keep the card's own words; so does a card whose episode is not live. The
+ * word is the live one only while the work plainly runs; its mark is the work's own (applyCardWorkViews keeps it).
  */
 export function cardWorkView(work) {
     if (!work || !work.confirmed || !work.episode?.live || work.activity === 'unknown' || work.transition === 'finalizing') return null;
-    const first = list(work.because)[0];
-    if (work.activity === 'working' && work.transition === 'none' && !first) return null;
-    // Reviewers already launched finish beside a settled Pause, visibly: the chip keeps saying so.
-    const reviews = work.activity === 'paused' && list(work.because).some((entry) => entry?.code === 'review_work_finishing');
-    const word = [activityWord(work), shortReason(first?.code), reviews ? chipWord('reviewWorkFinishing') : '']
-        .filter(Boolean).join(' · ');
-    const sentence = first && !shortReason(first.code) ? reasonBesideWord(first, activityWord(work)) : '';
+    const word = activityWord(work);
+    const line = workLine(work, word);
+    if (work.activity === 'working' && work.transition === 'none' && !line) return null;
     const running = work.activity === 'working';
     const classes = list(work.turn).length ? 'warn' : running ? (work.transition === 'pausing' ? 'working waiting' : 'working')
         : work.activity;
     return {
-        phase: running ? 'working' : work.activity, text: word, secondary: sentence, classes,
+        phase: running ? 'working' : work.activity, text: word, secondary: line, classes,
         tone: running && work.transition === 'none' ? 'live' : 'neutral', waiting: !running || work.transition !== 'none',
     };
 }
@@ -280,13 +311,6 @@ export function workOfEpisode(data, taskId) {
 export function resumeTargets(data) {
     return new Set(list(data?.works).filter((work) => work?.confirmed !== false)
         .map((work) => workControls(work).resume).filter(Boolean));
-}
-
-/** Episode task id → the reason a confirmed paused (or pausing) work gives: who or what holds it. */
-export function pauseReasons(data) {
-    return new Map(list(data?.works).filter((work) => work?.confirmed !== false
-        && (work.activity === 'paused' || work.transition === 'pausing') && work.episode?.task_id && work.because?.[0]?.code)
-        .map((work) => [String(work.episode.task_id), String(work.because[0].code)]));
 }
 
 /** The shared menu's items for a work's controls. Resume is its own button wherever one stands beside the menu;

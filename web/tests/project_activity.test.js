@@ -1,5 +1,5 @@
 // The sidebar's status marks read each room in the server's work projection (`rooms`): its shape (the server's
-// `mark`), whether something waits for the owner (its turn), and its word with the reason of its first work. The
+// `mark`), whether something waits for the owner (its turn), and its word with the line of its first work. The
 // rooms here are the server's own output (fixtures/work_projection_cases.json).
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -13,6 +13,7 @@ import {
     waitingModel,
 } from '../modules/project_activity.js';
 import { MARK_SHAPES } from '../modules/status_mark.js';
+import { clock } from '../modules/work_status.js';
 import { SERVER_CASES } from './work_fixture.js';
 
 // One server body whose case room is re-keyed to a Project chat id.
@@ -25,6 +26,8 @@ const summary = (name) => {
     const served = SERVER_CASES[name];
     return summarizeRoom(Object.values(served.rooms)[0], served.works);
 };
+// The owner's press as the fixture's fences record it, in the viewer's clock.
+const PRESSED = clock('2026-10-17T15:00:00Z');
 
 test('the shape is the server room\'s, passed through: moving work, a still queue or wait, a pause, a ring', () => {
     assert.equal(summary('held_continue').mark, 'moving');
@@ -32,6 +35,9 @@ test('the shape is the server room\'s, passed through: moving work, a still queu
     assert.deepEqual([summary('paused_by_owner').mark, summary('paused_by_mind').mark], ['pause', 'pause']);
     assert.deepEqual([summary('sleeping').mark, summary('model_access').mark], ['still', 'still'], 'waits that end by themselves');
     assert.equal(summary('unknown').mark, 'ring');
+    // A paused work whose review still finishes: the room moves while the review runs.
+    assert.equal(summary('paused_review_finishing').mark, 'moving');
+    assert.equal(summary('unconfirmed_run').mark, 'ring');
     const queued = summarizeRoom({ activity: 'queued', mark: 'still', turn: [], amber: false, works: [] }, []);
     assert.deepEqual([queued.mark, queued.owner, queued.label], ['still', false, 'Queued']);
     assert.equal(summarizeRoom({ activity: 'idle', mark: 'none' }), IDLE_SUMMARY);
@@ -57,18 +63,23 @@ test('the owner\'s move is the room\'s turn alone: questions and owner actions, 
     assert.deepEqual([unsure.mark, unsure.owner, unsure.label], ['ring', true, 'Paused · Something here waits for you']);
 });
 
-test('the label is the room word and the reason of its first work, in its short reason words', () => {
+test('the label is the room word and its first work\'s line: the episode\'s reason, then what still runs beside it', () => {
     assert.equal(summary('held_continue').label, 'Working · Continue starts when 3 helpers of the earlier attempt finish');
-    assert.equal(summary('paused_by_owner').label, 'Paused · by you');
-    assert.equal(summary('paused_by_mind').label, 'Paused · by Ouroboros');
-    assert.equal(summary('sleeping').label, 'Waiting · sleeping');
+    assert.equal(summary('paused_by_owner').label, `Paused · You paused it · ${PRESSED}`);
+    assert.equal(summary('paused_by_mind').label, 'Paused · Ouroboros: pause before the update you asked for');
+    assert.equal(summary('paused_unattributed').label, 'Paused', 'a Pause that declared nobody names nobody');
+    assert.equal(summary('sleeping').label, 'Waiting · Sleeping until it is woken');
     assert.equal(summary('direct_question').label, 'Waiting for your answer', 'the word already says the question');
-    assert.equal(summary('queued_and_pausing').label, 'Pausing… · by you');
+    assert.equal(summary('queued_and_pausing').label, `Pausing… · You paused it · ${PRESSED}`);
     assert.equal(summary('unknown').label, 'Activity unconfirmed');
+    assert.equal(summary('paused_review_finishing').label, `Paused · You paused it · ${PRESSED} · Review work finishing`);
+    assert.equal(summary('ended_with_runs').label, 'Working · 2 external runs still working');
+    // Unconfirmed, and the line says what: a ring is no reason to hide it.
+    assert.equal(summary('unconfirmed_run').label, 'Activity unconfirmed · 1 external run may still be running');
 });
 
 test('the accessible name says what waits for the owner whenever the word does not: amber is never colour alone', () => {
-    assert.equal(summary('spending_limit').label, 'Paused · spending limit · Something here waits for you');
+    assert.equal(summary('spending_limit').label, 'Paused · Spending limit reached · Something here waits for you');
     assert.equal(summary('model_access').label,
         'Waiting · The model needs you: sign in or restore access · Something here waits for you');
     // A question in one work while another works: the room's word is Working, and the question is said beside it.
@@ -105,7 +116,7 @@ test('a partial body marks only its omissions unknown; a room it lists describes
     const partialBody = { ...body('paused_by_owner', 43), works_complete: false };
     const partial = reconcileProjectRooms(initial.rooms, partialBody);
     assert.equal(partial.rooms.get('42').mark, 'ring');
-    assert.deepEqual([partial.rooms.get('43').mark, partial.rooms.get('43').label], ['pause', 'Paused · by you']);
+    assert.deepEqual([partial.rooms.get('43').mark, partial.rooms.get('43').label], ['pause', `Paused · You paused it · ${PRESSED}`]);
     assert.equal(initial.rooms.get('42').mark, 'moving', 'the previous map is not mutated');
     const restored = reconcileProjectRooms(partial.rooms, body('held_continue', 42));
     assert.equal(restored.rooms.get('42').mark, 'moving');
@@ -136,8 +147,8 @@ test('the index reads Project rooms only; the header\'s one mark is the stronges
 });
 
 test('a mark\'s words: its place\'s label and new messages, in one phrase', () => {
-    assert.equal(markWords(summary('paused_by_owner')), 'Paused · by you');
-    assert.equal(markWords(summary('paused_by_owner'), true), 'Paused · by you · new messages');
+    assert.equal(markWords(summary('paused_by_owner')), `Paused · You paused it · ${PRESSED}`);
+    assert.equal(markWords(summary('paused_by_owner'), true), `Paused · You paused it · ${PRESSED} · new messages`);
     assert.equal(markWords(IDLE_SUMMARY, true), 'new messages', 'a room at rest with new messages says only that');
     assert.equal(markWords(IDLE_SUMMARY), '');
     assert.equal(markWords(), '');

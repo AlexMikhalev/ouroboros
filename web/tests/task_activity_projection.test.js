@@ -27,19 +27,22 @@ const markOf = (chip) => {
 const flattened = view => [view.text, view.secondary].filter(Boolean).join(' · ');
 
 // The approved chips (status marks): the live word crimson with moving dots; what goes on by itself neutral with
-// still dots; a settled Pause its bars; unconfirmed work a ring; the owner's question amber with the amber dot.
-for (const [patch, text, mark, tone, waiting] of [
+// still dots; a settled Pause its bars; unconfirmed work a ring; the owner's question amber with the amber dot. The
+// chip says its word alone; what holds it and the reviews a settled Pause lets finish are its quieter line.
+for (const [patch, text, mark, tone, waiting, secondary = ''] of [
     [{ phase: 'preparing' }, 'Preparing', 'moving/ink', 'live', false],
     [{ phase: 'working' }, 'Working', 'moving/ink', 'live', false],
     [{ phase: 'thinking' }, 'Thinking', 'moving/ink', 'live', false],
     [{ phase: 'queued' }, 'Queued', 'still/ink', 'neutral', false],
     // The census `owner` cause also covers Ouroboros's own Pause: only the work projection says who paused.
     [{ phase: 'budget_paused', pause_cause: 'owner' }, 'Paused', 'pause/ink', 'neutral', true],
-    [{ phase: 'budget_paused', pause_cause: 'authority' }, 'Paused · technical problem', 'pause/ink', 'neutral', true],
-    [{ phase: 'budget_paused', pause_cause: 'owner', finishing_reviews: true }, 'Paused · review work finishing',
-        'pause/ink', 'neutral', true],
+    [{ phase: 'budget_paused', pause_cause: 'authority' }, 'Paused', 'pause/ink', 'neutral', true,
+        'After a technical problem'],
+    [{ phase: 'budget_paused', pause_cause: 'owner', finishing_reviews: true }, 'Paused', 'pause/ink', 'neutral', true,
+        'Review work finishing'],
     // A cold sleep wakes by itself: it waits, it is not paused.
-    [{ phase: 'budget_paused', pause_cause: 'sleep' }, 'Waiting · sleeping', 'still/ink', 'neutral', true],
+    [{ phase: 'budget_paused', pause_cause: 'sleep' }, 'Waiting', 'still/ink', 'neutral', true,
+        'Sleeping until it is woken'],
     [{ phase: 'budget_pausing', pause_cause: 'owner', finishing_reviews: true }, 'Pausing…', 'moving/ink', 'neutral', true],
     [{ phase: 'budget_pausing' }, 'Pausing…', 'moving/ink', 'neutral', true],
     [{ phase: 'unknown' }, 'Activity unconfirmed', 'ring/ink', 'neutral', false],
@@ -57,11 +60,13 @@ for (const [patch, text, mark, tone, waiting] of [
         const row = { activity_id: 'root', phase: 'working', ...patch };
         const view = censusTaskPhase(row, null, true, waitingModel(row));
         assert.equal(view.text, text);
+        assert.equal(view.secondary || '', secondary);
         assert.equal(view.tone, tone);
         assert.equal(view.waiting, waiting);
         const full = { phaseEl: element(), phaseSecondaryEl: element(true), projectHold: row.project_admission_hold?.label || '' };
         syncParkedPhase(full, row.phase, row);
         assert.equal(full.phaseEl.textContent, text);
+        assert.deepEqual([full.phaseSecondaryEl.textContent, full.phaseSecondaryEl.hidden], [secondary, !secondary]);
         assert.equal(markOf(full.phaseEl), mark);
         assert.equal(full.phaseEl.dataset.chipTone, tone);
         const compact = element();

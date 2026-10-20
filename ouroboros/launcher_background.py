@@ -90,11 +90,14 @@ def status_line(port: int) -> str:
     if state.get("supervisor_ready") is not True:
         return "Ouroboros: starting"
     if state.get("works_complete") is not True or not isinstance(summary, dict) or summary.get("confirmed") is not True \
-            or any(work.get("activity") == "unknown" for work in works):
+            or any(work.get("activity") == "unknown" and work.get("confirmed") is not True for work in works):
         return "Ouroboros: activity unconfirmed"
+    # A confirmed work whose only remainder is a run nobody can confirm is said beside the rest, never as all of it.
+    unconfirmed = sum(work.get("activity") == "unknown" for work in works)
+    known = [work for work in works if work.get("activity") != "unknown"]
     # The server's order (working, queued, waiting, paused), with the room's own transitions.
-    activities = {work.get("activity") for work in works}
-    working = [work for work in works if work.get("activity") == "working"]
+    activities = {work.get("activity") for work in known}
+    working = [work for work in known if work.get("activity") == "working"]
     transitions = {work.get("transition") or "none" for work in working}
     moving = [work for work in working if work.get("transition") != "pausing"]
     if working and transitions == {"finalizing"}:
@@ -109,11 +112,15 @@ def status_line(port: int) -> str:
         line = "Ouroboros: queued"
     elif "paused" in activities and "waiting" not in activities:
         line = "Ouroboros: paused"
+    elif unconfirmed and not known:
+        line = f"Ouroboros: {unconfirmed} task{'' if unconfirmed == 1 else 's'} unconfirmed"
     else:
         line = "Ouroboros: waiting"
     waits = sum(bool(work.get("turn")) for work in works)
     if waits:
         line += f" · {waits} {'waits' if waits == 1 else 'wait'} for you"
+    if unconfirmed and known:  # after what waits for the owner, which a cut line must keep
+        line += f" · {unconfirmed} unconfirmed"
     return line if len(line) <= TRAY_LINE_MAX else line[:TRAY_LINE_MAX - 1] + "…"
 
 

@@ -416,7 +416,7 @@ ouroboros/ — agent core and shared runtime (§6)
     task_archive.py — Confined single-file and directory-ZIP reads of a task's own stores
     task_events.py — Task-event SSE endpoint: GET ranks plus read-only POST v2 physical-chain cursors (§3 History reads and the SSE v2 transport)
     task_hurry.py — POST hurry ingress: a one-field `{request_id}` body, extra fields refused, so a smuggled field cannot become a side channel (owner_hurry.py)
-    task_pause.py — POST owner Pause `{request_id}`; answers after the durable root fence (owner_pause.py; §6 Owner Pause)
+    task_pause.py — POST owner Pause; answers after the durable root fence (owner_pause.py; §6 Owner Pause)
     task_continue.py — POST owner Continue `{action_nonce}`; one nonce answers one admission (owner_continue.py; §6 Owner Continue)
     main_decisions.py — Main's current questions and human-required controls, gaps explicit (§3)
     work_status.py, work_projection.py, work_contracts.py — one status per work and room in `/api/state` (§3 Liveness census)

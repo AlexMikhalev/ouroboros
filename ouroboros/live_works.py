@@ -36,7 +36,8 @@ def root_present_fields(root, task_id, task, stored, *, settled=False):
 
 
 # One neutral sentence of understanding, not a rule: what the list holds and that tidying it is ordinary work.
-_HYGIENE_NOTE = ("Every live, waiting, paused or held work in your rooms, with what it waits for and since when; "
+_HYGIENE_NOTE = ("Every live, waiting, paused or held work in your rooms, with what it waits for, since when and "
+                 "what of it still runs (tails); "
                  "other_live_work is work whose own root ended while its helpers or external runs go on. Keeping this "
                  "list free of work nobody needs any more is ordinary hygiene: close it, ask the owner, or leave it, "
                  "as you judge.")
@@ -57,7 +58,7 @@ def live_works_present(root, *, exclude=""):
             "state": row["status"], "started_at": row.get("started_at"),
             "open_questions": row.get("open_questions") or [], "waiting": row.get("waiting") or [],
             "last_line": focus.get("text", ""), "last_line_at": focus.get("authored_at"),
-            **{key: row[key] for key in ("focus", "project_admission_hold", "recorded_status") if key in row}})
+            **{key: row[key] for key in ("focus", "project_admission_hold", "recorded_status", "tails") if key in row}})
     from ouroboros.peer_roster import unlisted_live_work
 
     other = unlisted_live_work(pathlib.Path(root), {row["task_id"] for row in roster["roots"]})

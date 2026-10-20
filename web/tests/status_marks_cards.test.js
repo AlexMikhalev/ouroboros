@@ -24,16 +24,16 @@ test('every census phase draws the census table\'s shape, a settled cold sleep w
 
 test("a Resume only the owner can give is the owner's move; their own Pause and a self-releasing hold are not", () => {
     const paused = (patch) => censusTaskPhase({ activity_id: 't', phase: 'budget_paused', ...patch });
-    assert.deepEqual(look(paused({ pause_cause: 'budget', can_resume: true })), ['Paused · spending limit', 'pause', 'owner', true]);
-    assert.deepEqual(look(paused({ pause_cause: 'restart', can_resume: true })), ['Paused · app stopped', 'pause', 'owner', true]);
+    assert.deepEqual(look(paused({ pause_cause: 'budget', can_resume: true })), ['Paused', 'pause', 'owner', true]);
+    assert.deepEqual(look(paused({ pause_cause: 'restart', can_resume: true })), ['Paused', 'pause', 'owner', true]);
     assert.deepEqual(look(paused({ pause_cause: 'owner', can_resume: true })), ['Paused', 'pause', 'neutral', false]);
-    assert.deepEqual(look(paused({ pause_cause: 'budget', can_resume: false })), ['Paused · spending limit', 'pause', 'neutral', false]);
+    assert.deepEqual(look(paused({ pause_cause: 'budget', can_resume: false })), ['Paused', 'pause', 'neutral', false]);
     // The card keeps the census fact only while the census says it: the next row without it clears it.
     const record = {};
     syncParkedPhase(record, 'budget_paused', { pause_cause: 'restart', can_resume: true });
-    assert.deepEqual(look(desiredLiveCardPhase(record)), ['Paused · app stopped', 'pause', 'owner', true]);
+    assert.deepEqual(look(desiredLiveCardPhase(record)), ['Paused', 'pause', 'owner', true]);
     syncParkedPhase(record, 'budget_paused', { pause_cause: 'restart' });
-    assert.deepEqual(look(desiredLiveCardPhase(record)), ['Paused · app stopped', 'pause', 'neutral', false]);
+    assert.deepEqual(look(desiredLiveCardPhase(record)), ['Paused', 'pause', 'neutral', false]);
 });
 
 test("a wait that needs the owner is the owner's move; a parked task ignores its old waits as the server does", () => {

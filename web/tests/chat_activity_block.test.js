@@ -16,6 +16,7 @@ import {
 } from '../modules/chat_activity.js';
 import { upsertToolFoldRow } from '../modules/chat_render_batch.js';
 import { summarizeChatLiveEvent } from '../modules/log_events.js';
+import { clock } from '../modules/work_status.js';
 import { ElementStub, installDom, restoreDom, walkCard } from './chat_dom_fixture.js';
 import { projection, room, work } from './work_fixture.js';
 
@@ -219,7 +220,8 @@ for (const chatId of [1, 1234]) test(`canonical owner wait settles without a Pro
         const sleeping = { ...row, phase: 'budget_paused', pause_cause: 'sleep' };
         f.census([sleeping], room('waiting'), [work(sleeping, { activity: 'waiting',
             because: [{ code: 'sleeping', text: 'Sleeping until it is woken' }] })]);
-        assert.equal(f.card().querySelector('[data-live-phase]').textContent, 'Waiting · sleeping');
+        assert.equal(f.card().querySelector('[data-live-phase]').textContent, 'Waiting');
+        assert.equal(f.card().querySelector('[data-live-phase-secondary]').textContent, 'Sleeping until it is woken');
         assert.equal(f.status(), 'Waiting', 'a cold sleep waits; its reason stays on the row');
         f.census([{ ...row, owner_wait: undefined, required_question_unavailable: false }], room('working', { call: 'working' }));
         assert.equal(f.status(), 'Working', 'no quiz evidence invents no wait');
@@ -249,8 +251,11 @@ test('a work\'s Resume control exposes the card\'s Resume with its cause and kee
         document.body = new ElementStub('body', document);
         await f.instance.refreshHistory({ revision: 1 });
         const row = { activity_id: TASK, chat_id: 1, kind: 'direct_chat', phase: 'budget_paused', pause_cause: 'owner' };
-        const paused = (controls) => work(row, { activity: 'paused', paused_by: 'owner',
-            because: [{ code: 'paused_by_owner', text: 'Paused by you' }], controls });
+        const by = { actor: 'owner', text: '', at: TS };
+        const paused = (controls) => work(row, { activity: 'paused',
+            because: [{ code: 'paused_by_owner', text: 'You paused it', since: TS, by }], controls });
+        const said = () => [f.card().querySelector('[data-live-phase]').textContent,
+            f.card().querySelector('[data-live-phase-secondary]').textContent];
         // The census alone (a paused phase) offers no Resume: only the work's own control does.
         f.census([row], room('paused'), [paused([{ action: 'stop', target: TASK }])]);
         assert.equal(f.card().querySelector('[data-resume-run]'), null, 'a paused phase without the work\'s Resume control');
@@ -258,10 +263,10 @@ test('a work\'s Resume control exposes the card\'s Resume with its cause and kee
         const button = f.card().querySelector('[data-resume-run]');
         assert.ok(button);
         assert.equal(button.textContent, 'Resume');
-        assert.equal(f.card().querySelector('[data-live-phase]').textContent, 'Paused · by you');
+        assert.deepEqual(said(), ['Paused', `You paused it · ${clock(TS)}`]);
         await button.listeners.get('click')[0]({ stopPropagation() {} });
         assert.equal(f.requests.filter(url => url.endsWith(`/tasks/${TASK}/resume`)).length, 1);
-        assert.equal(f.card().querySelector('[data-live-phase]').textContent, 'Paused · by you', 'a refusal invents no Running state');
+        assert.deepEqual(said(), ['Paused', `You paused it · ${clock(TS)}`], 'a refusal invents no Running state');
         for (const phase of ['budget_pausing', 'queued', 'working', 'unknown']) {
             f.census([{ ...row, phase }], room('working'), [work({ ...row, phase }, { controls: [{ action: 'stop', target: TASK }] })]);
             assert.equal(f.card().querySelector('[data-resume-run]'), null, phase);

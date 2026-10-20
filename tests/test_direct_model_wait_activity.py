@@ -81,7 +81,8 @@ try {
             Infinity, generation + 1);
         const card = walkCard(document.byId.get('chat-messages'), task);
         const mark = card.querySelector('[data-live-phase]').firstElementChild;
-        return {phase: card.querySelector('[data-live-phase]').textContent,
+        const line = card.querySelector('[data-live-phase-secondary]');
+        return {phase: card.querySelector('[data-live-phase]').textContent, line: line.hidden ? '' : line.textContent,
             resume: Boolean(find(card, '[data-resume-run]')),
             mark: mark.hidden ? 'none' : `${mark.dataset.shape}/${mark.dataset.hue}`};
     });
@@ -123,6 +124,26 @@ def test_warm_owner_pause_registry_and_fence_reach_the_rendered_card(tmp_path, m
             set_owner_wait(tmp_path, task["id"], {"wait_id": "pause-wait", "state": "waiting", "reason": "owner_pause"})
             settling = gateway_state._chat_activities_snapshot_safe(tmp_path)[0]
             assert settling["phase"] == "budget_pausing" and not settling.get("finishing_reviews")
+            # A review the parked author already sent still runs while the Pause settles: its work says it and stays
+            # live, for a direct turn and a managed member alike; an unreadable operation proves none and drops no work.
+            from ouroboros import review_operation
+
+            if kind == "managed_task":
+                supervisor_queue.RUNNING[task["id"]]["owner_wait"] = {"state": "waiting", "reason": "owner_pause"}
+            with monkeypatch.context() as patch:
+                patch.setattr(review_operation, "task_has_live_review_operation",
+                              lambda root, task_id, sent_only=False, **_: sent_only and task_id == task["id"])
+                [work] = _state_body(tmp_path)["works"]
+                assert (work["live"], [tail["code"] for tail in work["tails"]]) == (True, ["review_work_finishing"])
+
+                def unreadable(root, task_id, sent_only=False, **_):
+                    raise OSError("store busy")
+
+                patch.setattr(review_operation, "task_has_live_review_operation", unreadable)
+                [work] = _state_body(tmp_path)["works"]
+                assert (work["activity"], work["transition"], work["live"], work["tails"]) == (
+                    "working", "pausing", False, [])
+            supervisor_queue.RUNNING.get(task["id"], {}).pop("owner_wait", None)
             # One reviewer as the census records it: its task (delegated run or live
             # operation) and its own model send. Mixed ids are never a reviewer count.
             owner_pause.set_fence_state(tmp_path, task["id"], fence_id=fence["fence_id"],
@@ -139,13 +160,14 @@ def test_warm_owner_pause_registry_and_fence_reach_the_rendered_card(tmp_path, m
             assert registry.snapshot() == raw, "the canonical projection never mutates the raw registry"
     finally:
         registry.clear()
-    # The card of the work's current episode says the work's word and who paused; Resume is its work's control.
-    # Its status mark is the server's: the owner's own Pause stands as its bars in ink, never the owner's move.
+    # The card of the work's current episode says the work's word alone and its line beside it; Resume is its work's
+    # control. This press declared nobody, so the line names nobody: only the reviews the Pause lets finish. Its status
+    # mark is the server's: the Pause stands as its bars in ink, never the owner's move.
     assert _js_pause_cards(samples) == [
-        {"phase": "Paused · by you · review work finishing", "resume": True, "mark": "pause/ink"},
-        {"phase": "Paused · by you", "resume": True, "mark": "pause/ink"},
+        {"phase": "Paused", "line": "Review work finishing", "resume": True, "mark": "pause/ink"},
+        {"phase": "Paused", "line": "", "resume": True, "mark": "pause/ink"},
         # A resumed direct turn reads its own census phase (``preparing``), a managed task ``working``.
-        {"phase": "Preparing" if kind == "direct_chat" else "Working", "resume": False, "mark": "moving/ink"},
+        {"phase": "Preparing" if kind == "direct_chat" else "Working", "line": "", "resume": False, "mark": "moving/ink"},
     ]
 
 

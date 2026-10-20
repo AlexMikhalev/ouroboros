@@ -519,13 +519,14 @@ READY = {"supervisor_ready": True, "supervisor_error": None, "works_complete": T
 def projection(*works, confirmed=True, **facts):
     """A /api/state work projection: each work is (activity, transition, has_turn)."""
     rows = [{"work_id": f"w{index}", "activity": activity, "transition": transition,
-             "turn": [{"kind": "question", "task_id": f"w{index}"}] if turn else []}
-            for index, (activity, transition, turn) in enumerate(works)]
+             "turn": [{"kind": "question", "task_id": f"w{index}"}] if turn else [],
+             **({"confirmed": confirmed} if confirmed is not None else {})}
+            for index, (activity, transition, turn, confirmed) in enumerate(works)]
     return {**READY, "works": rows, "work_summary": {"counts": {}, "turn": 0, "confirmed": confirmed}, **facts}
 
 
-def work(activity, transition="none", turn=False):
-    return (activity, transition, turn)
+def work(activity, transition="none", turn=False, confirmed=None):
+    return (activity, transition, turn, confirmed)
 
 
 @pytest.mark.parametrize("body,line", [
@@ -554,6 +555,13 @@ def work(activity, transition="none", turn=False):
     (projection(supervisor_ready=False), "Ouroboros: starting"),
     (projection(works_complete=False), "Ouroboros: activity unconfirmed"),
     (projection(work("unknown")), "Ouroboros: activity unconfirmed"),
+    # A confirmed work whose only remainder is a run nobody can confirm is counted beside the rest, not all of it.
+    (projection(work("unknown", confirmed=True)), "Ouroboros: 1 task unconfirmed"),
+    (projection(work("working"), work("unknown", confirmed=True), work("unknown", confirmed=True)),
+     "Ouroboros: working on 1 task · 2 unconfirmed"),
+    # What waits for the owner comes first, so a cut line keeps it.
+    (projection(work("working"), work("waiting", turn=True), work("unknown", confirmed=True)),
+     "Ouroboros: working on 1 task · 1 waits for you · 1 unconfirmed"),
     (projection(work("working"), confirmed=False), "Ouroboros: activity unconfirmed"),
 ])
 def test_the_state_line_reads_the_servers_own_activity(monkeypatch, body, line):

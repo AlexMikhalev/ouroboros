@@ -21,7 +21,7 @@ never written as a result:
   under its own id and CHARLIE is admitted as ordinary queued work, both to
   completion without a click, while ALPHA is STILL paused (not cancelled, not
   auto-resumed) until the owner's Resume runs it to completion. Its card says
-  ``Paused · by you`` once saved, including after Restart, and the room says ``Paused``.
+  ``Paused`` once saved, including after Restart (who paused is its line), and the room says ``Paused``.
 
 ``test_owner_restart_returns_running_work_under_its_own_id``
   The owner Restart stops a running root whose working state is saved; the
@@ -429,7 +429,7 @@ def test_pause_restart_retention_and_resume(direct_server_with_data, monkeypatch
                 assert model.bravo_sent.wait(60), "BRAVO never started after ALPHA parked"
                 _wait(lambda: _phase(page, url, ALPHA) == "budget_paused", 30, "ALPHA paused")
                 assert _phase(page, url, CHARLIE) == "queued"
-                expect(_chip(page, ALPHA)).to_have_text("Paused · by you", timeout=30_000)
+                expect(_chip(page, ALPHA)).to_have_text("Paused", timeout=30_000)
                 expect(_card(page, ALPHA).locator("[data-resume-run]")).to_be_visible()
                 expect(_card(page, BRAVO).locator("[data-live-phase]")).to_have_text("Working", timeout=30_000)
                 shot("01-paused-while-its-call-was-sent")
@@ -488,7 +488,7 @@ def test_pause_restart_retention_and_resume(direct_server_with_data, monkeypatch
                     "BRAVO returns under its own id, never as a Continue successor"
                 assert model.main_calls("CHARLIE") == 1
                 assert not _events(data_dir, "owner_continue_admitted")
-                expect(_chip(page, ALPHA)).to_have_text("Paused · by you", timeout=60_000)
+                expect(_chip(page, ALPHA)).to_have_text("Paused", timeout=60_000)
                 expect(_card(page, ALPHA).locator("[data-resume-run]")).to_be_visible()
                 for task_id in (BRAVO, CHARLIE):
                     expect(_chip(page, task_id)).to_have_text("Done", timeout=60_000)

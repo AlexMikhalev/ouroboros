@@ -1185,7 +1185,7 @@ card) takes its shape from its census phase through one table pinned to the
 server's `mark_of`, and the owner's move only from proved facts (`can_resume`,
 `requires_owner_action`, its own question). The room says its busiest work:
 working, then queued, waiting, paused, and its mark is the server's status mark
-(Status marks): moving dots while work runs, still dots while it queues or waits on
+(Status marks): moving dots while anything in it runs (a paused work's finishing review too), still dots while it queues or waits on
 something that ends by itself, two bars while paused, a faint ring when
 unconfirmed. While something waits for the owner the amber dot replaces that shape
 beside the room's word; a Pause is not the owner's turn. At rest `Online` keeps its
@@ -1202,9 +1202,14 @@ incomplete read has not confirmed (shown unknown, without controls). A Project
 with nothing else keeps its latest represented root card. A row names its work (its
 coined name or the request's title, never `Continue: …`, else the owner's
 message) in two lines that keyboard focus or open details show whole, with the
-state under the name and one quiet reason beside it, the row's mark before it (an
+state under the name and its quiet line beside it, the row's mark before it (an
 outcome is a dot in its tone: Done and Done with warnings green, Stopped neutral,
-Failed red); an outcome stays beside `Finalizing…`; `Paused` says who or what paused it and stays until Resume;
+Failed red). The word is the current episode's alone; the line says its reason, then
+what still runs beside it (helpers, external runs, review work beside a task that is not
+running, such as the review a Pause lets finish, a run nobody can confirm); a work card's chip says the same word with the same line
+beside it, and the sidebar's name says both. An outcome stays beside `Finalizing…`; `Paused` stays until Resume, its
+line saying who or what paused it (the owner's press with its time, Ouroboros in its
+own sentence, nobody when a press declared no one);
 `Waiting` says what it waits for and goes on by itself when that happens;
 helpers an earlier attempt left running read as `Working`, with their count; an
 access wait is not an answer wait, and unknown stays unknown. Under the state a

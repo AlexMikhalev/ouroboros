@@ -10,17 +10,31 @@ from __future__ import annotations
 
 import json
 import tempfile
+from types import SimpleNamespace
 from unittest import mock
 
 from ouroboros.gateway import work_projection as wp
 
 
-def work_fields(owners, raw=None, *, results=None, fences=None, held=None, complete=True):
-    """``works``, ``rooms``, ``work_summary``, ``works_complete`` and ``works_gaps`` for these rows, as JSON."""
-    results, fences, held = dict(results or {}), dict(fences or {}), dict(held or {})
+def _custody(root_id, run):
+    """One open custody row as ``_open_runs`` yields it: a bare run id is an ordinary run of the root itself."""
+    run = {"run_id": run} if isinstance(run, str) else dict(run)
+    return SimpleNamespace(run_id=run["run_id"], task_id=run.get("task_id", root_id), root_task_id=root_id,
+                           source=run.get("source", "delegated_subagent"), terminal_state=run.get("terminal_state", ""))
+
+
+def work_fields(owners, raw=None, *, results=None, fences=None, held=None, stops=None, complete=True):
+    """``works``, ``rooms``, ``work_summary``, ``works_complete`` and ``works_gaps`` for these rows, as JSON.
+
+    ``held`` maps a tree root to its open runs: run ids, or ``{run_id, task_id, source}`` rows; ``stops`` maps a
+    task to the runs whose stop its live Pause could not confirm."""
+    results, fences, stops = dict(results or {}), dict(fences or {}), dict(stops or {})
+    held = {root: [_custody(root, run) for run in runs] for root, runs in dict(held or {}).items()}
     with tempfile.TemporaryDirectory() as root, \
             mock.patch.object(wp._Observations, "result", lambda self, task_id: results.get(task_id)), \
             mock.patch.object(wp._Observations, "fence", lambda self, root_id, drive_root=None: fences.get(root_id, {})), \
+            mock.patch.object(wp._Observations, "stop_unknown",
+                              lambda self, task_id, drive_root=None, owner=None: frozenset(stops.get(task_id, ()))), \
             mock.patch.object(wp, "_open_runs", lambda drive_root: held), \
             mock.patch.object(wp, "_inflight_upkeep", lambda drive_root, known: []):
         snapshot = wp.works_snapshot(root, [dict(row) for row in owners], dict(raw or {}), complete=complete)
