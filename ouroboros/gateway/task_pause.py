@@ -34,7 +34,6 @@ from ouroboros.task_results import validate_task_id
 from ouroboros.utils import utc_now_iso
 
 _REQUEST_ID_MAX = 128
-_REASON_MAX = 400
 _FIELDS = frozenset({"request_id", "actor", "reason"})
 _CONFLICTS = frozenset({"not_a_root_task", "cancel_pending", "task_terminal", "root_result_missing"})
 
@@ -53,8 +52,8 @@ async def api_task_pause(request: Request) -> JSONResponse:
         return json_error("request_id is required (a stable client-generated id, reused on retry)",
                           400, task_id=task_id, reason_code="request_id_required")
     reason = body.get("reason", "")
-    if not isinstance(reason, str) or len(reason.strip()) > _REASON_MAX:
-        return json_error(f"reason is one sentence of at most {_REASON_MAX} characters", 400,
+    if not isinstance(reason, str):
+        return json_error("reason is the declared author's sentence (a string)", 400,
                           task_id=task_id, reason_code="pause_reason_invalid")
     actor = body.get("actor")
     by = {"actor": actor, "text": reason.strip(), "at": utc_now_iso()} if actor in PAUSE_AUTHORS else None

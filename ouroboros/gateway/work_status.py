@@ -60,17 +60,17 @@ REASON_TEXT = {
     "sleeping": "Sleeping until it is woken",
     # A decided Pause says its declared author; the Resume button already says how it continues.
     "paused_by_owner": "You paused it",
-    "paused_by_mind": "Paused by Ouroboros",
+    "paused_by_mind": "Ouroboros paused it",
     "paused_unattributed": "",
     "saved_on_stop": "Saved when the app stopped",
     "after_restart": "Held after a restart",
     "after_panic": "Stopped by Panic",
     "spending_limit": "Spending limit reached",
-    "technical_pause": "Paused after a technical problem",
+    "technical_pause": "After a technical problem",
     "awaiting_selection": "Waiting for Ouroboros or you to resume it",
     "restore_failed": "Its saved state could not be restored",
     "review_work_finishing": "Review work finishing",
-    "external_runs_unconfirmed": ("1 external run unconfirmed", "{count} external runs unconfirmed"),
+    "external_runs_unconfirmed": ("1 external run may still be running", "{count} external runs may still be running"),
     "held": "Held",
 }
 
@@ -161,8 +161,9 @@ def classify_member(row: Mapping[str, Any], raw: Optional[Mapping[str, Any]] = N
 
     ``raw`` carries the queue row's hold and pause records, the declared author of the tree's Pause
     (``pause_by``, ``control_actor.pause_author``), the members that Pause already parked and the task's
-    own identity facts (see ``work_projection``). Returns the member's own state only; ``live`` says
-    whether the member itself executes now (a member that parked under a settling Pause does not)."""
+    own identity facts (see ``work_projection``), and ``running`` when the queue runs it. Returns the member's
+    own state only; ``live`` says whether the member itself executes now: under a settling Pause only a running
+    member the Pause has not parked does, never a queued one or one that already saved its place."""
     raw = raw or {}
     task_id = str(row.get("activity_id") or "")
     phase = str(row.get("phase") or "unknown")
@@ -209,7 +210,7 @@ def classify_member(row: Mapping[str, Any], raw: Optional[Mapping[str, Any]] = N
         if phase == "budget_pausing" and activity == "paused":
             # Still finishing its step unless the settling Pause already parked it.
             state.update(activity="working", transition="pausing", call="",
-                         live=task_id not in set(raw.get("parked") or ()))
+                         live=bool(raw.get("running")) and task_id not in set(raw.get("parked") or ()))
         else:
             state["activity"] = activity
         state["release"] = release
@@ -349,16 +350,17 @@ TAIL_STATES = ("live", "unknown")
 _FAILED_OWNER = frozenset({"failed", "cancelled"})
 
 
-def run_tail(source: Any, owner: Optional[Mapping[str, Any]]) -> tuple:
+def run_tail(source: Any, owner: Optional[Mapping[str, Any]], *, stop_unknown: bool = False) -> tuple:
     """How one open delegated run is said beside its work, ``(kind, state)``: the one typing the server's work
-    projection and Ouroboros's own roster share. A review-owned ``source`` is the review a Pause lets finish; a run
-    whose own task (``owner``, its stored result) ended failed or cancelled is one nobody can confirm; every other
-    open run is live. Facts both readers already hold, never a new probe."""
+    projection and Ouroboros's own roster share. A review-owned ``source`` is review work; a run nobody can confirm
+    is one whose own task (``owner``, its stored result) ended failed or cancelled, or whose stop that task's live
+    Pause could not confirm (``stop_unknown``, ``external_runs.EXTERNAL_STOP_UNKNOWN``); every other open run is
+    live. Facts the readers already hold, never a new probe."""
     from ouroboros.delegate_registration_policy import review_owned_source
 
     if review_owned_source(source):
         return "review", "live"
-    return "run", "unknown" if _outcome(owner or {}) in _FAILED_OWNER else "live"
+    return "run", "unknown" if stop_unknown or _outcome(owner or {}) in _FAILED_OWNER else "live"
 
 
 def _tail(kind: str, code: str, ids: List[str], *, state: str = "live", count: Optional[int] = None) -> Dict[str, Any]:
@@ -400,10 +402,13 @@ def roll_up_work(work_id: str, members: List[Dict[str, Any]], *, episode: Mappin
     episode are the other members. ``runs`` are the work's unsettled delegated runs as
     ``{run_id, kind: run|review, state: live|unknown}`` (``work_projection`` types them)."""
     gaps = list(gaps)
-    runs = [run for run in runs if run.get("kind") in RUN_KINDS and run.get("state") in TAIL_STATES]
     current = episode.get("state") if isinstance(episode.get("state"), dict) else None
+    # Review work is a tail beside an episode that is not executing; a running episode's own review is its own work.
+    executing = bool(current is not None and current.get("live") and current["transition"] != "pausing")
+    runs = [run for run in runs if run.get("kind") in RUN_KINDS and run.get("state") in TAIL_STATES
+            and not (executing and run["kind"] == "review")]
     helpers = [member for member in members if member is not current]
-    working_helpers = [member for member in helpers if member["activity"] == "working"]
+    working_helpers = [member for member in helpers if member["activity"] == "working" and member["live"]]
     helper_ids = [member["task_id"] for member in working_helpers]
     live_runs = [str(run["run_id"]) for run in runs if run["kind"] == "run" and run["state"] == "live"]
     review_runs = [str(run["run_id"]) for run in runs if run["kind"] == "review" and run["state"] == "live"]
@@ -452,10 +457,10 @@ def roll_up_work(work_id: str, members: List[Dict[str, Any]], *, episode: Mappin
         "confirmed": all(member["confirmed"] for member in members) and not gaps,
     }
     # The work's own mark follows its episode (the Paused mark lights when the tasks are parked; what they let
-    # finish is the line beside it); an ended episode's mark follows what still runs. The room's mark moves while
-    # anything in it runs (roll_up_room).
+    # finish, or a run nobody can confirm, is the line beside it); an ended episode's mark follows what still runs.
+    # The room's mark moves while anything in it runs (roll_up_room).
     work["mark"] = mark_of(activity, work["confirmed"], live=episode_live if current is not None else live,
-                           unknown=bool(unknown_runs) and not live)
+                           unknown=current is None and bool(unknown_runs) and not live)
     if outcome:
         work["outcome"] = outcome
     if isinstance(focus, dict) and str(focus.get("text") or "").strip():

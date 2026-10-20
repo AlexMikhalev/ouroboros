@@ -75,7 +75,7 @@ test('the label is the room word and its first work\'s line: the episode\'s reas
     assert.equal(summary('paused_review_finishing').label, `Paused · You paused it · ${PRESSED} · Review work finishing`);
     assert.equal(summary('ended_with_runs').label, 'Working · 2 external runs still working');
     // Unconfirmed, and the line says what: a ring is no reason to hide it.
-    assert.equal(summary('unconfirmed_run').label, 'Activity unconfirmed · 1 external run unconfirmed');
+    assert.equal(summary('unconfirmed_run').label, 'Activity unconfirmed · 1 external run may still be running');
 });
 
 test('the accessible name says what waits for the owner whenever the word does not: amber is never colour alone', () => {

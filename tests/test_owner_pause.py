@@ -411,11 +411,15 @@ def test_the_pause_endpoint_is_typed_and_records_only_a_declared_author(tmp_path
     _queue, _state, workers = _install_queue(tmp_path, monkeypatch)
     _live_tree(tmp_path, workers)
     client = TestClient(Starlette(routes=[Route("/api/tasks/{task_id}/pause", api_task_pause, methods=["POST"])]))
+    from typing import get_type_hints
+
+    from ouroboros.gateway import task_pause
+    from ouroboros.gateway.contracts import TaskPauseRequest
+    assert task_pause._FIELDS == set(get_type_hints(TaskPauseRequest)), "the published request is the door's body"
     assert client.post("/api/tasks/root-1/pause", json={"request_id": "r", "text": "x"}).status_code == 400
     assert client.post("/api/tasks/root-1/pause", json={}).status_code == 400
-    for reason in (5, "x" * 401):
-        refused = client.post("/api/tasks/root-1/pause", json={"request_id": "r", "actor": "owner", "reason": reason})
-        assert refused.status_code == 400 and refused.json()["reason_code"] == "pause_reason_invalid"
+    refused = client.post("/api/tasks/root-1/pause", json={"request_id": "r", "actor": "owner", "reason": 5})
+    assert refused.status_code == 400 and refused.json()["reason_code"] == "pause_reason_invalid"
     assert read_fence(tmp_path, "root-1") == {}, "a refused body wrote nothing"
     # An actor the core does not know is no declaration, not an error.
     ok = client.post("/api/tasks/root-1/pause", json={"request_id": "r", "actor": "app", "reason": "mine"})
@@ -431,6 +435,9 @@ def test_the_pause_endpoint_is_typed_and_records_only_a_declared_author(tmp_path
     assert said.status_code == 200
     fence = read_fence(tmp_path, "root-1")
     assert fence["requests"]["r3"]["by"]["text"] == "Updating everything." and fence["by"] == by
+    # A long sentence is still the declaration, kept whole: the door pauses, it never judges the words.
+    long = client.post("/api/tasks/root-1/pause", json={"request_id": "r4", "actor": "ouroboros", "reason": "w " * 400})
+    assert long.status_code == 200 and read_fence(tmp_path, "root-1")["requests"]["r4"]["by"]["text"] == ("w " * 400).strip()
     # A retry of the same press is the same Pause; its declaration is not re-read.
     again = client.post("/api/tasks/root-1/pause", json={"request_id": "r2", "actor": "ouroboros", "reason": "no"})
     assert again.status_code == 200 and again.json()["duplicate"] is True

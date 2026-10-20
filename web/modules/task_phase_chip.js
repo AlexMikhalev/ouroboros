@@ -54,7 +54,7 @@ const reviewsFinishing = () => tr('work.because.review_work_finishing', 'Review 
 const CAUSE_SENTENCES = {
     budget: () => tr('work.because.spending_limit', 'Spending limit reached'),
     restart: () => tr('work.because.after_restart', 'Held after a restart'),
-    authority: () => tr('work.because.technical_pause', 'Paused after a technical problem'),
+    authority: () => tr('work.because.technical_pause', 'After a technical problem'),
     sleep: () => tr('work.because.sleeping', 'Sleeping until it is woken'),
 };
 

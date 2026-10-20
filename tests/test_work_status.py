@@ -42,7 +42,7 @@ def test_writer_held_continue_waits_and_is_never_the_owners_turn():
     ({"actor": "owner", "text": "", "at": "T0"}, "paused_by_owner", "owner", "You paused it"),
     ({"actor": "ouroboros", "text": "pause before the update you asked for", "at": "T0"}, "paused_by_mind", "mind",
      "Ouroboros: pause before the update you asked for"),
-    ({"actor": "ouroboros", "text": "", "at": "T0"}, "paused_by_mind", "mind", "Paused by Ouroboros"),
+    ({"actor": "ouroboros", "text": "", "at": "T0"}, "paused_by_mind", "mind", "Ouroboros paused it"),
     ({"actor": "", "text": "", "at": "T0"}, "paused_unattributed", "owner", ""),
 ])
 def test_a_decided_pause_says_its_declared_author_never_the_door(author, code, release, text):
@@ -88,11 +88,30 @@ def test_owner_required_resume_is_the_owners_turn_only_when_the_census_says_so(c
 def test_cold_sleep_waits_and_pausing_is_still_work():
     sleeping = ws.classify_member(row("t", "budget_paused", pause_cause="sleep"))
     assert (sleeping["activity"], sleeping["release"]) == ("waiting", "self")  # it wakes by itself
-    pausing = ws.classify_member(row("t", "budget_pausing", pause_cause="owner"), {"pause_by": {"actor": "owner"}})
+    owner = {"pause_by": {"actor": "owner"}}
+    pausing = ws.classify_member(row("t", "budget_pausing", pause_cause="owner"), {**owner, "running": True})
     assert (pausing["activity"], pausing["transition"], pausing["live"]) == ("working", "pausing", True)
-    # Parked under a Pause still settling for someone else: Pausing…, but this member executes nothing.
-    parked = ws.classify_member(row("t", "budget_pausing", pause_cause="owner"), {"parked": ["t"]})
+    # Under a Pause still settling, a member the queue holds (never started, or already saved and parked) is
+    # Pausing… too but executes nothing; nor does a running one the settled census already parked.
+    queued = ws.classify_member(row("t", "budget_pausing", pause_cause="owner"), owner)
+    assert (queued["transition"], queued["live"]) == ("pausing", False)
+    parked = ws.classify_member(row("t", "budget_pausing", pause_cause="owner"), {"parked": ["t"], "running": True})
     assert (parked["transition"], parked["live"]) == ("pausing", False)
+
+
+def test_under_a_settling_pause_only_running_helpers_are_said_still_working():
+    owner = {"pause_by": {"actor": "owner"}}
+    member = lambda task_id, **raw: ws.classify_member(  # noqa: E731
+        row(task_id, "budget_pausing", pause_cause="owner", **({"parent_task_id": "r"} if task_id != "r" else {})),
+        {**owner, **raw})
+    root = member("r", running=True)
+    work = ws.roll_up_work("r", [root, member("h1", running=True), member("h2")], episode={"task_id": "r", "state": root})
+    assert (work["activity"], work["transition"]) == ("working", "pausing")
+    assert [(tail["code"], tail["ids"]) for tail in work["tails"]] == [("helpers_running", ["h1"])]
+    # The running helper parks too: no helper is said working, and the work still reads Pausing….
+    work = ws.roll_up_work("r", [root, member("h1", running=True, parked=["h1"]), member("h2")],
+                           episode={"task_id": "r", "state": root})
+    assert (work["activity"], work["transition"], work["tails"]) == ("working", "pausing", [])
 
 
 def test_unread_pause_cause_stays_raw_and_releases_nothing():
@@ -377,6 +396,30 @@ def test_a_paused_episode_keeps_its_word_whatever_still_runs_beside_it(tail):
     assert (quiet["tails"], quiet["live"], ws.roll_up_room([quiet])["mark"]) == ([], False, "pause")
 
 
+def test_a_run_nobody_can_confirm_beside_a_live_episode_is_its_line_never_its_mark():
+    # A Pause held for the owner beside a failed helper's open run: bars and the owner's move, the run on the line.
+    held = ws.classify_member(row("t", "budget_paused", pause_cause="restart", can_resume=True),
+                              {"hold": {"reason": "owner_restart_hold"}})
+    lost = {"run_id": "u", "kind": "run", "state": "unknown"}
+    work = ws.roll_up_work("t", [held], episode={"task_id": "t", "state": held}, runs=[lost])
+    assert (work["activity"], work["mark"], work["live"]) == ("paused", "pause", False)
+    assert [tail["code"] for tail in work["tails"]] == ["external_runs_unconfirmed"]
+    assert ws.roll_up_room([work])["mark"] == "ring", "the room: nothing runs, one run nobody can confirm"
+    # With its episode ended, that run is all the work is: unconfirmed, its ring.
+    ended = ws.roll_up_work("t", [], episode={"task_id": "t"}, runs=[lost])
+    assert (ended["activity"], ended["mark"]) == ("unknown", "ring")
+
+
+def test_a_running_episodes_own_review_is_its_work_and_review_beside_a_pause_is_its_tail():
+    running = ws.classify_member(row("t", "thinking"))
+    review = {"run_id": "rv", "kind": "review", "state": "live"}
+    work = ws.roll_up_work("t", [running], episode={"task_id": "t", "state": running}, runs=[review])
+    assert (work["activity"], work["tails"], work["live"]) == ("working", [], True)
+    paused = _paused()
+    work = ws.roll_up_work("t", [paused], episode={"task_id": "t", "state": paused}, runs=[review])
+    assert [tail["code"] for tail in work["tails"]] == ["review_work_finishing"]
+
+
 @pytest.mark.parametrize("source, owner, typed", [
     ("review_substrate", {"status": "failed"}, ("review", "live")),  # a review finishes whatever its task did
     ("review_substrate_plan", None, ("review", "live")),
@@ -388,9 +431,34 @@ def test_a_paused_episode_keeps_its_word_whatever_still_runs_beside_it(tail):
 ])
 def test_one_rule_types_an_open_run_for_the_card_and_for_ouroboros(source, owner, typed):
     assert ws.run_tail(source, owner) == typed
+    # A stop its own task's live Pause could not confirm leaves an ordinary run unconfirmed; review work stays review.
+    assert ws.run_tail(source, owner, stop_unknown=True) == ((typed[0], "live") if typed[0] == "review"
+                                                             else ("run", "unknown"))
     entry = SimpleNamespace(run_id="r", task_id="h" if owner is not None else "", source=source)
-    obs = SimpleNamespace(result=lambda task_id: owner if task_id == "h" else None)
-    assert wp._typed_run(entry, obs) == {"run_id": "r", "kind": typed[0], "state": typed[1]}
+    stops = {}
+    obs = SimpleNamespace(result=lambda task_id: owner if task_id == "h" else None,
+                          stop_unknown=lambda task_id, drive_root=None: frozenset(stops.get(task_id, ())))
+    assert wp._typed_run(entry, obs, {}) == {"run_id": "r", "kind": typed[0], "state": typed[1]}
+    stops["h"] = ["r"]
+    stopped = "unknown" if typed[0] == "run" and entry.task_id else typed[1]
+    assert wp._typed_run(entry, obs, {}) == {"run_id": "r", "kind": typed[0], "state": stopped}
+
+
+def test_a_stop_is_unconfirmed_only_while_its_tasks_pause_lives(tmp_path):
+    from ouroboros import budget_pause
+    from ouroboros.store_hot_facts import controls
+    from ouroboros.task_results import STATUS_RUNNING, write_task_result
+
+    write_task_result(tmp_path, "t", STATUS_RUNNING)
+    assert wp.unconfirmed_stops(tmp_path, "t") == frozenset()  # no pause row proves no trouble
+    observed = {"runs": [{"run_id": "a", "state": "stop_unknown"}, {"run_id": "b", "state": "stop_requested"},
+                         {"run_id": "", "state": "stop_unknown", "invocation_id": "i"}]}
+    budget_pause.set_budget_pause(tmp_path, "t", {"pause_id": "p", "state": budget_pause.STATE_PAUSED,
+                                                  "external_runs": observed})
+    assert wp.unconfirmed_stops(tmp_path, "t") == frozenset({"a"})
+    budget_pause.set_budget_pause(tmp_path, "t", {**controls(tmp_path, "t")["budget_pause"],
+                                                  "state": budget_pause.STATE_RESUMED}, expected_pause_id="p")
+    assert wp.unconfirmed_stops(tmp_path, "t") == frozenset(), "a resumed Pause's old observation is history"
 
 
 def test_a_review_the_pause_lets_finish_is_one_review_tail_from_either_source(stored, monkeypatch, tmp_path):
@@ -416,7 +484,7 @@ def test_a_run_whose_own_task_failed_is_unconfirmed_and_its_work_stays_stoppable
     monkeypatch.setattr(wp, "_open_runs", lambda drive_root: {"p": [_run("run-u", "h")]})
     [work] = wp.works_snapshot(tmp_path, [], {})["works"]
     assert (work["activity"], work["live"], work["mark"]) == ("unknown", False, "ring")
-    assert [(tail["state"], tail["text"]) for tail in work["tails"]] == [("unknown", "1 external run unconfirmed")]
+    assert [(tail["state"], tail["text"]) for tail in work["tails"]] == [("unknown", "1 external run may still be running")]
     assert work["confirmed"] is True and work["controls"] == [{"action": "stop", "target": "p", "scope": "cascade"}]
     # The same run of a task that answered is live work (owner 19.10: Stop reaches it).
     stored["h"] = {"task_id": "h", "status": "completed"}

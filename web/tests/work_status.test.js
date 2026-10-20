@@ -35,7 +35,8 @@ test('the room says one short word for every activity, transition and exact call
         held_continue: 'Working', working_call: 'Sending', paused_by_owner: 'Paused', spending_limit: 'Paused',
         model_access: 'Waiting', sleeping: 'Waiting', queued_and_pausing: 'Pausing…', finalizing_failed: 'Finalizing…',
         unknown: 'Activity unconfirmed', ended_with_runs: 'Working', paused_review_finishing: 'Paused',
-        unconfirmed_run: 'Activity unconfirmed', paused_unattributed: 'Paused',
+        unconfirmed_run: 'Activity unconfirmed', paused_unattributed: 'Paused', pausing_with_queued_helper: 'Pausing…',
+        two_works_one_pausing: 'Working', working_with_review: 'Working', paused_stop_unknown: 'Paused',
     };
     for (const [name, word] of Object.entries(words)) assert.equal(roomStatusView(stateOf(name)).text, word, name);
     // A waiting room whose turn is a question says so in its word, in the amber ink beside the owner's dot; no note
@@ -124,14 +125,14 @@ test('reasons read their code through the catalog; counts stay parameters; an un
     assert.equal(reasonText(work('paused_unattributed').because[0]), '');
     assert.equal(reasonText({ code: 'paused_unattributed' }), 'paused_unattributed', 'a reason without its sentence reads its code');
     const unconfirmed = work('unconfirmed_run').tails[0];
-    assert.equal(reasonText(unconfirmed), '1 external run unconfirmed');
-    assert.equal(reasonText({ ...unconfirmed, count: 3, text: '3 external runs unconfirmed' }), '3 external runs unconfirmed');
+    assert.equal(reasonText(unconfirmed), '1 external run may still be running');
+    assert.equal(reasonText({ ...unconfirmed, count: 3, text: '3 external runs may still be running' }), '3 external runs may still be running');
     const prior = currentPayload();
     try {
         applyPayload({ language: 'ru', english: false, entries: {
             'Continue starts when {count} helpers of the earlier attempt finish':
                 { text: 'Продолжение начнётся, когда закончат {count} помощника прошлой попытки' },
-            '{count} external runs unconfirmed': { text: 'Не подтверждено внешних запусков: {count}' },
+            '{count} external runs may still be running': { text: 'Возможно, ещё работают внешние запуски: {count}' },
             'Ouroboros: {reason}': { text: 'Уроборос: {reason}' },
             [CODE_PREFIX + 'work.because.earlier_attempt_finishing']: { text: 'Продолжение начнётся, когда закончит помощник' },
             [CODE_PREFIX + 'work.because.model_access']: { text: 'Модели нужен вход' },
@@ -143,12 +144,12 @@ test('reasons read their code through the catalog; counts stay parameters; an un
         assert.equal(reasonText({ ...held.because[0], count: 18, text: 'Continue starts when 18 helpers of the earlier attempt finish' }),
             'Продолжение начнётся, когда закончат 18 помощника прошлой попытки');
         assert.equal(reasonText({ ...held.because[0], count: 1 }), 'Продолжение начнётся, когда закончит помощник');
-        assert.equal(reasonText({ ...unconfirmed, count: 2, text: '2 external runs unconfirmed' }), 'Не подтверждено внешних запусков: 2');
+        assert.equal(reasonText({ ...unconfirmed, count: 2, text: '2 external runs may still be running' }), 'Возможно, ещё работают внешние запуски: 2');
         assert.equal(reasonText(work('model_access').because[0]), 'Модели нужен вход');
         assert.equal(reasonText(work('paused_by_owner').because[0]), 'Вы поставили на паузу');
         // Ouroboros's sentence is its own prose: only the frame is translated, never its words, never by its code.
         assert.equal(reasonText(work('paused_by_mind').because[0]), 'Уроборос: pause before the update you asked for');
-        assert.equal(reasonText({ code: 'paused_by_mind', text: 'Paused by Ouroboros' }), 'Поставлено на паузу Уроборосом');
+        assert.equal(reasonText({ code: 'paused_by_mind', text: 'Ouroboros paused it' }), 'Поставлено на паузу Уроборосом');
         assert.equal(reasonText(work('paused_unattributed').because[0]), '');
         assert.equal(reasonText({ code: 'brand_new_reason', text: 'Unknown sentence' }), 'Unknown sentence');
     } finally { applyPayload(prior); }
@@ -253,7 +254,7 @@ test('rows: their word, the line beside it, tone, mark and the owner\'s move fro
         ['Paused', `You paused it · ${PRESSED} · Review work finishing`, 'held', 'pause']);
     // A run nobody can confirm stays unconfirmed: a ring, and the line says what is not confirmed.
     assert.deepEqual(['word', 'secondary', 'tone', 'mark'].map((key) => row('unconfirmed_run')[key]),
-        ['Activity unconfirmed', '1 external run unconfirmed', 'unknown', 'ring']);
+        ['Activity unconfirmed', '1 external run may still be running', 'unknown', 'ring']);
     assert.deepEqual(workQuestion(work('direct_question')), { taskId: 'd', quizId: 'q1' });
     assert.equal(workQuestion(work('model_access')), null, 'an access wait is not an answer wait');
 });
@@ -289,10 +290,11 @@ test('whatever waits for the owner takes a row\'s mark place beside any word; th
 test('the test builders name the marks the server names', () => {
     const unconfirmedTail = (item) => item.tails.some((tail) => tail.state === 'unknown');
     for (const { works, rooms } of Object.values(CASES)) {
-        // A work's own mark follows its live episode; once the episode ended, whatever still runs beside it.
+        // A work's own mark follows its live episode (a run nobody can confirm is its line, never its mark); once the
+        // episode ended, whatever still runs beside it.
         for (const item of works) {
             assert.equal(serverMark(item.activity, item.confirmed, { live: !item.episode.live && item.live,
-                unknown: unconfirmedTail(item) && !item.live }), item.mark, item.work_id);
+                unknown: unconfirmedTail(item) && !item.live && !item.episode.live }), item.mark, item.work_id);
         }
         // A room moves while anything in it runs.
         for (const served of Object.values(rooms || {})) {
@@ -516,7 +518,14 @@ test('on every surface the word is the work\'s word alone and the line carries i
             const line = workLine(item);
             const reason = reasonText(item.because[0]);
             if (reason && reason !== word) assert.ok(line.startsWith(reason), `${name}: the episode's sentence leads the line`);
-            for (const tail of item.tails) assert.ok(line.includes(reasonText(tail)), `${name}: ${tail.code} on the line`);
+            // Helpers and external runs still working side by side are one sentence; every other tail says its own.
+            const both = ['helpers_running', 'delegated_running'].every((code) => item.tails.some((tail) => tail.code === code));
+            for (const tail of item.tails) {
+                if (!(both && ['helpers_running', 'delegated_running'].includes(tail.code))) {
+                    assert.ok(line.includes(reasonText(tail)), `${name}: ${tail.code} on the line`);
+                }
+            }
+            if (both) assert.match(line, / and \d+ external runs? still working/, `${name}: said once`);
             const card = cardWorkView(item);
             if (card) assert.deepEqual([card.text, card.secondary], [word, line], `${name}: the card's chip and line`);
             const row = workRowView(item);
@@ -524,9 +533,12 @@ test('on every surface the word is the work\'s word alone and the line carries i
             for (const said of [card?.text, row.word]) assert.ok(!said || !said.includes(' · '), `${name}: a word alone`);
         }
         for (const served of Object.values(rooms || {})) {
-            const first = works.find((item) => item.work_id === served.works[0]);
+            // The room's line is that of the first work saying the room's own word, never another work's reason.
+            const word = activityWord(served);
+            const speaker = served.works.map((id) => works.find((item) => item.work_id === id))
+                .find((item) => item && activityWord(item) === word);
             const sidebar = summarizeRoom(served, works);
-            assert.equal(sidebar.label, [activityWord(served), workLine(first, activityWord(served)), sidebar.note]
+            assert.equal(sidebar.label, [word, speaker ? workLine(speaker, word) : '', sidebar.note]
                 .filter(Boolean).join(' · '), `${name}: the sidebar's name`);
         }
     }
@@ -555,9 +567,30 @@ test('a paused work whose review still finishes says Paused with its bars; the r
 test('a work whose only remainder is a run nobody can confirm reads unconfirmed with its ring, and keeps its Stop', () => {
     const state = stateOf('unconfirmed_run');
     const row = workRowView(state.works[0]);
-    assert.deepEqual([row.word, row.secondary, row.tone, row.mark], ['Activity unconfirmed', '1 external run unconfirmed', 'unknown', 'ring']);
+    assert.deepEqual([row.word, row.secondary, row.tone, row.mark], ['Activity unconfirmed', '1 external run may still be running', 'unknown', 'ring']);
     assert.deepEqual(workControls(state.works[0]).stop, ['x']);
-    assert.equal(summarizeRoom(state.room, state.works).label, 'Activity unconfirmed · 1 external run unconfirmed');
+    assert.equal(summarizeRoom(state.room, state.works).label, 'Activity unconfirmed · 1 external run may still be running');
+});
+
+test('a room never lends a newer work\'s Pause reason to the Working of the work that runs', () => {
+    const state = stateOf('two_works_one_pausing');
+    assert.deepEqual(state.room.works, ['wa', 'wb'], 'the newer, pausing work is listed first');
+    assert.equal(summarizeRoom(state.room, state.works).label, 'Working');
+    assert.equal(workLine(state.works.find((item) => item.work_id === 'wa')), `You paused it · ${PRESSED}`,
+        'its own row still says its reason');
+});
+
+test('helpers and external runs still working side by side are said once; either alone keeps its sentence', () => {
+    const tails = (helpers, runs) => [
+        ...(helpers ? [{ code: 'helpers_running', kind: 'helper', state: 'live', count: helpers, text: 'h' }] : []),
+        ...(runs ? [{ code: 'delegated_running', kind: 'run', state: 'live', count: runs, text: 'r' }] : []),
+        { code: 'external_runs_unconfirmed', kind: 'run', state: 'unknown', count: 1, text: 'u' },
+    ];
+    const line = (helpers, runs) => workLine({ activity: 'working', transition: 'none', because: [], tails: tails(helpers, runs) });
+    assert.equal(line(3, 2), '3 helpers and 2 external runs still working · 1 external run may still be running');
+    assert.equal(line(1, 1), '1 helper and 1 external run still working · 1 external run may still be running');
+    assert.equal(line(2, 0), '2 helpers still working · 1 external run may still be running');
+    assert.equal(line(0, 1), '1 external run still working · 1 external run may still be running');
 });
 
 test('the line\'s clock: the time today, the date as well on another day; seconds or an ISO instant; nothing without one', () => {

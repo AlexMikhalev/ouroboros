@@ -288,11 +288,12 @@ def _queue_hold_facts(task: Dict[str, Any], stored: Dict[str, Any], waiting: Lis
     return facts
 
 
-def _live_trees(root: pathlib.Path, snapshot: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
+def _live_trees(root: pathlib.Path, snapshot: Dict[str, Any], gaps: Optional[List[str]] = None,
+                ) -> Dict[str, Dict[str, Any]]:
     """What each task tree holds beyond its root, by the tree's root id: the queue's helper rows (the ``running``
     ids and the ``pending`` count) and the open delegated runs as the server's work projection reads them
     (``work_projection._open_runs``: started, unsettled, not finished by the engine). Never raises; an unreadable
-    custody adds no runs (the roster discloses freshness)."""
+    custody adds no runs and is named in ``gaps``, which the roster's ``incomplete`` carries."""
     trees: Dict[str, Dict[str, Any]] = {}
 
     def tree(root_id: str) -> Dict[str, Any]:
@@ -317,6 +318,8 @@ def _live_trees(root: pathlib.Path, snapshot: Dict[str, Any]) -> Dict[str, Dict[
             tree(root_id)["runs"].extend(runs)
     except Exception:
         log.debug("Live trees: delegated custody unreadable", exc_info=True)
+        if gaps is not None:
+            gaps.append("delegated_custody_unavailable")
     return trees
 
 
@@ -325,6 +328,7 @@ def _tree_tails(root: Any, tree: Optional[Dict[str, Any]], fence: Any) -> List[D
     helpers the queue runs that its Pause has not parked, open runs typed by ``work_status.run_tail`` from their
     own task's stored result, and the review work a settled Pause lets finish."""
     from ouroboros.gateway import work_status as ws  # D01->D11 is lazy-only
+    from ouroboros.gateway.work_projection import unconfirmed_stops
     from ouroboros.task_results import load_task_result
 
     tree = tree or {"running": [], "runs": []}
@@ -336,7 +340,8 @@ def _tree_tails(root: Any, tree: Optional[Dict[str, Any]], fence: Any) -> List[D
             owner = load_task_result(pathlib.Path(root), str(entry.task_id)) if entry.task_id else None
         except Exception:
             owner = None  # an unreadable owner proves no failure: the run reads live, as on the card
-        kind, state = ws.run_tail(getattr(entry, "source", ""), owner)
+        stops = unconfirmed_stops(root, str(entry.task_id)) if entry.task_id else frozenset()
+        kind, state = ws.run_tail(getattr(entry, "source", ""), owner, stop_unknown=str(entry.run_id) in stops)
         runs.append({"run_id": str(entry.run_id), "kind": kind, "state": state})
     return ws.work_tails([task for task in tree["running"] if task not in parked], runs,
                          reviewing=fence.get("state") == "paused" and bool(fence.get("finishing_reviews")))
@@ -422,13 +427,14 @@ def independent_roots(drive_root: pathlib.Path) -> Dict[str, Any]:
     Pooled rows come from the queue snapshot (running, then pending); a
     subagent -- a row with a parent or the subagent role -- is not an
     independent root.  ``incomplete`` is the ONE aggregate fact: the snapshot
-    is missing, unreadable or stale, or the direct-roots fragment could not
-    read every actor.  Never raises.
+    is missing, unreadable or stale, the direct-roots fragment could not
+    read every actor, or delegated custody was unreadable.  Never raises.
     """
     root = pathlib.Path(drive_root)
     snapshot = _load_queue_snapshot(root)
     observation = queue_snapshot_observation(snapshot)
-    trees = _live_trees(root, snapshot)
+    gaps: List[str] = []
+    trees = _live_trees(root, snapshot, gaps)
     rows: List[Dict[str, Any]] = []
     seen: set[str] = set()
     if not (snapshot.get("_snapshot_missing") or snapshot.get("_snapshot_invalid")):
@@ -459,7 +465,7 @@ def independent_roots(drive_root: pathlib.Path) -> Dict[str, Any]:
     return {
         "roots": rows,
         "incomplete": bool(fragment.get("incomplete")) or not bool(observation.get("fresh"))
-        or not bool(direct_observation.get("fresh")),
+        or not bool(direct_observation.get("fresh")) or bool(gaps),
         "queue_snapshot": observation,
         "direct_roots": direct_observation,
     }

@@ -102,9 +102,24 @@ const COUNTED_REASONS = {
         : fmt('{count} helpers still working', { count: n, n })),
     delegated_running: (n) => (n === 1 ? tr('work.because.delegated_running', '1 external run still working')
         : fmt('{count} external runs still working', { count: n, n })),
-    external_runs_unconfirmed: (n) => (n === 1 ? tr('work.because.external_runs_unconfirmed', '1 external run unconfirmed')
-        : fmt('{count} external runs unconfirmed', { count: n, n })),
+    external_runs_unconfirmed: (n) => (n === 1 ? tr('work.because.external_runs_unconfirmed', '1 external run may still be running')
+        : fmt('{count} external runs may still be running', { count: n, n })),
 };
+
+// Helpers and external runs still working side by side are said in one sentence, so the line never says it twice.
+function tailWords(tails) {
+    const counted = (code) => tails.find((tail) => tail?.code === code && Number.isInteger(tail.count));
+    const helpers = counted('helpers_running');
+    const runs = counted('delegated_running');
+    if (!helpers || !runs) return tails.map(reasonText);
+    const both = fmt('{helpers} and {runs} still working', {
+        helpers: helpers.count === 1 ? tr('work.because.one_helper', '1 helper')
+            : fmt('{count} helpers', { count: helpers.count, n: helpers.count }),
+        runs: runs.count === 1 ? tr('work.because.one_external_run', '1 external run')
+            : fmt('{count} external runs', { count: runs.count, n: runs.count }),
+    });
+    return tails.flatMap((tail) => (tail === helpers ? [both] : tail === runs ? [] : [reasonText(tail)]));
+}
 
 /** One reason in the owner's words: the server's code read through the catalog, its sentence as the English (a
  *  code this client has never seen still reads its sentence). A count stays a parameter of its template; a counted
@@ -142,7 +157,7 @@ export function workLine(work = {}, word = activityWord(work)) {
     const said = first?.code === 'owner_answer' && word === chipWord('ownerWait') ? '' : reasonText(first);
     const sentence = said === word ? '' : said;
     const pressed = sentence && first.code === 'paused_by_owner' ? clock(first.since) : '';
-    return [sentence, pressed, ...list(work.tails).map(reasonText)].filter(Boolean).join(' · ');
+    return [sentence, pressed, ...tailWords(list(work.tails))].filter(Boolean).join(' · ');
 }
 
 /** What waits for the owner in a room ('question' | 'action'), '' when nothing does or its own word says so. */

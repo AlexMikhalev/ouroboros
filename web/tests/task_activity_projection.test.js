@@ -37,7 +37,7 @@ for (const [patch, text, mark, tone, waiting, secondary = ''] of [
     // The census `owner` cause also covers Ouroboros's own Pause: only the work projection says who paused.
     [{ phase: 'budget_paused', pause_cause: 'owner' }, 'Paused', 'pause/ink', 'neutral', true],
     [{ phase: 'budget_paused', pause_cause: 'authority' }, 'Paused', 'pause/ink', 'neutral', true,
-        'Paused after a technical problem'],
+        'After a technical problem'],
     [{ phase: 'budget_paused', pause_cause: 'owner', finishing_reviews: true }, 'Paused', 'pause/ink', 'neutral', true,
         'Review work finishing'],
     // A cold sleep wakes by itself: it waits, it is not paused.

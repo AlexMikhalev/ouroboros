@@ -44,6 +44,7 @@ class _Observations:
         self.drive_root = drive_root
         self.results: Dict[str, Optional[dict]] = {}
         self.fences: Dict[str, dict] = {}
+        self.stops: Dict[str, frozenset] = {}
         self.gaps: List[Dict[str, Any]] = []
 
     def result(self, task_id: str) -> Optional[dict]:
@@ -67,6 +68,30 @@ class _Observations:
             except Exception:
                 self.fences[root_id] = {}
         return self.fences[root_id]
+
+    def stop_unknown(self, task_id: str, drive_root: Any = None) -> frozenset:
+        if task_id not in self.stops:
+            self.stops[task_id] = unconfirmed_stops(drive_root or self.drive_root, task_id)
+        return self.stops[task_id]
+
+
+def unconfirmed_stops(drive_root: Any, task_id: str) -> frozenset:
+    """The runs whose stop ``task_id``'s live Pause could not confirm (its pause row's ``external_runs``,
+    ``external_runs.EXTERNAL_STOP_UNKNOWN``): the server's and the roster's one reading. An unreadable row
+    proves no trouble, so those runs read as before."""
+    try:
+        from ouroboros.budget_pause import LIVE_PAUSE_STATES, budget_pause_row
+        from ouroboros.external_runs import EXTERNAL_STOP_UNKNOWN
+
+        row = budget_pause_row(pathlib.Path(drive_root), str(task_id)) if task_id else {}
+        if row.get("state") not in LIVE_PAUSE_STATES:
+            return frozenset()
+        runs = (row.get("external_runs") or {}).get("runs") or ()
+        return frozenset(str(run["run_id"]) for run in runs if isinstance(run, dict) and run.get("run_id")
+                         and run.get("state") == EXTERNAL_STOP_UNKNOWN)
+    except Exception:
+        log.debug("Work projection could not read the pause of %s", task_id, exc_info=True)
+        return frozenset()
 
 
 def _continuation(source: Mapping[str, Any]) -> dict:
@@ -130,7 +155,8 @@ def _root_of(row: Mapping[str, Any], raw: Mapping[str, Any]) -> str:
 def _member_raw(row: Mapping[str, Any], raw: Mapping[str, Any], obs: _Observations, root_id: str) -> dict:
     hold = raw.get("_budget_pause_hold") if isinstance(raw.get("_budget_pause_hold"), dict) else {}
     pause = raw.get("_budget_pause") if isinstance(raw.get("_budget_pause"), dict) else {}
-    facts: Dict[str, Any] = {"hold": hold, "paused_at": pause.get("paused_at") or pause.get("requested_at")}
+    facts: Dict[str, Any] = {"hold": hold, "paused_at": pause.get("paused_at") or pause.get("requested_at"),
+                             "running": bool(raw.get("running"))}
     if row.get("pause_cause") == "owner" and row.get("phase") in {"budget_paused", "budget_pausing"}:
         from ouroboros.control_actor import pause_author
 
@@ -169,11 +195,13 @@ def _open_runs(drive_root: Any) -> Dict[str, List[Any]]:
     return held
 
 
-def _typed_run(entry: Any, obs: _Observations) -> Dict[str, Any]:
-    """One open run as a work tail (``work_status.run_tail``): a review the Pause lets finish, a live run, or a run
-    nobody can confirm, from the run's ``source`` and its own task's stored outcome."""
-    owner = obs.result(str(entry.task_id or "")) if entry.task_id else None
-    kind, state = ws.run_tail(getattr(entry, "source", ""), owner)
+def _typed_run(entry: Any, obs: _Observations, raw: Mapping[str, Mapping[str, Any]]) -> Dict[str, Any]:
+    """One open run as a work tail (``work_status.run_tail``): review work, a live run, or a run nobody can confirm,
+    from the run's ``source``, its own task's stored outcome and that task's live Pause."""
+    task_id = str(entry.task_id or "")
+    owner = obs.result(task_id) if task_id else None
+    stops = obs.stop_unknown(task_id, (raw.get(task_id) or {}).get("budget_drive_root")) if task_id else frozenset()
+    kind, state = ws.run_tail(getattr(entry, "source", ""), owner, stop_unknown=str(entry.run_id) in stops)
     return {"run_id": str(entry.run_id), "kind": kind, "state": state}
 
 
@@ -242,7 +270,7 @@ def _snapshot(drive_root: Any, owners: List[Mapping[str, Any]], raw: Dict[str, M
     for root_id, runs in held.items():
         work_id, name = _work_of(root_id, raw, obs, memo)
         entry = group(work_id)
-        entry["runs"].extend(_typed_run(run, obs) for run in runs)
+        entry["runs"].extend(_typed_run(run, obs, raw) for run in runs)
         entry["roots"].add(root_id)
         entry["name"] = entry["name"] or name
     works: List[Dict[str, Any]] = []

@@ -734,8 +734,8 @@ def _chat_activities_snapshot(drive_root, task_bindings, direct_rows, pending_ro
                 else:
                     phase = "finalizing" if _managed_task_finalizing(drive_root, task_id) else "working"
                 activities.append(_activity(task_id, row, phase, started_at, root=root))
-                if work_facts is not None:
-                    work_facts[task_id] = _raw_work_facts(row)
+                if work_facts is not None:  # the one fact that a settling Pause's member still executes
+                    work_facts[task_id] = {**_raw_work_facts(row), "running": True}
         from ouroboros.post_task_checkpoint import post_task_synthesis_in_flight
         from ouroboros.review_operation import task_has_live_review_operation
         visible = {row["activity_id"]: row for row in activities}

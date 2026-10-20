@@ -2,7 +2,7 @@
 //
 // Each place in the sidebar reads its room in the server's work projection (`/api/state` `rooms`, keyed by the
 // room's chat id; ouroboros/gateway/work_status.py): the room's shape (`mark`: moving | still | pause | ring | none),
-// whether something waits for the owner (the room's turn), and its word with the line of its first work. This
+// whether something waits for the owner (the room's turn), and its word with the line of the work that says it. This
 // module owns no timer, request, socket or durable state and derives no shape of its own; a caller supplies the
 // previous projection when reconciling an incomplete body.
 
@@ -28,16 +28,19 @@ export const MARK_RANK = Object.freeze(['moving', 'still', 'pause', 'ring', 'non
 
 /**
  * One room as one mark: the server's shape, whether something waits for the owner (the room's turn, a server fact),
- * and its word with its first work's line (the episode's reason, then what still runs beside it). `note` says what
+ * and its word with the line of the first work that says the same word (the episode's reason, then what still runs
+ * beside it): a work Pausing beside a running one never lends its reason to the room's Working. `note` says what
  * waits for the owner when the word does not, so the label tells it in words and the amber is never colour alone. A
  * room that is not at rest with a shape this client does not know is drawn unconfirmed, never as something it is not.
  */
 export function summarizeRoom(room, works = []) {
     if (!room || typeof room !== 'object' || room.activity === 'idle') return IDLE_SUMMARY;
     const mark = MARK_RANK.includes(room.mark) ? room.mark : 'ring';
-    const first = (Array.isArray(works) ? works : []).find((work) => work?.work_id === room.works?.[0]);
     const word = activityWord(room);
-    const line = first ? workLine(first, word) : '';
+    const byId = new Map((Array.isArray(works) ? works : []).map((work) => [work?.work_id, work]));
+    const speaker = (Array.isArray(room.works) ? room.works : []).map((id) => byId.get(id))
+        .find((work) => work && activityWord(work) === word);
+    const line = speaker ? workLine(speaker, word) : '';
     const note = amberNote(roomAmber(room));
     return { mark, owner: Boolean(room.amber), word, note, label: [word, line, note].filter(Boolean).join(' · ') };
 }

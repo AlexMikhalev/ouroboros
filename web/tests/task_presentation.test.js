@@ -685,7 +685,7 @@ test('a census pause says its word alone and what holds it on its line, never wh
     for (const [cause, word, line] of [
         ['budget', 'Paused', 'Spending limit reached'],
         ['restart', 'Paused', 'Held after a restart'],
-        ['authority', 'Paused', 'Paused after a technical problem'],
+        ['authority', 'Paused', 'After a technical problem'],
         ['sleep', 'Waiting', 'Sleeping until it is woken'],
     ]) {
         assert.deepEqual([view(cause).text, view(cause).secondary], [word, line], cause);

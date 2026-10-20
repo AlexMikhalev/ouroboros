@@ -96,7 +96,7 @@ def test_runs_still_working_under_a_settled_root_are_its_typed_tails(tmp_path):
     assert (row["work_id"], row["helpers_running"], row["helpers_waiting"]) == ("p", 0, 0)
     assert [(tail["kind"], tail["state"], tail["text"], tail["ids"]) for tail in row["tails"]] == [
         ("run", "live", "1 external run still working", ["r2"]), ("review", "live", "Review work finishing", ["rv"]),
-        ("run", "unknown", "1 external run unconfirmed", ["r1"])]
+        ("run", "unknown", "1 external run may still be running", ["r1"])]
     assert live_works_present(tmp_path)["other_live_work"] == [row]
 
 
@@ -129,8 +129,8 @@ def test_a_paused_root_says_what_of_its_tree_still_runs_as_the_owners_card_does(
     [row] = roster["roots"]
     assert row["waiting"][0]["kind"] == "owner_pause" and row["waiting"][0]["by"] == "owner"
     assert [(tail["kind"], tail["state"], tail["text"], tail["ids"]) for tail in row["tails"]] == [
-        ("review", "live", "Review work finishing", ["rv"]), ("run", "unknown", "1 external run unconfirmed", ["lost"])]
-    assert "\n  tails: Review work finishing; 1 external run unconfirmed" in render_roster_note(roster)
+        ("review", "live", "Review work finishing", ["rv"]), ("run", "unknown", "1 external run may still be running", ["lost"])]
+    assert "\n  tails: Review work finishing; 1 external run may still be running" in render_roster_note(roster)
     [work] = live_works_present(tmp_path)["works"]
     assert work["tails"] == row["tails"]
     # The same tree reads the same whether its root is listed or not.
@@ -146,7 +146,7 @@ def test_a_paused_root_says_what_of_its_tree_still_runs_as_the_owners_card_does(
     # One typing for both readers: the roster follows the card's rule, never a copy of its own.
     assert custody.emit(tmp_path, custody.STARTED, {"run_id": "r9", "task_id": "t", "root_task_id": "t"})
     assert [tail["state"] for tail in independent_roots(tmp_path)["roots"][0]["tails"]] == ["live"]
-    monkeypatch.setattr(work_status, "run_tail", lambda source, owner: ("run", "unknown"))
+    monkeypatch.setattr(work_status, "run_tail", lambda source, owner, **facts: ("run", "unknown"))
     assert [tail["state"] for tail in independent_roots(tmp_path)["roots"][0]["tails"]] == ["unknown"]
 
 
