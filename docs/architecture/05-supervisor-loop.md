@@ -60,7 +60,7 @@ Effective results show typed `cancel_state: "pending"` with `cancel_reason` unti
 
 Best-effort dialogue tries zero wait, publishing live with the same timestamp. `dialogue_retry` bounds rows/bytes, counting eviction (progress first) and exit loss; crash or sustained contention can lose rows (PERSISTENCE.md). The delivery duty and workers (before an append, at task end, at exit) drain it; content-address dedup covers an uncertain COMMIT without a second frame. Required rows and named inbound acceptances never use it; inbound failure stays loud.
 
-Named sends keep timestamp and id; a notice without one stays with its retrying producer. The duty continues deferred append/send/receipt off the consumer; bus membership protects originals, process claims physical completion. Persisted `emitted` facts replay only receipts, the bounded id cache covers busy registration, the earlier crash window stays at-least-once. Consumer chat handlers write under a 0.25 s slice (progress: zero); other writers keep their callers' waits. Transport faults keep their clocks/caps; busy storage spends no attempt; projection keeps indexed readiness.
+Named sends keep timestamp and id; a notice without one stays with its retrying producer. The duty continues deferred append/send/receipt off the consumer; bus membership protects originals, process claims physical completion. Persisted `emitted` facts replay only receipts, the bounded id cache covers busy registration, the earlier crash window is at-least-once. Consumer chat handlers write under a 0.25 s slice (progress: zero); other writers keep their callers' waits. Transport faults keep clocks/caps; busy storage spends no attempt; projection keeps indexed readiness.
 
 ### Stop policy and hurry
 
