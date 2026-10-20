@@ -2497,10 +2497,9 @@ def test_ui_smoke_live_cards_keep_usable_geometry_at_depth_and_in_project_panel(
         page.evaluate(
             """({scopeSelector, requireOverflow}) => {
                 const scope = document.querySelector(scopeSelector);
-                const messages = scope
-                    .querySelector('.chat-messages, #chat-messages');
+                const messages = scope.querySelector('.chat-messages, #chat-messages');
+                messages.dispatchEvent(new WheelEvent('wheel', {deltaY: -1}));
                 messages.scrollTop = 0;
-                messages.dispatchEvent(new Event('scroll'));
             }""",
             {"scopeSelector": scope_selector, "requireOverflow": require_overflow},
         )

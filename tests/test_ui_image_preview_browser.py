@@ -338,7 +338,11 @@ def _half_visible(page, opener, feed="#chat-messages"):
         opener.evaluate("""(node, [feed, edge]) => {
             const root = document.querySelector(feed);
             const box = node.getBoundingClientRect(), view = root.getBoundingClientRect();
-            root.scrollTop += edge === 'top' ? box.top - view.top + box.height / 2 : box.bottom - view.bottom - box.height / 2;
+            const by = edge === 'top' ? box.top - view.top + box.height / 2 : box.bottom - view.bottom - box.height / 2;
+            // The owner's own gesture moves the feed: a bare scroll keeps the room following its newest row, and the
+            // phone composer folding as the owner reads back (composer_fold.js) would bring the feed back there.
+            root.dispatchEvent(new WheelEvent('wheel', {deltaY: Math.sign(by) || -1}));
+            root.scrollTop += by;
         }""", [feed, edge])
         _feed_scroll(page, feed)
         point = opener.evaluate("""(node, [feed, edge]) => {
