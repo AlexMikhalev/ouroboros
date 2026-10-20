@@ -514,8 +514,7 @@ def check_review_cycles_ceiling(
         "rebuttal cycles count toward it."
     ) if review_enforcement_blocks() else (
         "The paid review allowance is spent. Decide whether what was reviewed is enough: finish, "
-        "or land with a plain statement of what was not reviewed. If the reviewers do not work at "
-        "all and recovery fails, explain that to your human."
+        "or land with a plain statement of what was not reviewed."
     ))
     return {"message": message, "cycles_paid": paid, "cap": cap}
 
