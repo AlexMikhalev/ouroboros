@@ -36,7 +36,7 @@ GENERATION = 8  # the lifecycle generation that owns the store
 GENERATION_KEY = "current_store_generation"  # in state/migrations.json
 SCHEMA_VERSION = 7  # 2: owner questions; 3: acceptance; 4: plans; 5: retention; 6: hot facts; 7: task cards
 STORE_WAIT_SEC = 10.0
-JOURNAL_SIZE_LIMIT = 1 << 20  # retain at most 1 MiB of an idle rollback journal
+JOURNAL_SIZE_LIMIT = 64 << 20  # retain at most 64 MiB of an idle rollback journal (PERSISTENCE.md: what it bounds)
 TIER_ENFORCED, TIER_NAME = "enforced", "name"
 PUBLISHED, EXPORTING, RETIRED = "published", "exporting", "retired"
 # The header's application id names the lock protocol before the file is opened ('OUCE'/'OUCN').
@@ -1362,12 +1362,15 @@ class Txn:
         return body, self.handoff_records([task_id]), store_task_cards.read(self, task_id)
 
     def store_task(self, document: Dict[str, Any], *, pending_drive: Optional[bool] = None) -> None:
-        """Upsert body, typed columns and handoffs; ``write_seq`` advances the memo signature."""
+        """Upsert body, typed columns, handoffs and card; ``write_seq`` advances the memo signature.
+        The body is updated in place and only when its bytes changed (a same-size body rewrites its
+        changed pages alone, an identical one nothing); ``tasks`` keeps REPLACE, which NULLs the columns
+        an older writer does not list ("not derived", the import's cue)."""
         task_id = str(document["task_id"])
         columns = typed_columns(document, pending_drive=pending_drive)
         columns["write_seq"] = (self.row(task_id, "write_seq") or 0) + 1
-        self.conn.execute("INSERT OR REPLACE INTO task_bodies (task_id, body) VALUES (?, ?)",
-                          (task_id, encode_document(document)))
+        self.conn.execute("INSERT INTO task_bodies (task_id, body) VALUES (?, ?) ON CONFLICT(task_id) DO UPDATE "
+                          "SET body=excluded.body WHERE task_bodies.body<>excluded.body", (task_id, encode_document(document)))
         names = ("task_id", *columns)
         self.conn.execute(f"INSERT OR REPLACE INTO tasks ({','.join(names)}) VALUES ({','.join('?' * len(names))})",
                           (task_id, *columns.values()))
@@ -1533,13 +1536,15 @@ class Txn:
 def update_task(root: Any, task_id: str, mutator: Callable[[Dict[str, Any]], Optional[Dict[str, Any]]], *,
                 pending_drive: Any = None) -> Optional[Dict[str, Any]]:
     """Merge CURRENT under the published write gate; ``None`` commits without a write.
-    ``pending_drive`` is a value or ``(txn, current, updated) -> Optional[bool]``.
-    Schema preparation precedes the callback, including on a first-touched old child store."""
+    ``pending_drive`` is a value or ``(txn, current, updated) -> Optional[bool]``, ``current`` the
+    pristine document (the mutator works on its own copy, decoded from the same stored bytes: no
+    encode under the lock). Schema preparation precedes the callback, including on a first-touched
+    old child store."""
     while True:
         with open_store(root, write=True) as txn:
             if int(txn.meta("schema_version") or 1) >= SCHEMA_VERSION:
-                current = txn.load(task_id) or {}
-                updated = mutator(json.loads(json.dumps(current)))
+                raw = txn.raw(task_id)
+                current, updated = materialize(task_id, *raw) or {}, mutator(materialize(task_id, *raw) or {})
                 if updated is None:
                     return None
                 flag = pending_drive(txn, current, updated) if callable(pending_drive) else pending_drive
