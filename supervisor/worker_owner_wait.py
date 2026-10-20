@@ -9,11 +9,14 @@ second scheduler, queue, or durable wait store.
 
 from __future__ import annotations
 
+import functools
 import logging
 import math
+import uuid
 from typing import Any
 
 from ouroboros.owner_wait import set_owner_wait
+from ouroboros.store import acquisition_budget
 from supervisor.queue import _queue_lock
 from supervisor.worker_pool_lifecycle import (
     _serialized_worker_lifecycle, request_worker_quiescence, retire_or_replace_worker,
@@ -191,21 +194,32 @@ def handle_owner_wait(event: dict, ctx: Any) -> None:
         _command(worker, task_id, wait, "parked")
 
 
-def _resume_allowed(task_id: str, meta: dict, worker: Any) -> bool:
+def _resume_memory_allowed(task_id: str, meta: dict, worker: Any) -> bool:
+    """Under Q, memory only: the same physical attempt, on a live worker, still allowed to write."""
+    return (_pool().RUNNING.get(task_id) is meta and not worker.reaping
+            and worker.busy_task_id == task_id and worker.proc.is_alive()
+            and _pool().repo_writer_task_allowed(meta["task"]))
+
+
+def _resume_authority_allowed(task_id: str, meta: dict) -> bool:
+    """Outside Q: the durable authorities (cancellation intent, the owner Pause fence); unreadable refuses."""
     from ouroboros.cancel_intents import active_intents
 
-    if (_pool().RUNNING.get(task_id) is not meta or worker.reaping
-            or worker.busy_task_id != task_id or not worker.proc.is_alive()):
-        return False
     try:
         intent = active_intents(_pool().DRIVE_ROOT, strict=True).get(task_id) or {}
     except Exception:
         log.warning("Owner wait cannot read cancellation authority for %s", task_id, exc_info=True)
         return False
-    if not ((not intent or intent.get("stop_policy") == "finalize_then_cancel")
-            and _pool().repo_writer_task_allowed(meta["task"])):
+    if intent and intent.get("stop_policy") != "finalize_then_cancel":
         return False
     return _owner_pause_wake_still_authorized(task_id, meta)
+
+
+def _resume_allowed(task_id: str, meta: dict, worker: Any) -> bool:
+    with _queue_lock:
+        if not _resume_memory_allowed(task_id, meta, worker):
+            return False
+    return _resume_authority_allowed(task_id, meta)
 
 
 def _owner_pause_wake_still_authorized(task_id: str, meta: dict) -> bool:
@@ -228,32 +242,109 @@ def _owner_pause_wake_still_authorized(task_id: str, meta: dict) -> bool:
         return False
 
 
+# Memory only, on the RUNNING meta: a warm Resume whose durable grant runs on the admission lane.
+_RESUME_CLAIM = "_resume_claim"
+
+
 def _grant_resume(
     task_id: str, meta: dict, worker: Any, *, exhausted_replacement: Any = None,
 ) -> bool:
+    """Reserve the warm Resume under Q and persist it on the admission lane.
+
+    Under Q only memory decides (the attempt, the worker, the replacement slot) and the claim is
+    taken; the lane reads the durable authorities, writes the wait ``resumed`` (a CAS on its id),
+    re-takes Q, revalidates memory only and hands the capacity back with the grant command
+    (``_resume_attempt``). A refusal or failure after the write rewrites ``waiting`` outside Q and
+    restores the clock facts. True only on the historical inline path (no generation) once granted;
+    on the lane this returns False and the caller's hold stands until the grant lands or lapses.
+    """
+    from supervisor import workspace_preparation
+
+    with _queue_lock:
+        if meta.get(_RESUME_CLAIM) or not _resume_memory_allowed(task_id, meta, worker):
+            return False
+        replacement = exhausted_replacement
+        if replacement is not None and not _replacement_current(replacement):
+            return False
+        generation = workspace_preparation.current_generation()
+        token = uuid.uuid4().hex
+        meta[_RESUME_CLAIM] = token
+    if generation is None:
+        try:
+            return _resume_attempt(task_id, meta, worker, token, replacement)
+        finally:
+            _release_resume(task_id, meta, token)
+    if generation.closed() or not generation.submit(
+            functools.partial(_resume_job, task_id, meta, worker, token, replacement),
+            workspace_preparation.ADMISSION_LANE):
+        _release_resume(task_id, meta, token)
+    return False
+
+
+def _resume_job(task_id: str, meta: dict, worker: Any, token: str, replacement: Any) -> None:
+    from supervisor import workspace_preparation
+
+    generation = workspace_preparation.current_generation()
+    try:
+        generation.wait_store(functools.partial(_resume_attempt, task_id, meta, worker, token, replacement),
+                              controls=lambda: ({"detail": "generation closed"} if generation.closed() else None))
+    except workspace_preparation.PreparationStopped:
+        log.info("Owner wait resume of %s withdrawn: the supervisor generation is closing", task_id)
+    except Exception:
+        log.warning("Owner wait resume remains pending for %s", task_id, exc_info=True)
+    finally:
+        _release_resume(task_id, meta, token)
+
+
+def _release_resume(task_id: str, meta: dict, token: str) -> None:
+    with _queue_lock:
+        if meta.get(_RESUME_CLAIM) == token:
+            meta.pop(_RESUME_CLAIM, None)
+
+
+def _replacement_current(replacement: Any) -> bool:
+    return (_pool().WORKERS.get(replacement.wid) is replacement
+            and getattr(replacement, "readiness_exhausted", False)
+            and getattr(replacement, "active_capacity", True)
+            and not replacement.proc.is_alive())
+
+
+def _resume_claim_held(task_id: str, meta: dict, worker: Any, token: str) -> bool:
+    return (meta.get(_RESUME_CLAIM) == token and _resume_memory_allowed(task_id, meta, worker)
+            and _pool().WORKERS.get(worker.wid) is worker)
+
+
+def _resume_attempt(task_id: str, meta: dict, worker: Any, token: str, replacement: Any) -> bool:
+    """One grant attempt: authorities and the durable ``resumed`` wait outside Q, then the put under Q."""
+    from ouroboros.owner_wait import OwnerWaitSuperseded
     from supervisor import queue
 
     with _queue_lock:
-        if not _resume_allowed(task_id, meta, worker):
-            return False
-        replacement = exhausted_replacement
-        if replacement is not None and (
-            _pool().WORKERS.get(replacement.wid) is not replacement
-            or not getattr(replacement, "readiness_exhausted", False)
-            or not getattr(replacement, "active_capacity", True)
-            or replacement.proc.is_alive()
-        ):
+        if not _resume_claim_held(task_id, meta, worker, token):
             return False
         wait = meta["owner_wait"]
         cold_handoff = meta["task"].get("_owner_wait_resume")
         parked_at = meta.get("sleep_parked_at")
         prior_paused = float(meta.get("budget_paused_sec") or 0.0)
-        paused = prior_paused + (max(0.0, _pool().time.time() - float(parked_at))
-                                 if isinstance(parked_at, (int, float)) else 0.0)
-        try:
-            resumed = set_owner_wait(_pool().DRIVE_ROOT, task_id,
-                                     {**wait, "state": "resumed", "budget_paused_sec": paused},
-                                     expected_wait_id=wait["wait_id"])
+    if not _resume_authority_allowed(task_id, meta):
+        return False
+    paused = prior_paused + (max(0.0, _pool().time.time() - float(parked_at))
+                             if isinstance(parked_at, (int, float)) else 0.0)
+    try:
+        resumed = set_owner_wait(_pool().DRIVE_ROOT, task_id,
+                                 {**wait, "state": "resumed", "budget_paused_sec": paused},
+                                 expected_wait_id=wait["wait_id"])
+    except OwnerWaitSuperseded:
+        log.warning("Owner wait of %s changed before its Resume was granted; the park stands", task_id)
+        return False
+    granted = False
+    try:
+        with _queue_lock:
+            if not _resume_claim_held(task_id, meta, worker, token) or (
+                    replacement is not None and not _replacement_current(replacement)):
+                log.info("Owner wait resume of %s refused after its durable grant: the stack, its worker "
+                         "or the replacement slot changed; the park stands", task_id)
+                return False
             if replacement is not None:
                 replacement.active_capacity = False
             worker.active_capacity = True
@@ -261,37 +352,41 @@ def _grant_resume(
             meta["task"].pop("_owner_wait_resume", None)
             meta["budget_paused_sec"] = paused
             meta.pop("sleep_parked_at", None)
-            if not queue.persist_queue_snapshot(reason="owner_wait_resumed"):
-                raise RuntimeError("owner wait resume snapshot was not persisted")
-            _command(worker, task_id, resumed, "resume_granted")
-        except Exception:
-            worker.active_capacity = False
-            if replacement is not None:
-                replacement.active_capacity = True
-            if cold_handoff is not None:
-                meta["task"]["_owner_wait_resume"] = cold_handoff
-            meta["owner_wait"] = wait
-            meta["budget_paused_sec"] = prior_paused
-            if parked_at is not None:
-                meta["sleep_parked_at"] = parked_at
             try:
-                set_owner_wait(_pool().DRIVE_ROOT, task_id, wait,
-                               expected_wait_id=wait["wait_id"])
+                if not queue.persist_queue_snapshot(reason="owner_wait_resumed"):
+                    raise RuntimeError("owner wait resume snapshot was not persisted")
+                _command(worker, task_id, resumed, "resume_granted")
+            except Exception:
+                worker.active_capacity = False
+                if replacement is not None:
+                    replacement.active_capacity = True
+                if cold_handoff is not None:
+                    meta["task"]["_owner_wait_resume"] = cold_handoff
+                meta["owner_wait"] = wait
+                meta["budget_paused_sec"] = prior_paused
+                if parked_at is not None:
+                    meta["sleep_parked_at"] = parked_at
+                raise
+            granted = True
+            meta.pop("owner_wait_resume_requested", None)
+            quiz_id, chat_id = str(resumed.get("quiz_id") or ""), int((meta.get("task") or {}).get("chat_id") or 0)
+            control_wake = str(resumed.get("resume_reason") or "").startswith("control:")
+            # A mailbox wake is the start of useful model work, not a new attempt.
+            meta["last_progress_at"] = _pool().time.time()
+    finally:
+        if not granted:
+            # The durable grant stands without its put: rewrite ``waiting`` outside Q, best effort.
+            try:
+                set_owner_wait(_pool().DRIVE_ROOT, task_id, wait, expected_wait_id=wait["wait_id"])
                 queue.persist_queue_snapshot(reason="owner_wait_grant_failed")
             except Exception:
                 log.warning("Owner-wait rollback remains unpersisted for %s", task_id, exc_info=True)
-            raise
-        meta.pop("owner_wait_resume_requested", None)
-        if (str(resumed.get("quiz_id") or "")
-                and not str(resumed.get("resume_reason") or "").startswith("control:")):
-            # The bound closed and the pooled task resumed: one seam with the direct lane.
-            from ouroboros.owner_wait import announce_wait_ended
+    if quiz_id and not control_wake:
+        # The bound closed and the pooled task resumed: one seam with the direct lane.
+        from ouroboros.owner_wait import announce_wait_ended
 
-            announce_wait_ended(_pool().DRIVE_ROOT, task_id, str(resumed["quiz_id"]),
-                                int((meta.get("task") or {}).get("chat_id") or 0))
-        # A mailbox wake is the start of useful model work, not a new attempt.
-        meta["last_progress_at"] = _pool().time.time()
-        return True
+        announce_wait_ended(_pool().DRIVE_ROOT, task_id, quiz_id, chat_id)
+    return True
 
 
 @_serialized_worker_lifecycle
@@ -342,7 +437,15 @@ def _resume_original_stacks(holds: dict) -> None:
             worker = pool.WORKERS.get(meta.get("worker_id"))
             if worker is None or getattr(worker, "active_capacity", True):
                 continue
-            if not _resume_allowed(task_id, meta, worker):
+            if not _resume_memory_allowed(task_id, meta, worker):
+                continue
+        # The durable authorities are read off Q without waiting; a busy read authorizes nothing
+        # this tick (the hold is recomputed every tick).
+        with acquisition_budget(0):
+            if not _resume_authority_allowed(task_id, meta):
+                continue
+        with _queue_lock:
+            if not _resume_memory_allowed(task_id, meta, worker):
                 continue
             holds[worker.wid] = task_id  # authorized this tick: owed its lent capacity back
             active = [w for w in pool.WORKERS.values() if getattr(w, "active_capacity", True)]
