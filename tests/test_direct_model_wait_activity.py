@@ -81,7 +81,8 @@ try {
             Infinity, generation + 1);
         const card = walkCard(document.byId.get('chat-messages'), task);
         const mark = card.querySelector('[data-live-phase]').firstElementChild;
-        return {phase: card.querySelector('[data-live-phase]').textContent,
+        const line = card.querySelector('[data-live-phase-secondary]');
+        return {phase: card.querySelector('[data-live-phase]').textContent, line: line.hidden ? '' : line.textContent,
             resume: Boolean(find(card, '[data-resume-run]')),
             mark: mark.hidden ? 'none' : `${mark.dataset.shape}/${mark.dataset.hue}`};
     });
@@ -139,13 +140,14 @@ def test_warm_owner_pause_registry_and_fence_reach_the_rendered_card(tmp_path, m
             assert registry.snapshot() == raw, "the canonical projection never mutates the raw registry"
     finally:
         registry.clear()
-    # The card of the work's current episode says the work's word and who paused; Resume is its work's control.
-    # Its status mark is the server's: the owner's own Pause stands as its bars in ink, never the owner's move.
+    # The card of the work's current episode says the work's word alone and its line beside it; Resume is its work's
+    # control. This press declared nobody, so the line names nobody: only the reviews the Pause lets finish. Its status
+    # mark is the server's: the Pause stands as its bars in ink, never the owner's move.
     assert _js_pause_cards(samples) == [
-        {"phase": "Paused · by you · review work finishing", "resume": True, "mark": "pause/ink"},
-        {"phase": "Paused · by you", "resume": True, "mark": "pause/ink"},
+        {"phase": "Paused", "line": "Review work finishing", "resume": True, "mark": "pause/ink"},
+        {"phase": "Paused", "line": "", "resume": True, "mark": "pause/ink"},
         # A resumed direct turn reads its own census phase (``preparing``), a managed task ``working``.
-        {"phase": "Preparing" if kind == "direct_chat" else "Working", "resume": False, "mark": "moving/ink"},
+        {"phase": "Preparing" if kind == "direct_chat" else "Working", "line": "", "resume": False, "mark": "moving/ink"},
     ]
 
 

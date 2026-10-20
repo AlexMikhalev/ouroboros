@@ -551,7 +551,8 @@ test('an owner-action message says its task\'s state as the owner\'s move, besid
         action('resumed', { pause_cause: 'owner', attention_reason: 'resume' }),
         action('access', { phase: 'working', pause_cause: undefined, can_resume: false, attention_reason: 'model_access',
             model_waits: { w: wait } })] }));
-    assert.deepEqual(look('limit'), ['Paused · spending limit', 'owner', 'dot/owner']);
+    // The chip says its word; why it waits is the message's own sentence.
+    assert.deepEqual(look('limit'), ['Paused', 'owner', 'dot/owner']);
     assert.deepEqual(look('resumed'), ['Paused', 'owner', 'dot/owner']);
     assert.deepEqual(look('access'), ['Waiting for access', 'owner', 'dot/owner']);
     const resume = find(main.actionNode('limit'), node => node.dataset?.resumeRun === '1');

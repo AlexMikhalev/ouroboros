@@ -7,6 +7,7 @@ import assert from 'node:assert/strict';
 import test, { after } from 'node:test';
 import { createChatInstance } from '../modules/chat.js';
 import { createWorkPortals } from '../modules/work_portal.js';
+import { clock } from '../modules/work_status.js';
 import { ElementStub, installDom, restoreDom, walkCard } from './chat_dom_fixture.js';
 import { projection, room as serverRoom, work } from './work_fixture.js';
 
@@ -344,8 +345,10 @@ test('an admitted successor paused in the room carries Resume as its one primary
         details['w-1'] = failedDetail(continuedBy());
         const paused = successorRow({ phase: 'budget_paused', pause_cause: 'owner', can_resume: true, last_line: '' });
         // The work runs in its Project room (chat 7): the portal's card in Main still reads that work's controls.
-        const pausedWork = (controls) => projection(7, [work(paused, { activity: 'paused', paused_by: 'owner',
-            because: [{ code: 'paused_by_owner', text: 'Paused by you' }], controls })], serverRoom('paused'));
+        const pressed = '2026-09-15T10:00:00Z';
+        const pausedWork = (controls) => projection(7, [work(paused, { activity: 'paused', because: [{ code: 'paused_by_owner',
+            text: 'You paused it', since: pressed, by: { actor: 'owner', text: '', at: pressed } }], controls })],
+        serverRoom('paused'));
         f.state({ task_bindings: bindings, active_chat_activities: [paused],
             ...pausedWork([{ action: 'stop', target: 'w-1-c1' }]) });
         await settle();
@@ -355,7 +358,8 @@ test('an admitted successor paused in the room carries Resume as its one primary
             ...pausedWork([{ action: 'resume', target: 'w-1-c1' }, { action: 'stop', target: 'w-1-c1' }]) });
         await settle();
         assert.deepEqual(controls(f, 'w-1-c1'), ['Resume', 'Stop…'], 'paused: Resume beside Stop…');
-        assert.equal(f.part('w-1-c1', 'live-phase').textContent, 'Paused · by you', 'the portal says the work\'s word');
+        assert.deepEqual([f.part('w-1-c1', 'live-phase').textContent, f.part('w-1-c1', 'live-phase-secondary').textContent],
+            ['Paused', `You paused it · ${clock(pressed)}`], 'the portal says the work\'s word, its line beside it');
         const primary = f.card('w-1-c1').querySelector('.chat-live-actions').children.filter((b) => b.classList.contains('btn-primary'));
         assert.deepEqual(primary.map((b) => b.textContent), ['Resume']);
         // Released in the room: the next body says working, and the card's controls follow its work.

@@ -65,10 +65,13 @@ test('same-ID recovery clears the hold on its row; independent work and a pause 
 
 test('the census phase (a Main portal\'s chip source) keeps a budget pause beside the Project wait, as the sidebar does', () => {
     const paused = { ...held, phase: 'budget_paused' };
-    assert.equal(censusTaskPhase(paused, null).text, `Paused · ${hold.label}`);
+    // The chip says the pause's word; the Project wait is the line beside it.
+    assert.deepEqual([censusTaskPhase(paused, null).text, censusTaskPhase(paused, null).secondary], ['Paused', hold.label]);
     assert.equal(censusTaskPhase(paused, null).mark, 'pause');
-    assert.equal(censusTaskPhase({ ...held, phase: 'budget_pausing' }, null).text, `Pausing… · ${hold.label}`);
-    assert.equal(censusTaskPhase({ ...held, phase: 'budget_pausing' }, null).mark, 'moving');
+    const pausing = censusTaskPhase({ ...held, phase: 'budget_pausing' }, null);
+    assert.deepEqual([pausing.text, pausing.secondary], ['Pausing…', hold.label]);
+    assert.equal(pausing.mark, 'moving');
+    assert.equal(censusTaskPhase({ ...paused, finishing_reviews: true }, null).secondary, `${hold.label} · Review work finishing`);
     assert.equal(censusTaskPhase(held, null).text, hold.label);
     assert.deepEqual([censusTaskPhase(held, null).mark, censusTaskPhase(held, null).tone], ['still', 'neutral']);
     assert.equal(censusTaskPhase(paused, { status: 'cancelled' }).text, 'Stopped');

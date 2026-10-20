@@ -7,7 +7,7 @@
  *   membership  this room's works (`works()`, the instance's reconciled projection: one row per work, helpers and
  *               Continue episodes inside it), the owner's unconfirmed sends (`pendingSubmissions`); a Project with
  *               nothing else keeps its latest represented root card
- *   words       work_status.workRowView: the work's word, the reason beside it and its mark
+ *   words       work_status.workRowView: the work's word, its line beside it and its mark
  *   controls    the work's own controls (work_status.openWorkControls), offered only while the current projection
  *               confirms them; a loaded card stops through its own card path
  *   question    the instance's revealQuestion (chat_decision.js); it navigates and never answers
@@ -24,7 +24,7 @@ import { desiredLiveCardPhase, replayTerminalPhase } from './task_phase_chip.js'
 import { createStatusMark, markView, paintStatusMark } from './status_mark.js';
 import { closeTaskControlMenu, createTaskResumeButton, requestStop, taskControlBusy } from './task_control_menu.js';
 import {
-    OUTCOME_TONES, amberNote, openWorkControls, workControls, workMenuActions, workQuestion, workRowView,
+    OUTCOME_TONES, amberNote, clock, openWorkControls, workControls, workMenuActions, workQuestion, workRowView,
 } from './work_status.js';
 import { showToast } from './toast.js';
 
@@ -37,15 +37,6 @@ const clip = (text, max) => (text.length > max ? `${text.slice(0, max - 1).trimE
 let sequence = 0;
 // A status sentence's own dot speaks only at rest: the room at rest says Online beside its green dot.
 const AT_REST = Object.freeze({ shape: 'dot', hue: 'ok' });
-
-// An old parked turn must not read as today's: another day names its date.
-function clock(seconds) {
-    const date = new Date(Number(seconds) * 1000);
-    if (!Number(seconds) || !Number.isFinite(date.getTime())) return '';
-    return new Date().toDateString() === date.toDateString()
-        ? date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-        : date.toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
-}
 
 /** The latest represented root card: the newest unfinished one, else the newest of all. */
 export function latestRepresentedRoot(records = []) {
@@ -241,7 +232,8 @@ export function createRoomWork({
             const id = String(work.work_id || '');
             if (!id) continue;
             const episode = String(work.episode?.task_id || id);
-            const shown = current ? work : { ...work, activity: 'unknown', because: [], turn: [], confirmed: false, mark: 'ring' };
+            const shown = current ? work : { ...work, activity: 'unknown', because: [], tails: [], turn: [], confirmed: false,
+                mark: 'ring' };
             const view = workRowView(shown, { stopping: records.get(episode)?.cancelPendingPolicy || '' });
             items.push({ id, kind: work.kind === 'task' ? 'task' : 'direct', work, record: workCard(work, records), view,
                 episode, attempt: state.attempts?.get?.(episode) ?? null, activity: current ? String(work.activity || '') : 'unknown',
