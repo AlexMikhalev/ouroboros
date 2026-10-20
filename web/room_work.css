@@ -214,9 +214,14 @@
 /* One flow: every row says its state under its name, so a long phase never starves the name. */
 .rw-row .rw-state { grid-column: 1 / -1; grid-row: 2; }
 .rw-word { font-weight: 400; }
-/* An outcome's quieter second fact (Finalizing…, a wait beside Failed), one accessible status with it. */
+/* The word's quieter line (its reason and what still runs, Finalizing… beside an outcome), one accessible status with
+   it. The separator ends the word, so a line that wraps under it on a narrow row never starts with a stray dot. */
 .rw-secondary { color: var(--text-meta); }
 .rw-secondary::before { content: '· '; }
+@supports selector(:has(*)) {
+    .rw-secondary::before { content: none; }
+    .rw-word:has(+ .rw-secondary:not([hidden]))::after { content: '\00a0·'; color: var(--text-meta); font-weight: 400; }
+}
 /* Where a press found its message is said in the row's details; only the chevron shows, beside the state. */
 .rw-where { display: inline-flex; align-items: center; gap: 6px; }
 .rw-chev { color: var(--text-primary); }
