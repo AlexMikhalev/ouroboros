@@ -410,6 +410,7 @@ def test_release_counts_actual_runs_and_daemon_requests(tmp_path, failed_read):
     # Exercise the real HTTP method without discovering credentials or opening a socket.
     gateway = ClaudexorGateway.__new__(ClaudexorGateway)
     gateway._client = httpx.Client(base_url="http://daemon.test", transport=httpx.MockTransport(respond))
+    gateway._endpoint = None  # no daemon descriptor: the handshake caches nothing for this bare gateway
     for run_id in ("run-one", "run-two"):
         delegate_custody.record_started(tmp_path, delegate_custody.RunCustody(
             run_id=run_id, task_id="task", root_task_id="task", route_id="route", model="model",
