@@ -203,15 +203,11 @@ def test_uncertain_marks_commit_is_inspected_by_token_and_never_resent(env, monk
         return None if len(outcomes) == 1 else result  # the first commit's readback is unknown
 
     monkeypatch.setattr(task_admission, "commit_dispatch_marks", unknown_once)
-    workers.assign_tasks()
-    assert env.gen.wait_idle(_WAIT_SEC)
-    assert outcomes == [True] and delivered == [] and worker.busy_task_id is None
-    witness = worker_assignment._unsent(row)
-    assert witness is not None and row["admitted_dispatch"] == "possible"  # owned by its witness, not sent
-    workers.assign_tasks()  # the same row and attempt re-read their own marks and put once
+    workers.assign_tasks()  # one pass: the same lane job re-reads its own marks and puts once
     assert env.gen.wait_idle(_WAIT_SEC)
     assert [task["id"] for task in delivered] == ["launch-child"] and "launch-child" in queue.RUNNING
-    assert len(outcomes) == 1  # the marks were never rewritten
+    assert worker.busy_task_id == "launch-child" and worker_assignment._unsent(row) is None
+    assert outcomes == [True]  # the marks were never rewritten
 
 
 def occupy_lane(generation):
@@ -332,7 +328,8 @@ def test_a_stop_waits_for_a_committed_launch_to_reach_its_worker(env, monkeypatc
     assert reached.wait(_WAIT_SEC) and delivered == []
     door, paused = stop_door()
     time.sleep(0.2)
-    assert paused == [] and env.gen.closed()  # the stop waits; nothing new starts meanwhile
+    assert paused == [] and env.gen.launches_closed()  # the stop waits; no new launch starts meanwhile
+    assert not env.gen.closed()  # a child's admission is queued as ever: only launches pause
     proceed.set()
     door.join(_WAIT_SEC)
     assert paused == [True]
@@ -382,7 +379,7 @@ def test_a_paused_lane_writes_no_marks_and_resume_reopens_it(env, monkeypatch):
     workers.assign_tasks()  # still paused: nothing starts
     assert env.gen.wait_idle(_WAIT_SEC) and delivered == []
     prep.resume_admission()
-    assert not env.gen.closed()
+    assert not env.gen.launches_closed()
     workers.assign_tasks()
     assert env.gen.wait_idle(_WAIT_SEC) and delivered_ids(delivered) == ["launch-child"]
 
@@ -437,17 +434,68 @@ def test_contention_after_the_marks_retries_while_a_stop_waits(env, monkeypatch)
     assert delivered_ids(delivered) == [row["id"]] and row["id"] in queue.RUNNING
 
 
+def unresolved_once(monkeypatch, kind, tid):
+    """The first attempt after the marks stays unresolved: its commit reads back unknown, or the
+    occurrence-row mark meets a busy table; ``reached`` is set once it did."""
+    attempts, reached, proceed = [], threading.Event(), threading.Event()
+    proceed.set()
+    owner, name = ((task_admission, "commit_dispatch_marks") if kind == "unknown_commit"
+                   else (worker_assignment, "_mark_launch_row"))
+    original = getattr(owner, name)
+
+    def unresolved(candidate, projections):
+        outcome = original(candidate, projections) if kind == "unknown_commit" or attempts else None
+        attempts.append(outcome)
+        if candidate["id"] == tid and len(attempts) == 1:
+            reached.set()
+            assert proceed.wait(_WAIT_SEC)
+            return None
+        return outcome
+
+    monkeypatch.setattr(owner, name, unresolved)
+    return attempts, reached, proceed
+
+
+@pytest.mark.parametrize("kind", ["unknown_commit", "unwritten_row_mark"])
+def test_a_committed_launch_stays_on_the_lane_until_it_is_put(env, monkeypatch, kind):
+    """An unresolved committed launch is never handed to a later assignment pass, where a stop that comes
+    first (a Restart is read before the pass) would find the lane idle and leave its marks without a
+    worker: the same job retries and puts once, the marks never rewritten."""
+    worker, delivered = install_worker(env, monkeypatch)
+    row = accepted_root(env)
+    attempts, _reached, _proceed = unresolved_once(monkeypatch, kind, row["id"])
+    workers.assign_tasks()  # one pass
+    assert env.gen.wait_idle(_WAIT_SEC)
+    assert delivered_ids(delivered) == [row["id"]] and row["id"] in queue.RUNNING
+    assert worker_assignment._unsent(row) is None and len(attempts) == (1 if kind == "unknown_commit" else 2)
+
+
+def test_a_stop_after_an_unresolved_attempt_still_waits_for_the_launch(env, monkeypatch):
+    worker, delivered = install_worker(env, monkeypatch)
+    row = accepted_root(env)
+    attempts, reached, proceed = unresolved_once(monkeypatch, "unwritten_row_mark", row["id"])
+    proceed.clear()
+    workers.assign_tasks()
+    assert reached.wait(_WAIT_SEC)
+    door, paused = stop_door()
+    time.sleep(0.2)
+    assert paused == []  # the committed launch is still the lane's: the stop waits for it
+    proceed.set()
+    door.join(_WAIT_SEC)
+    assert paused == [True] and delivered_ids(delivered) == [row["id"]] and len(attempts) == 2
+
+
 def test_a_stop_proceeds_once_its_bound_passes(env, monkeypatch):
     """The wait is a stop's hard bound, never an indefinite hold: a lane that does not empty in time
     answers False and the stop goes on (such a launch then restores as possibly dispatched)."""
     release = occupy_lane(env.gen)
     try:
-        assert prep.pause_admission(0.2) is False and env.gen.closed()
+        assert prep.pause_admission(0.2) is False and env.gen.launches_closed()
     finally:
         release.set()
     assert env.gen.lane_idle(prep.ADMISSION_LANE, _WAIT_SEC)
     prep.resume_admission()
-    assert not env.gen.closed()
+    assert not env.gen.launches_closed()
 
 
 def test_a_launch_on_the_lane_counts_against_its_roots_cap_in_the_same_pass(env, monkeypatch):

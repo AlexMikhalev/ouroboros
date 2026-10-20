@@ -42,8 +42,8 @@ EXTENSION_CHILD_CLEANUP_GRACE_SEC = 2
 LAUNCHER_STOP_GRACE_SEC = 10.0
 SERVER_GRACEFUL_SHUTDOWN_TIMEOUT_SEC = 3.0
 # A process-ending stop waits at most this long for launches and Resumes already writing their marks to hand
-# over to the still-running pool before it names returns and retires the pool (``pause_admission``); it
-# precedes the teardown's custody write, so it stays well inside the launcher wait above.
+# over to the still-running pool before it names returns and retires the pool (``pause_admission``). On Quit
+# it follows the supervisor join and precedes the custody write: at most this much more of the launcher wait above.
 STOP_ADMISSION_DRAIN_SEC = 2.0
 # A direct Restart's spawned successor (Windows, POSIX exec fallback) starts while its parent still
 # holds the data root: admission waits the same handoff the old port gets (find_free_port), no longer.

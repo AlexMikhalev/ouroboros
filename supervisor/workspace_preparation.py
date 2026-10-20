@@ -158,16 +158,25 @@ class PreparationGeneration:
         self.owner = _process_owner()
         self._stop = stop
         self._closed = threading.Event()
-        self._paused = threading.Event()  # a process-ending stop is under way (``pause_admission``)
+        self._pauses = 0  # process-ending stops under way, each its own (``pause_admission``)
         self._lock = threading.Lock()
         self._idle = threading.Condition(self._lock)
         self._jobs = {lane: collections.deque() for lane in (COPY_LANE, VALIDATION_LANE)}
         self._threads: Dict[str, Optional[threading.Thread]] = dict.fromkeys(self._jobs)
 
     def closed(self) -> bool:
-        """Closed explicitly, paused by a stop under way, or its server generation / process stop or
-        restart was requested."""
-        return self._closed.is_set() or self._paused.is_set() or bool(self._stop is not None and self._stop())
+        """Closed explicitly, or its server generation / process stop or restart was requested."""
+        return self._closed.is_set() or bool(self._stop is not None and self._stop())
+
+    def launches_closed(self) -> bool:
+        """Closed, or paused by a stop under way: no worker launch or warm Resume starts a durable step
+        (a child's admission reads ``closed`` alone and is queued as ever)."""
+        return self._pauses > 0 or self.closed()
+
+    def pause(self, resume: bool = False) -> None:
+        """Count one stop's pause (or end one): a door that finished never lifts another's."""
+        with self._lock:
+            self._pauses = max(0, self._pauses - 1) if resume else self._pauses + 1
 
     def close(self) -> None:
         self._closed.set()
@@ -289,17 +298,18 @@ def close_generation(generation: Optional[PreparationGeneration] = None) -> None
 
 def pause_admission(timeout: Optional[float] = None) -> bool:
     """A process-ending stop's first step (owner Restart, planned restart, Update, Quit), before it reads
-    the queue: the open generation starts nothing new (``closed``), and the stop waits, at most
-    ``STOP_ADMISSION_DRAIN_SEC``, for the admission lane to empty, so a launch or Resume already writing
-    its marks hands over to the pool it reserved while that pool still runs (``worker_assignment``,
-    ``worker_owner_wait``). True when the lane emptied in time. ``resume_admission`` reopens it."""
+    the queue or writes its own restrictions: the open generation starts no new launch or warm Resume
+    (``launches_closed``), and the stop waits, at most ``STOP_ADMISSION_DRAIN_SEC``, for the admission
+    lane to empty, so a launch or Resume already writing its marks hands over to the pool it reserved
+    while that pool still runs (``worker_assignment``, ``worker_owner_wait``). True when the lane emptied
+    in time. ``resume_admission`` reopens it."""
     from ouroboros.runtime_limits import STOP_ADMISSION_DRAIN_SEC
     from supervisor import queue
 
     generation = _CURRENT[0]
     if generation is None:
         return True
-    generation._paused.set()
+    generation.pause()
     if generation.on_executor() or queue._queue_lock._is_owned():
         log.error("A stop paused admission from the admission lane or under Q; it cannot wait for the lane")
         return False
@@ -311,10 +321,10 @@ def pause_admission(timeout: Optional[float] = None) -> bool:
 
 
 def resume_admission() -> None:
-    """The stop that paused admission did not end this process: the generation admits again."""
+    """The stop that paused admission did not end this process: its pause ends (another stop's stays)."""
     generation = _CURRENT[0]
     if generation is not None:
-        generation._paused.clear()
+        generation.pause(resume=True)
 
 
 def current_generation() -> Optional[PreparationGeneration]:

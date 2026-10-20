@@ -254,21 +254,16 @@ def test_a_childs_terminal_row_waits_in_the_buffer_and_lands_once(tmp_path, monk
 
 
 @pytest.mark.parametrize("mode", ["PERSIST", "WAL"])
-def test_idle_retirement_lands_what_it_can_and_counts_the_rest_lost(tmp_path, monkeypatch, mode):
-    """An idle worker answers settled either way: a row that can land lands first, and one that cannot is
-    counted lost instead of keeping the worker from ever retiring (retirement runs no exit drain)."""
-    from supervisor.worker_process import local_work_settled
+def test_an_idle_probe_lands_what_it_can_and_reports_the_rest_without_dropping_it(tmp_path, monkeypatch, mode):
+    """The idle answer carries what still cannot land; the worker keeps it (a kept spare retries it at its
+    next append), and only the server's retirement of that worker counts it lost (``worker_retired``)."""
+    from supervisor.worker_process import _retained_rows_after_drain
 
-    monkeypatch.setattr("ouroboros.tool_custody.local_producers_settled", lambda: True)
-    monkeypatch.setattr("ouroboros.review_operation.local_reviews_settled", lambda: True)
     seed(tmp_path, monkeypatch, mode)
-    blocked = {"chat_id": 1, "ts": "2026-10-20T00:00:01Z", "text": "cannot land now"}
-    retry.retain(tmp_path, "progress", blocked)
+    held = {"chat_id": 1, "ts": "2026-10-20T00:00:01Z", "text": "cannot land now"}
+    retry.retain(tmp_path, "progress", held)
     with pinned(tmp_path, writer=mode == "WAL"):
-        assert local_work_settled()
-    assert retry.snapshot()["rows"] == 0 and retry.snapshot()["lost_at_exit"] == 1
-    assert progress_rows(tmp_path) == []
-    landed = {"chat_id": 1, "ts": "2026-10-20T00:00:02Z", "text": "lands"}
-    retry.retain(tmp_path, "progress", landed)
-    assert local_work_settled()
-    assert retry.snapshot()["retried_ok"] == 1 and progress_rows(tmp_path) == [landed]
+        assert _retained_rows_after_drain() == 1
+    assert retry.snapshot()["rows"] == 1 and retry.snapshot()["lost_at_exit"] == 0 and progress_rows(tmp_path) == []
+    assert _retained_rows_after_drain() == 0
+    assert retry.snapshot()["retried_ok"] == 1 and progress_rows(tmp_path) == [held]

@@ -258,9 +258,10 @@ def _deadline_refuses_launch(queue, candidate, *, unsubmitted=None) -> bool:
 # same queue row, attempt and marks re-read the result and may finish and put once in this
 # generation, only after this commit's own marks read back; entering the put retires it, and
 # so does its row leaving the queue. Until then budget and deadline stops read it as never
-# dispatched (the deadline with its pre-commit claim). A process-ending stop waits for them to hand
-# over (``workspace_preparation.pause_admission``); a crash, Panic, a stop that outwaits its bound or an
-# entered put leaves the durable ``possible`` that restore and the occurrence reconcile never replay.
+# dispatched (the deadline with its pre-commit claim). An unresolved one stays on its lane job and a
+# process-ending stop waits for it (``workspace_preparation.pause_admission``); a crash, Panic, a stop
+# that outwaits its bound, a refusal after the marks or an entered put leaves the durable ``possible``
+# that restore and the occurrence reconcile never replay.
 _COMMITTED_UNSENT: Dict[str, Dict[str, Any]] = {}
 
 
@@ -393,7 +394,7 @@ def _claim_worker_launch(queue, candidate, worker, *, deferred: Optional[set] = 
         else:
             log.exception("Scheduled worker start refused; authority or persistence unavailable")
         return False
-    if generation.closed():
+    if generation.launches_closed():
         return False  # a stopping generation starts nothing more
     token = uuid.uuid4().hex
     candidate[_LAUNCH_CLAIM] = {"token": token, "wid": worker.wid}
@@ -408,8 +409,9 @@ def _claim_worker_launch(queue, candidate, worker, *, deferred: Optional[set] = 
 def _launch_job(queue, candidate, worker, token: str, generation) -> None:
     """The admission-lane job of the reserving GENERATION: one attempt per acquisition slice until it
     put or was refused. A closing generation withdraws a launch that wrote no marks; one whose marks
-    committed is finished here, unresolved attempts included: the stop that closed it waits for this
-    lane (``workspace_preparation.pause_admission``), and no later assignment pass would retry it."""
+    committed stays here, unresolved attempts included, until it is put or refused: a stop waits for
+    this lane (``workspace_preparation.pause_admission``), and a launch released to a later assignment
+    pass would be outside that wait."""
     from ouroboros._usage_wait import ACQUISITION_SLICE_SEC
     from supervisor import workspace_preparation
     from supervisor.schedule_occurrence import contention
@@ -418,12 +420,13 @@ def _launch_job(queue, candidate, worker, token: str, generation) -> None:
         return generation.wait_store(
             functools.partial(_launch_attempt, queue, candidate, worker, token, lane=True, generation=generation),
             controls=lambda: ({"detail": "generation closed"}
-                              if generation.closed() and _unsent(candidate) is None else None), busy=contention)
+                              if generation.launches_closed() and _unsent(candidate) is None else None),
+            busy=contention)
 
     outcome = False
     try:
         outcome = attempt()
-        while outcome is None and generation.closed() and _unsent(candidate) is not None:
+        while outcome is None and _unsent(candidate) is not None:
             time.sleep(ACQUISITION_SLICE_SEC)
             outcome = attempt()
         if outcome is None:
@@ -513,7 +516,7 @@ def _launch_attempt(queue, candidate, worker, token: str, *, lane: bool, generat
                 root_resume=resume if not latch or selected_child else None, wait=False):
             unsubmitted = None if witness is None else witness["unsubmitted"]
             with queue._queue_lock:
-                if generation is not None and generation.closed() and witness is None:
+                if generation is not None and generation.launches_closed() and witness is None:
                     return False  # a stopping generation writes no marks: the row stays never-started
                 if unsubmitted is not None and _deadline_refuses_launch(queue, candidate, unsubmitted=unsubmitted):
                     return False  # a committed, never-put launch expires on its own pre-commit claim

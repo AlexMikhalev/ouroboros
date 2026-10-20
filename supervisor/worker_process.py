@@ -116,20 +116,22 @@ def local_work_settled() -> bool:
     from ouroboros.review_operation import local_reviews_settled
     from ouroboros.tool_custody import local_producers_settled
 
-    return (local_producers_settled() and local_reviews_settled() and local_producers_settled()
-            and _settle_retained_rows())
+    return local_producers_settled() and local_reviews_settled() and local_producers_settled()
 
 
-def _settle_retained_rows() -> bool:
-    """An idle worker gives its retained dialogue rows the bounded exit attempt before it may be
-    retired, and counts what still cannot land as lost (``dialogue_retry.finish``): retirement kills
-    without finalizers, so its own exit drain would never count them, and a row that can never land
-    must not keep the worker from retiring."""
-    from ouroboros import dialogue_retry
+def _retained_rows_after_drain() -> int:
+    """The best-effort dialogue rows this idle worker still holds after one drain: a retirement kills
+    without finalizers, so the server counts them lost (``worker_retired``) only if it really retires
+    this worker; a kept one retries them at its next append or task end."""
+    try:
+        from ouroboros import dialogue_retry
 
-    if dialogue_retry.snapshot()["rows"]:
-        dialogue_retry.finish()
-    return True
+        if dialogue_retry.snapshot()["rows"]:
+            dialogue_retry.drain()
+        return int(dialogue_retry.snapshot()["rows"])
+    except Exception:
+        log.debug("Dialogue retry state unreadable at the idle probe", exc_info=True)
+        return 0
 
 
 def _adopt_published_extensions(pool_drive_root: str) -> None:
@@ -503,7 +505,8 @@ def worker_main(wid: int, in_q: Any, out_q: Any, repo_dir: str, drive_root: str,
                     log.warning("Idle probe could not prove local quiescence", exc_info=True)
                 if probe is None:
                     out_q.put({"type": "worker_quiescent", "worker_id": wid, "pid": _os.getpid(),
-                               "process_birth": birth, "token": str(task.get("token") or "")})
+                               "process_birth": birth, "token": str(task.get("token") or ""),
+                               "retained_rows": _retained_rows_after_drain()})
                 continue
             probe = None
             task_drive_root = str(task.get("drive_root") or drive_root)

@@ -267,7 +267,7 @@ def _grant_resume(
             return _resume_attempt(task_id, meta, worker, token, replacement)
         finally:
             _release_resume(task_id, meta, token)
-    if generation.closed() or not generation.submit(
+    if generation.launches_closed() or not generation.submit(
             functools.partial(_resume_job, task_id, meta, worker, token, replacement, generation),
             workspace_preparation.ADMISSION_LANE):
         _release_resume(task_id, meta, token)
@@ -280,7 +280,8 @@ def _resume_job(task_id: str, meta: dict, worker: Any, token: str, replacement: 
 
     try:
         generation.wait_store(functools.partial(_resume_attempt, task_id, meta, worker, token, replacement, generation),
-                              controls=lambda: ({"detail": "generation closed"} if generation.closed() else None))
+                              controls=lambda: ({"detail": "generation closed"}
+                                                if generation.launches_closed() else None))
     except workspace_preparation.PreparationStopped:
         log.info("Owner wait resume of %s withdrawn: the supervisor generation is closing", task_id)
     except Exception:
@@ -331,7 +332,7 @@ def _resume_attempt(task_id: str, meta: dict, worker: Any, token: str, replaceme
         prior_paused = float(meta.get("budget_paused_sec") or 0.0)
     if not _resume_authority_allowed(task_id, meta):
         return False
-    if generation is not None and generation.closed():
+    if generation is not None and generation.launches_closed():
         return False  # a stopping generation writes no grant: the park stands as it is
     paused = prior_paused + (max(0.0, _pool().time.time() - float(parked_at))
                              if isinstance(parked_at, (int, float)) else 0.0)
