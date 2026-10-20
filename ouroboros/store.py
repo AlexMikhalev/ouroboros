@@ -27,7 +27,7 @@ import weakref
 from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
 
 from ouroboros.utils import append_jsonl, machine_json, utc_now_iso  # one compact JSON text: key order kept, facts round-trip
-from ouroboros import store_hot_facts, store_task_cards
+from ouroboros import store_hot_facts, store_task_cards, store_timing
 
 STORE_REL = pathlib.Path("state/current.sqlite")
 LOCK_NAME = "current.lock"  # the name-tier lock around every access
@@ -592,6 +592,7 @@ def connect(path: pathlib.Path, tier: str, *, create: bool = False, wait_sec: fl
                            timeout=max(0.0, wait_sec) if tier == TIER_ENFORCED else 0.0,
                            check_same_thread=not shared, factory=_StoreConnection)
     conn.row_factory = sqlite3.Row
+    conn._store_kind = store_timing.kind_of(path)
     if os.name != "nt":  # counted before any statement can take a lock (see ``_borrow``)
         try:
             key = _identity_key(os.stat(path))
@@ -929,13 +930,15 @@ def transaction(conn: sqlite3.Connection, *, write: bool, commit_wait_sec: Optio
                 finish: Optional[Callable[[], None]] = None) -> Iterator[sqlite3.Connection]:
     """One transaction: a write takes the lock at ``BEGIN IMMEDIATE``, a read's only wait is
     here; any exception rolls back and propagates; ``finish`` (default ``commit``) runs at the
-    end; ``commit_wait_sec`` is the busy wait a COMMIT spends on readers draining."""
-    began = False
+    end; ``commit_wait_sec`` is the busy wait a COMMIT spends on readers draining. The lock's
+    hold is reported to ``store_timing`` either way."""
+    began, held = False, 0.0
     try:
         conn.execute("BEGIN IMMEDIATE" if write else "BEGIN")
         began = True
         if not write:  # take the read lock now
             conn.execute("SELECT 1 FROM meta LIMIT 1").fetchone()
+        held = time.monotonic()
         if commit_wait_sec is not None:
             conn.execute(f"PRAGMA busy_timeout = {int(commit_wait_sec * 1000)}")
         yield conn
@@ -948,8 +951,11 @@ def transaction(conn: sqlite3.Connection, *, write: bool, commit_wait_sec: Optio
                 exc.rollback_confirmed = not conn.in_transaction
             except sqlite3.Error:
                 exc.rollback_confirmed = False
+        if held:
+            store_timing.record(conn, write, held)
         raise
     (finish or (lambda: commit(conn)))()
+    store_timing.record(conn, write, held)
 
 
 def store_path(root: Any) -> pathlib.Path:
