@@ -12,7 +12,7 @@ from __future__ import annotations
 import json
 from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
-from ouroboros import store
+from ouroboros import store, store_task_cards
 from ouroboros.store import Txn, open_store
 
 FACT_KEYS = ("task_id", "status", "ts", "updated_at", "delegation_role", "parent_task_id", "project_id", "root_task_id",
@@ -35,10 +35,8 @@ def read_document(root: Any, task_id: str, *, txn: Optional[Txn] = None, signed:
     task_id = str(task_id)
     with open_store(root, write=False) as txn:
         stamp = signature(root, task_id, txn=txn) if signed else None
-        body = txn.body_text(task_id)
-        rows = txn.handoff_records([task_id]) if body is not None else []
-    document = None if body is None else store.project_handoffs(
-        json.loads(body), store.decode_handoffs([task_id], rows)[task_id])
+        raw = txn.raw(task_id)
+    document = store.materialize(task_id, *raw)
     return (document, stamp) if signed else document
 
 
@@ -84,15 +82,18 @@ def _fetch(txn: Txn, where: str = "", params: Iterable[Any] = (), order: str = "
     A reader decodes AFTER its transaction closed (``_decode``), so a writer's COMMIT never
     waits behind a listing's ``json.loads``."""
     clause = f"WHERE {where}" if where else ""
+    cards, join = store_task_cards.select(txn)
     rows = txn.conn.execute(
-        f"SELECT b.body, t.* FROM tasks AS t JOIN task_bodies AS b ON b.task_id = t.task_id {clause} {order}",
+        f"SELECT b.body, t.*{cards} FROM tasks AS t JOIN task_bodies AS b ON b.task_id = t.task_id{join} {clause} {order}",
         tuple(params)).fetchall()
     return rows, txn.handoff_records([record["task_id"] for record in rows])
 
 
 def _decode(rows: list, handoff_records: list) -> List[Dict[str, Any]]:
+    """The documents of ``_fetch``'s rows: each row carries its body and its card columns."""
     handoffs = store.decode_handoffs([record["task_id"] for record in rows], handoff_records)
-    return [store.project_handoffs(json.loads(record["body"]), handoffs[record["task_id"]]) for record in rows]
+    return [store_task_cards.project(store.project_handoffs(json.loads(record["body"]), handoffs[record["task_id"]]), record)
+            for record in rows]
 
 
 class Reprepare(Exception):
@@ -286,6 +287,14 @@ def _display_sql(column: str = "b.body") -> str:
     return view
 
 
+def _card_sql(view: str) -> str:
+    """``view`` with the task's card row merged over it (``store_task_cards.project`` in SQL, one
+    ``json_patch`` per carded row): the row's non-NULL facts replace the view's, in place or appended."""
+    patch = ("json_remove(json_object(" + ", ".join(f"'{name}', c.{name}" for name in store_task_cards.FIELDS) + "), "
+             + ", ".join(f"CASE WHEN c.{name} IS NULL THEN '$.{name}' ELSE '$.held' END" for name in store_task_cards.FIELDS) + ")")
+    return f"CASE WHEN c.task_id IS NULL THEN {view} ELSE json_patch({view}, {patch}) END"
+
+
 def display_documents(root: Any, task_ids: Iterable[str],
                       versions: Optional[Dict[str, int]] = None) -> Dict[str, str]:
     """The display views (``DISPLAY_DROPPED``) of several documents as JSON text, row-backed
@@ -297,9 +306,11 @@ def display_documents(root: Any, task_ids: Iterable[str],
     if not ids:
         return {}
     with open_store(root, write=False) as txn:
+        _columns, join = store_task_cards.select(txn)
+        view = _card_sql(_display_sql()) if join else _display_sql()
         record = txn.conn.execute(  # '' || ...: the view travels as a string, decoded per use
-            f"SELECT json_group_array(json_array(t.task_id, '' || {_display_sql()}, t.write_seq)) FROM tasks AS t "
-            "JOIN task_bodies AS b ON b.task_id = t.task_id WHERE t.task_id IN (SELECT value FROM json_each(?))",
+            f"SELECT json_group_array(json_array(t.task_id, '' || {view}, t.write_seq)) FROM tasks AS t "
+            f"JOIN task_bodies AS b ON b.task_id = t.task_id{join} WHERE t.task_id IN (SELECT value FROM json_each(?))",
             (json.dumps(ids),)).fetchone()
         handoff_rows = txn.handoff_records(ids)
     handoffs = store.decode_handoffs(ids, handoff_rows)

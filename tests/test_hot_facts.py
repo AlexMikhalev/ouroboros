@@ -196,7 +196,7 @@ def test_schema_gate_is_atomic_and_never_decodes_old_bodies(tmp_path, monkeypatc
         patch.setattr(store.Txn, "body_text", lambda *_: pytest.fail("schema upgrade decoded a task body"))
         upgrade_current_schema(tmp_path)
     with store.open_store(tmp_path, write=False) as txn:
-        assert txn.meta("schema_version") == hot.VERSION
+        assert txn.meta("schema_version") == store.SCHEMA_VERSION >= hot.VERSION
         assert txn.row("legacy", "owner_pause_state", "root_task_id") == (None, None)
         assert txn.body_text("legacy") == before
         assert txn.meta("job:" + hot.JOB)["state"] == "pending"
@@ -211,7 +211,7 @@ def test_first_custody_publication_upgrades_an_old_child_store(tmp_path, monkeyp
     _schema_five(tmp_path, monkeypatch)
     assert custody.emit(tmp_path, custody.STARTED, {"run_id": "new-run", "task_id": "child", "root_task_id": "tree"})
     with store.open_store(tmp_path, write=False) as txn:
-        assert txn.meta("schema_version") == hot.VERSION
+        assert txn.meta("schema_version") == store.SCHEMA_VERSION >= hot.VERSION
         assert tuple(txn.conn.execute("SELECT root_task_id,facts_derived FROM custody_runs WHERE run_id='new-run'").fetchone()) == ("tree", 1)
         assert txn.row("legacy", "owner_pause_state") is None
 

@@ -361,7 +361,7 @@ def _task_activity_facts(drive_root: Any, task_id: str) -> dict:
         return {}
     memo = _FINALIZING_MEMO.get(memo_id)
     if memo is not None and memo[0] == key:
-        return memo[1]
+        return _with_card(memo[1], hot)
     try:
         data, key = read_document(drive_root, task_id, signed=True)
         if not isinstance(data, dict):
@@ -412,7 +412,15 @@ def _task_activity_facts(drive_root: Any, task_id: str) -> dict:
     if len(_FINALIZING_MEMO) >= _FINALIZING_MEMO_MAX:
         _FINALIZING_MEMO.clear()
     _FINALIZING_MEMO[memo_id] = (key, facts)
-    return facts
+    return _with_card(facts, hot)
+
+
+def _with_card(facts: dict, hot: dict) -> dict:
+    """The card from the hot row this poll read, over a copy of the memoized facts: a row-only card
+    write moves no document signature, so the memo alone would show a stale card."""
+    from ouroboros.store_task_cards import row_values
+
+    return {**facts, "card": {**facts["card"], **row_values(hot)}}
 
 
 def _managed_task_finalizing(drive_root: Any, task_id: str) -> bool:

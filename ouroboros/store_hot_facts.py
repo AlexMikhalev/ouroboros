@@ -22,6 +22,7 @@ import os
 import sqlite3
 from typing import Any
 
+from ouroboros import store_task_cards
 from ouroboros.utils import machine_json
 
 VERSION = 6
@@ -178,12 +179,13 @@ def _read_rows(txn, ids) -> dict:
         return {}
     modern = int(txn.meta("schema_version") or VERSION) >= VERSION
     columns = "," + ",".join(f"t.{name}" for name in TASK_COLUMNS) if modern else ""
+    cards, join = store_task_cards.select(txn)  # the card facts ride the hot row: the census needs no document
     # The live members' own bodies are checked, never decoded: a document that no longer parses keeps
     # its member's authority unknown (no Resume is offered from it) while its columns still read.
     records = txn.conn.execute(
         "SELECT t.task_id,t.status,t.root_task_id,t.superseded_by,t.retry_task_id,t.write_seq,t.updated_at"
-        f"{columns},json_valid(b.body) AS body_valid FROM tasks AS t LEFT JOIN task_bodies AS b "
-        "ON b.task_id = t.task_id WHERE t.task_id IN (SELECT value FROM json_each(?))", (json.dumps(ids),)).fetchall()
+        f"{columns}{cards},json_valid(b.body) AS body_valid FROM tasks AS t LEFT JOIN task_bodies AS b "
+        f"ON b.task_id = t.task_id{join} WHERE t.task_id IN (SELECT value FROM json_each(?))", (json.dumps(ids),)).fetchall()
     found = {row["task_id"]: dict(row) for row in records}
     # Unknown rows alone pay their old strict read; coherent with their sequence.
     for tid, row in found.items():
