@@ -181,7 +181,7 @@ def stamp_root_final_phase(
 def prepare_terminal_send_event(
     env_drive_root: Any, task: Dict[str, Any], text: str,
     usage: Dict[str, Any], send_event: Dict[str, Any],
-    *, presence: bool,
+    *, presence: bool, custody_audit: Dict[str, Any] | None = None,
 ) -> Dict[str, Any]:
     """Preserve raw host salvage, then build the one live/replay projection."""
     timing = usage.get("_finalization_timing")
@@ -196,19 +196,16 @@ def prepare_terminal_send_event(
     if not presence and task.get("_is_direct_chat") and (task.get("metadata") or {}).get("_host_operation"):
         correlation = host_operation_reply_kwargs(task.get("origin_message_ref"))
         send_event.setdefault("progress_meta", {}).update(correlation.get("progress_meta", {}))
-    # Loop cleanup may have cancelled a run after the last model observation.
-    # Read the audit it already persisted before constructing this delivery.
-    from ouroboros.task_results import load_task_result
+    # Cleanup may settle a run after the model observed it. Read only this task's
+    # current rows; annotation and result persistence follow the live queue put.
+    from ouroboros.delegate_terminal import terminal_custody_disclosure
 
-    try:
-        current = load_task_result(
+    if custody_audit is None:
+        custody_audit = terminal_custody_disclosure(
             pathlib.Path(task.get("budget_drive_root") or env_drive_root), str(task.get("id") or ""),
-        ) or {}
-    except Exception:
-        log.warning("Current delegated receipt was unavailable at final delivery", exc_info=True)
-        current = {}
-    if isinstance(current.get("delegate_terminal_reconciliation"), dict):
-        usage["delegate_terminal_reconciliation"] = current["delegate_terminal_reconciliation"]
+            usage.get("delegate_terminal_reconciliation"),
+        )
+    usage["delegate_terminal_reconciliation"] = custody_audit
     origin = str(usage.get("terminal_origin") or "")
     notice = str(usage.get("terminal_provider_notice") or "")
     # One voice: the host disclosure stays a typed field OF THE RESULT (CLI
@@ -243,9 +240,17 @@ def prepare_terminal_send_event(
     )
 
 
-def terminal_result_fields(usage: Dict[str, Any]) -> Dict[str, Any]:
-    """Additive durable origin/full-copy fields; unknown producers stay legacy."""
+def terminal_result_fields(usage: Dict[str, Any], *, existing: Dict[str, Any] | None = None) -> Dict[str, Any]:
+    """Carry current custody and origin facts without minting empty custody envelopes."""
+    from ouroboros.delegate_terminal import _stored_disclosure_matches
+
     fields: Dict[str, Any] = {}
+    audit = usage.get("delegate_terminal_reconciliation")
+    prior = existing or {}
+    if isinstance(audit, dict) and (prior.get("delegate_terminal_reconciliation")
+            or "delegated_runs_unreconciled" in prior or not _stored_disclosure_matches({}, audit)):
+        fields["delegate_terminal_reconciliation"] = dict(audit)
+        fields["delegated_runs_unreconciled"] = list(audit.get("unreconciled") or [])
     origin = str(usage.get("terminal_origin") or "")
     if origin in _STAMPED_TERMINAL_ORIGINS:
         fields["terminal_origin"] = origin

@@ -11,7 +11,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from ouroboros import agent_task_pipeline as pipeline, delegate_custody, loop
+from ouroboros import agent_task_pipeline as pipeline, delegate_custody, delegate_terminal, loop
 from ouroboros.tools.registry import ToolRegistry
 from ouroboros.utils import append_jsonl
 from supervisor import events_chat_delivery as delivery
@@ -55,6 +55,7 @@ def completed_turn(tmp_path, monkeypatch, request):
 
     observe(loop, "_cleanup_loop_resources", "cleanup")
     observe(delegate_custody, "release_task_runs", "custody")
+    observe(delegate_terminal, "record_terminal_reconciliation", "annotation")
     observe(pipeline, "register_final_answer_owed", "outbox")
     observe(pipeline, "_store_task_result", "store")
     monkeypatch.setattr(pipeline, "_run_post_task_processing_async",
@@ -117,7 +118,8 @@ def test_finalization_keeps_delivery_and_step_order(completed_turn):
     if turn.kind != "child":
         # Answer first (owner 1A(1)): owed in the outbox, on the live bus, THEN the
         # result store; the buffered task_done still trails the store and post-task.
-        assert order.index("outbox_end") < order.index("enqueue") < order.index("store_start")
+        assert order.index("outbox_end") < order.index("enqueue") < order.index("annotation_start")
+        assert order.index("annotation_end") < order.index("store_start")
         assert order.index("store_end") < order.index("post_task")
         assert len([event for event in turn.queued if event["type"] == "send_message"]) == 1
     else:
@@ -157,7 +159,7 @@ def test_finalization_records_one_ordered_tail_on_every_task_surface(completed_t
         # The live copy's snapshot is frozen at its enqueue, BEFORE the store: the
         # sender's row cannot hold a store span that had not started yet, and the
         # answer's own path ends at the sender.
-        assert "result_store" not in phases
+        assert "result_store" not in phases and "custody_annotation" not in phases
         assert phases["cleanup"]["finished_sec"] <= row["enqueued_sec"] <= phases["sender"]["started_sec"]
         assert row["enqueue_to_sender_sec"] >= 0
         # The packaging that ran after the answer left is journaled as its own
@@ -167,6 +169,8 @@ def test_finalization_records_one_ordered_tail_on_every_task_surface(completed_t
         store = store_row["phases"]["result_store"]
         assert row["enqueued_sec"] <= store["started_sec"] <= store["finished_sec"] == store_row["total_sec"]
         assert store_row["phases"]["cleanup"]["finished_sec"] <= store["started_sec"]
+        annotation = store_row["phases"]["custody_annotation"]
+        assert row["enqueued_sec"] <= annotation["started_sec"] <= annotation["finished_sec"] <= store["started_sec"]
         assert "enqueued_sec" not in store_row, "the buffered dict never borrows the live copy's enqueue"
     else:
         # The buffered copy carries the live dict, so the handler sees the store span.
@@ -578,3 +582,60 @@ def test_a_delivery_context_without_a_drive_root_still_delivers_once_and_records
 
     delivery._handle_send_message({"type": "send_message", "chat_id": 1, "text": "Done.", **timed}, RootlessCtx())
     assert sent == ["Done."]
+
+
+@pytest.mark.parametrize("own_run", [False, True])
+@pytest.mark.parametrize("put_fails", [False, True])
+def test_final_answer_discloses_own_custody_before_annotation_and_keeps_failed_put_debt(
+    tmp_path, monkeypatch, own_run, put_fails,
+):
+    from ouroboros import delegate_custody_current as current, store
+
+    root = tmp_path / "data"
+    task = {"id": "own", "type": "task", "chat_id": 1, "_is_direct_chat": True,
+            "budget_drive_root": str(root)}
+    pipeline.write_task_result(root, "own", "running")
+    runs = [("review", "review_substrate")]
+    if own_run:
+        runs.append(("leaf", "delegated_subagent"))
+    with store.open_store(root, write=True) as txn:
+        for run_id, source in runs:
+            txn.put_custody(run_id, {"run_id": run_id, "task_id": "own", "source": source}, state=current.HELD)
+    monkeypatch.setenv("OUROBOROS_TASK_REVIEW_MODE", "off")
+    monkeypatch.setattr(pipeline, "_run_post_task_processing_async", lambda *a, **kw: None)
+    monkeypatch.setattr(pipeline, "in_worker_process", lambda: False)
+    order, events = [], []
+    record = delegate_terminal.record_terminal_reconciliation
+
+    def annotate(*args, **kwargs):
+        order.append("annotation")
+        assert order[0] == "enqueue"
+        return record(*args, **kwargs)
+
+    monkeypatch.setattr(delegate_terminal, "record_terminal_reconciliation", annotate)
+
+    class Events:
+        def put(self, event):
+            if put_fails:
+                raise RuntimeError("queue unavailable")
+            order.append("enqueue")
+            events.append(event)
+            notice = event.get("terminal_custody_notice", "")
+            assert ("leaf" in notice) is own_run
+            assert "review" not in notice
+            assert "delegate_terminal_reconciliation" not in pipeline.load_task_result(root, "own")
+
+    pending = []
+    pipeline.emit_task_results(
+        SimpleNamespace(drive_root=root, repo_dir=tmp_path), None, None, pending, task,
+        "Answer.", {"cost": 0.0, "rounds": 1}, {"tool_calls": [], "reasoning_notes": []},
+        0.0, root / "logs", ctx=SimpleNamespace(pending_restart_reason=None), event_queue=Events(),
+    )
+    assert order == ([] if put_fails else ["enqueue", "annotation"])
+    stored = pipeline.load_task_result(root, "own")
+    assert stored["result"] == "Answer."
+    assert stored.get("delegate_terminal_reconciliation", {}).get("open_run_ids", []) == (["leaf"] if own_run else [])
+    assert stored.get("delegated_runs_unreconciled", []) == (["leaf"] if own_run else [])
+    assert ("delegate_terminal_reconciliation" in stored) is own_run
+    assert (stored["reason_code"] == "delegated_custody_unreconciled") is own_run
+    assert pending[0]["text"] == "Answer."

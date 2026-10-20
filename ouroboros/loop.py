@@ -771,7 +771,9 @@ def run_llm_loop(
         # A budget-pause HOLD ended by control rejoins the model-wait rails; else re-raise with evidence.
         return _loop_exit_after_exception(exc, limit_ctx, exit_ctx, llm_trace, transport_wait)
     finally:
-        with timed_phase("cleanup"):
+        from ouroboros.delegate_custody_reconcile import defer_loop_exit_audit
+
+        with timed_phase("cleanup"), defer_loop_exit_audit(accumulated_usage):
             working_checkpoint.save_terminal(limit_ctx)  # a returned result's drained mail: saved, then ACKed
             _delegate_hold_close(tools, drive_logs=drive_logs, task_id=task_id, detail="loop_exit")
             _cleanup_loop_resources(stateful_executor, exit_ctx)

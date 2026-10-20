@@ -274,8 +274,10 @@ def _degrade(trace):
 
 
 def _custody(wake, trace):
+    from ouroboros import delegate_custody as custody
     from ouroboros.task_results import write_task_result
 
+    assert custody.emit(wake.root, custody.STARTED, {"task_id": TASK_ID, "run_id": "run-1"})
     write_task_result(wake.root, TASK_ID, "running", delegated_runs_unreconciled=["run-1"])
 
 
@@ -310,7 +312,13 @@ def test_nonclean_outcome_publishes_a_host_notice_never_the_internal_words(wake,
     assert stored["result"] == internal and stored.get("wake_silent") is True
     assert stored["terminal_origin"] == "model_final", "the retained words stay the model's, typed internal"
     assert shown[0]["text"] in stored["terminal_host_notice"]
-    assert build_completed_result_event(wake.root, {"chat_id": 1}, TASK_ID, stored) is None
+    replay = build_completed_result_event(wake.root, {"chat_id": 1}, TASK_ID, stored)
+    if outcome == "custody":
+        assert replay["role"] == "system" and replay["terminal_origin"] == "host_notice"
+        assert replay["text"] == "Open delegated execution: run-1."
+        assert not internal or internal not in json.dumps(replay, ensure_ascii=False)
+    else:
+        assert replay is None
     package = build_sealed_final_package(stored, shown[0]["text"])
     assert package["final_result_text"] == "" and package["internal_terminal_text"] == internal
     assert shown[0]["text"] in package["terminal_host_notice"]

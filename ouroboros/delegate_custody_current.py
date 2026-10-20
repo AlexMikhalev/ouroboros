@@ -202,9 +202,12 @@ def task_snapshot(root, task_id: str):
 
     mine = str(task_id or "")
     with store.open_store(root, write=False) as txn:
-        raw, requests = txn.custody_raw_rows("task_id=?", (mine,)), _pending_rows(txn)
+        raw = txn.custody_raw_rows("task_id=?", (mine,))
+        requests = [row["facts"] for row in txn.conn.execute(
+            "SELECT facts FROM obligations WHERE set_name='custody_open' "
+            "AND CAST(json_extract(facts, '$.request.task_id') AS TEXT)=? ORDER BY rowid", (mine,))]
     runs_by_id = {rid: json_loads(text) for rid, text in raw.items()}
-    requests = [row for row in requests if str(row.get("task_id") or "") == mine]
+    requests = [json_loads(text)["request"] for text in requests]
     return {"runs": _decode_all(runs_by_id), "pending": pending_invocations(root, rows=requests)}
 
 
