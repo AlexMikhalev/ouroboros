@@ -83,6 +83,10 @@ class TestBuildSh:
     @pytest.mark.parametrize("matching", [True, False])
     def test_entry_install_requires_its_own_runtime_library_not_build_pythons(self, tmp_path, matching):
         """Run the real install block against the static-python layout (no artifact is executed)."""
+        # The PATH's bash, as the notarization tests below: a bare "bash" on Windows starts System32's WSL launcher.
+        bash = shutil.which("bash")
+        if not bash:
+            pytest.skip("build.sh's install block needs bash")
         src = _read("build.sh")
         start = src.index('cp build/macos/ouroboros-shell')
         end = src.index('echo "--- Installing packaged CLI wrappers', start)
@@ -95,7 +99,7 @@ class TestBuildSh:
         compiled = tmp_path / "build/macos/ouroboros-shell"
         compiled.parent.mkdir(parents=True)
         compiled.write_bytes(b"entry fixture, never executed")
-        result = subprocess.run(["bash", "-ec", src[start:end]], cwd=tmp_path, capture_output=True, text=True,
+        result = subprocess.run([bash, "-ec", src[start:end]], cwd=tmp_path, capture_output=True, text=True,
                                 env={**os.environ, "APP_PATH": str(app), "SHELL_PY_LIB": "libpython3.10.dylib"})
         assert (result.returncode == 0) is matching, result.stderr
         assert (app / "Contents/MacOS/ouroboros-shell").read_bytes() == compiled.read_bytes()

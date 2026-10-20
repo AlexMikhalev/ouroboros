@@ -715,6 +715,9 @@ def test_owner_files_and_photos_read_in_place_with_a_head_that_wraps(direct_serv
                 touch.wait_for_selector(f'{feed}[data-history-hydrated="true"]', state="attached")
                 touch.wait_for_function("feed => [...document.querySelectorAll(feed + ' img')].every((img) => img.complete)", arg=feed)
                 _feed_scroll(touch)
+                # The owner reads back to the photo with their own gesture, as a swipe does: following ends, so a reflow
+                # while the preview opens or closes no longer lays the room out at its newest message again.
+                touch.locator(feed).evaluate("n => n.dispatchEvent(new WheelEvent('wheel', {deltaY: -1}))")
                 item.evaluate("el => el.scrollIntoView({ block: 'center' })")
                 item.locator("img").evaluate("img => img.decode()")
                 before = _feed_scroll(touch)
