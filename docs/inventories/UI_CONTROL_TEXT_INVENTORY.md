@@ -178,14 +178,14 @@ the same thing sit together: when your diff adds a row, read its neighbours.
 | Start | `btn btn-primary btn-sm` | modules/widget_card.js | 1 |
 | Start campaign | `btn btn-primary btn-sm evo-refresh-btn` | modules/evolution.js | 1 |
 | Start local runtime | `btn btn-ghost` | modules/onboarding_wizard.js | 1 |
+| Stop | `btn btn-default` | modules/settings_ui.js | 1 |
 | Stop | `btn btn-default btn-sm` | modules/storage.js | 1 |
 | Stop | `btn btn-default btn-sm` | modules/storage_free.js | 2 |
 | Stop | `btn btn-ghost` | modules/onboarding_wizard.js | 1 |
-| Stop | `btn btn-primary` | modules/settings_ui.js | 1 |
 | Swarm | `chat-swarm ui-hit-area` | modules/composer.js | 1 |
 | Test | `btn btn-default` | modules/settings_ui.js | 1 |
 | Test draft catalog | `btn btn-default` | modules/mcp_settings.js | 1 |
-| Test Tool Calling | `btn btn-primary` | modules/settings_ui.js | 1 |
+| Test Tool Calling | `btn btn-default` | modules/settings_ui.js | 1 |
 | Test tool calling | `btn btn-ghost` | modules/onboarding_wizard.js | 1 |
 | Tick all | `(no class)` | modules/onboarding_starter_skills.js | 1 |
 | Try again | `btn btn-default` | modules/model_wait.js | 1 |
