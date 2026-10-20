@@ -268,19 +268,20 @@
     --tg-content-safe-area-inset-bottom: 0px;
     --inset-top: calc(max(env(safe-area-inset-top, 0px), var(--tg-safe-area-inset-top)) + var(--tg-content-safe-area-inset-top));
     --inset-bottom: calc(max(env(safe-area-inset-bottom, 0px), var(--tg-safe-area-inset-bottom)) + var(--tg-content-safe-area-inset-bottom));
-    /* The shell's stacking order (DESIGN "Shell"), lowest first: Main's floating header, the sidebar column and
-       its resize handle, the Project panel over the content area (its scrim beneath it; the stack layout's
-       full-width Project a step above), the reply mark of a message being swiped, the drawer (its scrim beneath
-       it), the chat header's menu; popovers (.ui-popup) stay the top of everything. */
+    /* The shell's stacking order (DESIGN "Shell"), lowest first: Main's floating header, the sidebar column (on a
+       phone the drawer, which lies under the room), the room (on a phone the card the drawer pushes aside), the
+       sidebar's resize handle, the Project panel over the content area (its scrim beneath it; the stack layout's
+       full-width Project a step above), the reply mark of a message being swiped, the drawer's way back (its clear
+       scrim over the room's visible quarter), the chat header's menu; popovers (.ui-popup) stay the top of everything. */
     --z-page-header: 5;
     --z-sidebar: 10;
+    --z-room: 15;
     --z-resize-handle: 20;
     --z-project-scrim: 55;
     --z-project-panel: 58;
     --z-project-layer: 60;
     --z-row-reply-mark: 62;
     --z-drawer-scrim: 68;
-    --z-drawer: 70;
     --z-header-menu: 90;
     --z-popover: 1200;
     /* Quote panel glass (DESIGN "Replies"): the shell colour at one alpha, so a quote reads lighter than the bubble it sits in. */

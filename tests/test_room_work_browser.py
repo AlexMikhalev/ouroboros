@@ -438,8 +438,9 @@ def test_main_rows_say_each_census_state_with_its_own_tone_and_controls(room_ui)
         "rw-live": ("Working", "", "live"),
         # A model wait no one has to act on continues by itself: Waiting, with its reason, and nothing amber.
         "rw-access": ("Waiting", "Waiting for the model to become available", "held"),
-        # The owner's own Pause still settling: neutral ink, and it says who paused.
-        "rw-pausing": ("Pausing…", "by you", "held"),
+        # A Pause still settling: neutral ink. Its press declared nobody (this transport records no author), so its
+        # line names nobody either; the word never carries a who.
+        "rw-pausing": ("Pausing…", "", "held"),
         "rw-failfin": ("Failed", "Finalizing…", "failed"),
         "rw-unknown": ("Activity unconfirmed", "", "unknown"),
         "rw-queued": ("Queued", "Waiting for a free worker", "queued"),
@@ -569,14 +570,15 @@ def test_controls_follow_the_exact_attempt_partial_census_disconnect_and_finish(
     assert transport.posts[0][1].get("request_id"), transport.posts
     transport.set("rw-live", phase="budget_pausing", pause_cause="owner")
     transport.refresh()
-    # The row says the work's word and, beside it, who paused; the owner's own Pause is never amber.
-    wait_facts(page, "main", lambda f: (row(f, "rw-live")["word"], row(f, "rw-live")["secondary"]) == ("Pausing…", "by you"),
+    # The row says the work's word; a press this transport records no author for names nobody beside it, and a
+    # Pause is never amber.
+    wait_facts(page, "main", lambda f: (row(f, "rw-live")["word"], row(f, "rw-live")["secondary"]) == ("Pausing…", ""),
                "Pausing in place")
     transport.set("rw-live", phase="budget_paused")
     transport.refresh()
     paused = wait_facts(page, "main", lambda f: row(f, "rw-live")["resume"], "Resume on the paused row")
     assert (row(paused, "rw-live")["word"], row(paused, "rw-live")["secondary"], row(paused, "rw-live")["tone"]) == (
-        "Paused", "by you", "held"), row(paused, "rw-live")
+        "Paused", "", "held"), row(paused, "rw-live")
     page.locator("#page-chat .rw-row[data-id='rw-live'] .rw-pill-resume").click()
     page.wait_for_function("() => [...document.querySelectorAll('.toast')].some(t => t.textContent.includes('Resuming'))")
     assert [path for path, _ in transport.posts] == ["/api/tasks/rw-live/pause", "/api/tasks/rw-live/resume"]
@@ -708,14 +710,14 @@ def test_open_task_menu_never_outlives_its_census_state(room_ui, subject, ending
     try:
         assert open_menu() == FULL_MENU
         # Pausing: the work's controls are Stop alone, so the menu opened for Working must go or match.
-        first, last = transition("pausing", lambda f: (f["word"], f["secondary"]) == ("Pausing…", "by you"),
+        first, last = transition("pausing", lambda f: (f["word"], f["secondary"]) == ("Pausing…", ""),
                                  census(phase="budget_pausing", pause_cause="owner"))
         if first["menu"] not in (None, ["stop_now"]) or last["menu"] not in (None, ["stop_now"]):
             problems.append(f"pausing: a stale menu outlived Working → Pausing (first frame {first['menu']}, "
                             f"after {last['t']} ms {last['menu']})")
         press_stale("pausing", facts(page)["menu"])
         # Paused: a fresh open offers only Stop now (Resume is the row's own button); the old menu must go or match.
-        first, last = transition("paused", lambda f: (f["word"], f["secondary"]) == ("Paused", "by you"),
+        first, last = transition("paused", lambda f: (f["word"], f["secondary"]) == ("Paused", ""),
                                  census(phase="budget_paused"))
         if first["menu"] not in (None, ["stop_now"]) or last["menu"] not in (None, ["stop_now"]):
             problems.append(f"paused: a stale menu outlived Pausing → Paused (first frame {first['menu']}, "

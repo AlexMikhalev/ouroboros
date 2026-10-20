@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
+from ouroboros.control_actor import pause_author
 from ouroboros.gateway import work_status as ws
 from ouroboros.gateway import work_projection as wp
 
@@ -35,16 +38,35 @@ def test_writer_held_continue_waits_and_is_never_the_owners_turn():
         "activity"] == "paused"
 
 
-@pytest.mark.parametrize("fence, paused_by, release", [
-    ({"requested_by": "owner"}, "owner", "owner"),
-    ({"requested_by": "owner", "actor": "mind", "actor_task_id": "m1"}, "mind", "mind"),
-    ({"requested_by": "server_shutdown"}, "host", "owner"),
+@pytest.mark.parametrize("author, code, release, text", [
+    ({"actor": "owner", "text": "", "at": "T0"}, "paused_by_owner", "owner", "You paused it"),
+    ({"actor": "ouroboros", "text": "pause before the update you asked for", "at": "T0"}, "paused_by_mind", "mind",
+     "Ouroboros: pause before the update you asked for"),
+    ({"actor": "ouroboros", "text": "", "at": "T0"}, "paused_by_mind", "mind", "Ouroboros paused it"),
+    ({"actor": "", "text": "", "at": "T0"}, "paused_unattributed", "owner", ""),
 ])
-def test_owner_pause_names_who_paused_from_the_recorded_actor(fence, paused_by, release):
-    state = ws.classify_member(row("t", "budget_paused", pause_cause="owner"), {"fence": fence})
-    assert (state["activity"], state["paused_by"], state["release"]) == ("paused", paused_by, release)
-    assert state["reasons"][0]["code"] == f"paused_by_{paused_by}"
-    assert state["turn"] == []
+def test_a_decided_pause_says_its_declared_author_never_the_door(author, code, release, text):
+    state = ws.classify_member(row("t", "budget_paused", pause_cause="owner"), {"pause_by": author, "paused_at": "T9"})
+    assert (state["activity"], state["release"], state["turn"]) == ("paused", release, [])
+    entry = state["reasons"][0]
+    assert (entry["code"], entry["text"], entry["since"]) == (code, text, "T0")  # dated from the press
+    assert ("by" in entry) is bool(author["actor"])
+    assert "paused_by" not in state
+
+
+def test_pause_author_reads_the_declared_record_and_never_defaults_to_the_owner():
+    assert pause_author({"by": {"actor": "owner", "text": "", "at": "A"}, "requested_at": "R"}) == {
+        "actor": "owner", "text": "", "at": "A"}
+    # Legacy fences: the mind's own record, at the top or as its first press on the same fence.
+    legacy = {"fence_id": "f1", "actor": "mind", "reason": " for the update ", "requested_at": "R", "paused_at": "P"}
+    assert pause_author(legacy) == {"actor": "ouroboros", "text": "for the update", "at": "R"}
+    pressed_later = {"fence_id": "f1", "requested_by": "owner", "requested_at": "R",
+                     "requests": {"a": {"fence_id": "f1"}, "b": {"fence_id": "f1", "actor": "mind", "reason": "x"},
+                                  "c": {"fence_id": "f0", "actor": "mind", "reason": "older fence"}}}
+    assert pause_author(pressed_later) == {"actor": "ouroboros", "text": "x", "at": "R"}
+    # A press that declared nobody, a missing or an unreadable fence name nobody: never "owner" by default.
+    for fence in ({"requested_by": "owner", "requested_at": "R"}, {}, None, {"by": {"actor": "admin"}}):
+        assert pause_author(fence)["actor"] == ""
 
 
 @pytest.mark.parametrize("cause, hold, code", [
@@ -64,9 +86,32 @@ def test_owner_required_resume_is_the_owners_turn_only_when_the_census_says_so(c
 
 
 def test_cold_sleep_waits_and_pausing_is_still_work():
-    assert ws.classify_member(row("t", "budget_paused", pause_cause="sleep"))["activity"] == "waiting"
-    pausing = ws.classify_member(row("t", "budget_pausing", pause_cause="owner"), {"fence": {"requested_by": "owner"}})
-    assert (pausing["activity"], pausing["transition"]) == ("working", "pausing")
+    sleeping = ws.classify_member(row("t", "budget_paused", pause_cause="sleep"))
+    assert (sleeping["activity"], sleeping["release"]) == ("waiting", "self")  # it wakes by itself
+    owner = {"pause_by": {"actor": "owner"}}
+    pausing = ws.classify_member(row("t", "budget_pausing", pause_cause="owner"), {**owner, "running": True})
+    assert (pausing["activity"], pausing["transition"], pausing["live"]) == ("working", "pausing", True)
+    # Under a Pause still settling, a member the queue holds (never started, or already saved and parked) is
+    # Pausing… too but executes nothing; nor does a running one the settled census already parked.
+    queued = ws.classify_member(row("t", "budget_pausing", pause_cause="owner"), owner)
+    assert (queued["transition"], queued["live"]) == ("pausing", False)
+    parked = ws.classify_member(row("t", "budget_pausing", pause_cause="owner"), {"parked": ["t"], "running": True})
+    assert (parked["transition"], parked["live"]) == ("pausing", False)
+
+
+def test_under_a_settling_pause_only_running_helpers_are_said_still_working():
+    owner = {"pause_by": {"actor": "owner"}}
+    member = lambda task_id, **raw: ws.classify_member(  # noqa: E731
+        row(task_id, "budget_pausing", pause_cause="owner", **({"parent_task_id": "r"} if task_id != "r" else {})),
+        {**owner, **raw})
+    root = member("r", running=True)
+    work = ws.roll_up_work("r", [root, member("h1", running=True), member("h2")], episode={"task_id": "r", "state": root})
+    assert (work["activity"], work["transition"]) == ("working", "pausing")
+    assert [(tail["code"], tail["ids"]) for tail in work["tails"]] == [("helpers_running", ["h1"])]
+    # The running helper parks too: no helper is said working, and the work still reads Pausing….
+    work = ws.roll_up_work("r", [root, member("h1", running=True, parked=["h1"]), member("h2")],
+                           episode={"task_id": "r", "state": root})
+    assert (work["activity"], work["transition"], work["tails"]) == ("working", "pausing", [])
 
 
 def test_unread_pause_cause_stays_raw_and_releases_nothing():
@@ -120,7 +165,8 @@ def test_held_continue_with_running_helpers_is_working_and_says_why():
     assert work["activity"] == "working" and work["release"] == "self" and work["turn"] == []
     assert work["because"][0]["code"] == "earlier_attempt_finishing" and work["because"][0]["count"] == 3
     assert work["because"][0]["text"] == "Continue starts when 3 helpers of the earlier attempt finish"
-    assert work["episode"] == {"task_id": "c", "live": True} and work["members"]["working"] == 3
+    assert work["episode"] == {"task_id": "c", "live": True} and work["live"] is True
+    assert work["tails"] == []  # the sentence already names the helpers it waits for
     assert sorted(work["members"]["ids"]) == ["c", "h0", "h1", "h2"]
     one = ws.roll_up_work("p", [current, *_helpers(1)], episode={"task_id": "c", "state": current})
     assert one["because"][0]["text"] == "Continue starts when the helper of the earlier attempt finishes"
@@ -129,8 +175,10 @@ def test_held_continue_with_running_helpers_is_working_and_says_why():
 def test_held_continue_waiting_on_external_runs_or_on_nothing_visible():
     current = ws.classify_member(row("c", "budget_paused", pause_cause="unknown"),
                                  {"hold": {"reason": "continuation_writer_unsettled"}})
-    runs = ws.roll_up_work("p", [current], episode={"task_id": "c", "state": current}, delegated=2)
+    live = [{"run_id": "r1", "kind": "run", "state": "live"}, {"run_id": "r2", "kind": "run", "state": "live"}]
+    runs = ws.roll_up_work("p", [current], episode={"task_id": "c", "state": current}, runs=live)
     assert runs["activity"] == "working" and runs["because"][0]["code"] == "earlier_runs_finishing"
+    assert runs["because"][0]["count"] == 2 and runs["tails"] == []
     alone = ws.roll_up_work("p", [current], episode={"task_id": "c", "state": current})
     assert alone["activity"] == "waiting" and alone["because"][0]["code"] == "earlier_work_unconfirmed"
     assert alone["release"] == "self"
@@ -138,8 +186,11 @@ def test_held_continue_waiting_on_external_runs_or_on_nothing_visible():
 
 def test_helpers_of_an_ended_attempt_keep_the_work_working_with_its_outcome():
     work = ws.roll_up_work("p", _helpers(2), episode={"task_id": "p"}, outcome="failed")
-    assert work["activity"] == "working" and work["outcome"] == "failed"
-    assert work["because"] == [ws.reason("helpers_running", count=2, ids=["h0", "h1"])]
+    assert work["activity"] == "working" and work["outcome"] == "failed" and work["live"] is True
+    assert work["because"] == []
+    assert work["tails"] == [{**ws.reason("helpers_running", count=2, ids=["h0", "h1"]), "kind": "helper",
+                              "state": "live"}]
+    assert work["tails"][0]["text"] == "2 helpers still working" and work["mark"] == "moving"
     assert work["episode"]["live"] is False
 
 
@@ -147,9 +198,10 @@ def test_finalizing_answer_and_paused_work():
     final = ws.classify_member(row("t", "finalizing", status="done"))
     work = ws.roll_up_work("t", [final], episode={"task_id": "t", "state": final}, outcome="done")
     assert (work["activity"], work["transition"], work["outcome"]) == ("working", "finalizing", "done")
-    paused = ws.classify_member(row("t", "budget_paused", pause_cause="owner"), {"fence": {"requested_by": "owner"}})
+    paused = ws.classify_member(row("t", "budget_paused", pause_cause="owner"), {"pause_by": {"actor": "owner"}})
     work = ws.roll_up_work("t", [paused], episode={"task_id": "t", "state": paused})
-    assert (work["activity"], work["paused_by"], work["release"]) == ("paused", "owner", "owner")
+    assert (work["activity"], work["release"], work["because"][0]["code"]) == ("paused", "owner", "paused_by_owner")
+    assert (work["tails"], work["live"], work["mark"]) == ([], False, "pause") and "paused_by" not in work
 
 
 def test_any_members_turn_is_the_works_turn_and_unknown_never_erases_known_work():
@@ -195,6 +247,9 @@ def test_mark_of_names_what_the_work_does_and_never_whose_move_it_is():
     # Observed work keeps moving in an incomplete read; anything else unconfirmed is the ring.
     assert ws.mark_of("working", False) == "moving"
     assert {ws.mark_of(activity, False) for activity in ("queued", "waiting", "paused", "unknown")} == {"ring"}
+    # Something that actually runs moves any shape; a run nobody can confirm is a ring while nothing else runs.
+    assert ws.mark_of("paused", True, live=True) == "moving" and ws.mark_of("paused", True, unknown=True) == "ring"
+    assert ws.mark_of("paused", True, live=True, unknown=True) == "moving"
 
 
 def test_room_finalizing_only_says_finalizing_and_empty_rooms_are_idle_or_unknown():
@@ -218,6 +273,16 @@ def stored(monkeypatch):
     monkeypatch.setattr(wp, "_open_runs", lambda drive_root: {})
     monkeypatch.setattr(wp, "_inflight_upkeep", lambda drive_root, known: [])
     return results
+
+
+def test_an_answered_root_whose_late_work_runs_keeps_its_works_identity(stored, tmp_path):
+    """The census marks an answered root's late work under a settling Pause as running and nothing else: that entry
+    carries no identity, so the work still takes its id and name from the episode's stored result."""
+    stored["late"] = {"task_id": "late", "status": "completed", "chat_id": 42,
+                      "metadata": {"continuation": {"work_id": "prev-1", "work_name": "Original work"}}}
+    owners = [row("late", "budget_pausing", pause_cause="owner")]
+    [work] = wp.works_snapshot(tmp_path, owners, {"late": {"running": True}})["works"]
+    assert (work["work_id"], work["name"], work["live"]) == ("prev-1", "Original work", True)
 
 
 def test_a_held_continue_with_helpers_of_its_failed_attempt_is_one_working_work(stored, tmp_path):
@@ -292,20 +357,174 @@ def test_started_delegated_runs_of_an_ended_root_are_its_live_work(stored, monke
     snap = wp.works_snapshot(tmp_path, [], {})
     assert snap["works_complete"] is True, snap["works_gaps"]
     [work] = snap["works"]
-    assert work["work_id"] == "p" and work["activity"] == "working" and work["members"]["delegated"] == 2
-    assert work["because"][0]["code"] == "delegated_running"
+    assert work["work_id"] == "p" and work["activity"] == "working" and work["because"] == []
+    assert [(tail["kind"], tail["state"], tail["count"]) for tail in work["tails"]] == [("run", "live", 2)]
+    assert work["tails"][0]["text"] == "2 external runs still working"
     assert work["since"] == datetime(2026, 10, 17, 11, tzinfo=timezone.utc).timestamp()
     # The cascade Stop cancels a settled tree's open runs (tests/test_settled_tree_run_stop.py drives the door).
     assert work["controls"] == [{"action": "stop", "target": "p", "scope": "cascade"}]
 
 
-def test_working_helpers_say_the_reason_while_the_work_still_counts_its_runs(stored, monkeypatch, tmp_path):
+def _run(run_id, task_id, source="delegated_subagent", terminal_state=""):
+    return SimpleNamespace(run_id=run_id, task_id=task_id, root_task_id="", source=source, terminal_state=terminal_state)
+
+
+def test_working_helpers_and_runs_of_an_ended_root_are_its_tails(stored, monkeypatch, tmp_path):
     stored["p"] = {"task_id": "p", "status": "failed", "chat_id": 42}
-    monkeypatch.setattr(wp, "_open_runs", lambda drive_root: {"p": ["run-1", "run-2"]})
+    monkeypatch.setattr(wp, "_open_runs", lambda drive_root: {"p": [_run("run-1", "p-a"), _run("run-2", "p-b")]})
     snap = wp.works_snapshot(tmp_path, [row("h0", parent_task_id="p", root_task_id="p")], {})
     [work] = snap["works"]
-    assert work["because"] == [ws.reason("helpers_running", count=1, ids=["h0"])]
-    assert work["members"]["delegated"] == 2 and work["members"]["working"] == 1
+    assert work["activity"] == "working" and work["because"] == []
+    assert [(tail["kind"], tail["count"], tail["state"]) for tail in work["tails"]] == [
+        ("helper", 1, "live"), ("run", 2, "live")]
+
+
+# ---- what still runs beside a paused episode (the 20.10 card) -----------------------------------------
+
+def _paused(**raw):
+    return ws.classify_member(row("t", "budget_paused", pause_cause="owner", finishing_reviews=raw.pop("reviews", False)),
+                              {"pause_by": {"actor": "owner", "at": "T0"}, **raw})
+
+
+@pytest.mark.parametrize("tail", [
+    {"run_id": "rv", "kind": "review", "state": "live"},
+    {"run_id": "x", "kind": "run", "state": "live"},
+])
+def test_a_paused_episode_keeps_its_word_whatever_still_runs_beside_it(tail):
+    paused = _paused(reviews=tail["kind"] == "review")
+    work = ws.roll_up_work("t", [paused], episode={"task_id": "t", "state": paused}, runs=[tail])
+    # Never "Working · by you": the word and its reason are the episode's; what runs is the second fact.
+    assert (work["activity"], work["because"][0]["code"], work["live"]) == ("paused", "paused_by_owner", True)
+    assert [entry["kind"] for entry in work["tails"]] == [tail["kind"]]
+    assert work["mark"] == "pause"  # the work's own mark follows its parked episode (owner 06–08.10)
+    room = ws.roll_up_room([work])
+    assert (room["activity"], room["mark"]) == ("paused", "moving")  # the room moves while anything runs
+    controls = ws.controls_for(paused, row("t", "budget_paused"))
+    assert [entry["action"] for entry in controls] == ["resume", "stop"]
+    # Once it ends, the bars stand alone.
+    quiet = ws.roll_up_work("t", [_paused()], episode={"task_id": "t", "state": _paused()})
+    assert (quiet["tails"], quiet["live"], ws.roll_up_room([quiet])["mark"]) == ([], False, "pause")
+
+
+def test_a_run_nobody_can_confirm_beside_a_live_episode_is_its_line_never_its_mark():
+    # A Pause held for the owner beside a failed helper's open run: bars and the owner's move, the run on the line.
+    held = ws.classify_member(row("t", "budget_paused", pause_cause="restart", can_resume=True),
+                              {"hold": {"reason": "owner_restart_hold"}})
+    lost = {"run_id": "u", "kind": "run", "state": "unknown"}
+    work = ws.roll_up_work("t", [held], episode={"task_id": "t", "state": held}, runs=[lost])
+    assert (work["activity"], work["mark"], work["live"]) == ("paused", "pause", False)
+    assert [tail["code"] for tail in work["tails"]] == ["external_runs_unconfirmed"]
+    assert ws.roll_up_room([work])["mark"] == "ring", "the room: nothing runs, one run nobody can confirm"
+    # With its episode ended, that run is all the work is: unconfirmed, its ring.
+    ended = ws.roll_up_work("t", [], episode={"task_id": "t"}, runs=[lost])
+    assert (ended["activity"], ended["mark"]) == ("unknown", "ring")
+
+
+def test_a_running_episodes_own_review_is_its_work_and_review_beside_a_pause_is_its_tail():
+    running = ws.classify_member(row("t", "thinking"))
+    review = {"run_id": "rv", "kind": "review", "state": "live"}
+    work = ws.roll_up_work("t", [running], episode={"task_id": "t", "state": running}, runs=[review])
+    assert (work["activity"], work["tails"], work["live"]) == ("working", [], True)
+    paused = _paused()
+    work = ws.roll_up_work("t", [paused], episode={"task_id": "t", "state": paused}, runs=[review])
+    assert [tail["code"] for tail in work["tails"]] == ["review_work_finishing"]
+
+
+@pytest.mark.parametrize("source, owner, typed", [
+    ("review_substrate", {"status": "failed"}, ("review", "live")),  # a review finishes whatever its task did
+    ("review_substrate_plan", None, ("review", "live")),
+    ("delegated_subagent", {"status": "failed"}, ("run", "unknown")),
+    ("delegated_subagent", {"status": "running", "outcome_axes": {"lifecycle": {"status": "cancelled"}}},
+     ("run", "unknown")),
+    ("delegated_subagent", {"status": "completed"}, ("run", "live")),  # a task that answered: Stop still reaches it
+    ("delegated_subagent", None, ("run", "live")),
+])
+def test_one_rule_types_an_open_run_for_the_card_and_for_ouroboros(source, owner, typed):
+    assert ws.run_tail(source, owner) == typed
+    # A stop its own task's live Pause could not confirm leaves an ordinary run unconfirmed; review work stays review.
+    assert ws.run_tail(source, owner, stop_unknown=True) == ((typed[0], "live") if typed[0] == "review"
+                                                             else ("run", "unknown"))
+    entry = SimpleNamespace(run_id="r", task_id="h" if owner is not None else "", source=source)
+    stops = {}
+    obs = SimpleNamespace(result=lambda task_id: owner if task_id == "h" else None,
+                          stop_unknown=lambda task_id, drive_root=None, owner=None: frozenset(stops.get(task_id, ())))
+    assert wp._typed_run(entry, obs, {}) == {"run_id": "r", "kind": typed[0], "state": typed[1]}
+    stops["h"] = ["r"]
+    stopped = "unknown" if typed[0] == "run" and entry.task_id else typed[1]
+    assert wp._typed_run(entry, obs, {}) == {"run_id": "r", "kind": typed[0], "state": stopped}
+
+
+def test_a_stop_is_unconfirmed_only_while_its_tasks_pause_lives(tmp_path):
+    from ouroboros import budget_pause
+    from ouroboros.store_hot_facts import controls
+    from ouroboros.task_results import STATUS_RUNNING, write_task_result
+
+    write_task_result(tmp_path, "t", STATUS_RUNNING)
+    assert wp.unconfirmed_stops(tmp_path, "t") == frozenset()  # no pause row proves no trouble
+    observed = {"runs": [{"run_id": "a", "state": "stop_unknown"}, {"run_id": "b", "state": "stop_requested"},
+                         {"run_id": "", "state": "stop_unknown", "invocation_id": "i"}]}
+    budget_pause.set_budget_pause(tmp_path, "t", {"pause_id": "p", "state": budget_pause.STATE_PAUSED,
+                                                  "external_runs": observed})
+    assert wp.unconfirmed_stops(tmp_path, "t") == frozenset({"a"})
+    budget_pause.set_budget_pause(tmp_path, "t", {**controls(tmp_path, "t")["budget_pause"],
+                                                  "state": budget_pause.STATE_RESUMED}, expected_pause_id="p")
+    assert wp.unconfirmed_stops(tmp_path, "t") == frozenset(), "a resumed Pause's old observation is history"
+    # A warm park keeps its own observation on its stored result while it waits under the owner's Pause.
+    warm = {"owner_wait": {"state": "waiting", "reason": "owner_pause",
+                           "owner_pause": {"external_runs": {"runs": [{"run_id": "w", "state": "stop_unknown"},
+                                                                      {"run_id": "x", "state": "stop_confirmed"}]}}}}
+    assert wp.unconfirmed_stops(tmp_path, "t", warm) == frozenset({"w"})
+    for ended in ({**warm["owner_wait"], "state": "resumed"}, {**warm["owner_wait"], "reason": "question"}):
+        assert wp.unconfirmed_stops(tmp_path, "t", {"owner_wait": ended}) == frozenset()
+
+
+def test_a_review_the_pause_lets_finish_is_one_review_tail_from_either_source(stored, monkeypatch, tmp_path):
+    monkeypatch.setattr(wp, "_open_runs", lambda drive_root: {"t": [_run("run-rv", "t", source="review_substrate")]})
+    owners = [row("t", "budget_paused", pause_cause="owner", finishing_reviews=True)]
+    snap = wp.works_snapshot(tmp_path, owners, {})
+    [work] = snap["works"]
+    assert work["activity"] == "paused"
+    assert [(tail["kind"], tail["text"], tail["ids"]) for tail in work["tails"]] == [
+        ("review", "Review work finishing", ["run-rv"])]
+    assert "count" not in work["tails"][0]
+    # A native review (no custody row) is the same tail; with no review at all there is none.
+    monkeypatch.setattr(wp, "_open_runs", lambda drive_root: {})
+    [work] = wp.works_snapshot(tmp_path, owners, {})["works"]
+    assert [(tail["kind"], tail.get("ids")) for tail in work["tails"]] == [("review", None)]
+    [work] = wp.works_snapshot(tmp_path, [row("t", "budget_paused", pause_cause="owner")], {})["works"]
+    assert work["tails"] == [] and work["live"] is False
+
+
+def test_a_run_whose_own_task_failed_is_unconfirmed_and_its_work_stays_stoppable(stored, monkeypatch, tmp_path):
+    stored["p"] = {"task_id": "p", "status": "failed", "chat_id": 42}
+    stored["h"] = {"task_id": "h", "status": "failed"}
+    monkeypatch.setattr(wp, "_open_runs", lambda drive_root: {"p": [_run("run-u", "h")]})
+    [work] = wp.works_snapshot(tmp_path, [], {})["works"]
+    assert (work["activity"], work["live"], work["mark"]) == ("unknown", False, "ring")
+    assert [(tail["state"], tail["text"]) for tail in work["tails"]] == [("unknown", "1 external run may still be running")]
+    assert work["confirmed"] is True and work["controls"] == [{"action": "stop", "target": "p", "scope": "cascade"}]
+    # The same run of a task that answered is live work (owner 19.10: Stop reaches it).
+    stored["h"] = {"task_id": "h", "status": "completed"}
+    [work] = wp.works_snapshot(tmp_path, [], {})["works"]
+    assert (work["activity"], work["mark"], work["tails"][0]["state"]) == ("working", "moving", "live")
+
+
+def test_a_run_the_engine_already_finished_is_no_member(stored, monkeypatch, tmp_path):
+    """Through the real custody store: an engine-finished run whose settlement is still owed runs nothing."""
+    from ouroboros import delegate_custody as custody
+
+    monkeypatch.setattr(wp, "_open_runs", _REAL_OPEN_RUNS)
+    stored["p"] = {"task_id": "p", "status": "completed", "chat_id": 42}
+    assert custody.emit(tmp_path, custody.STARTED, {"run_id": "r-done", "task_id": "p", "root_task_id": "p"})
+    assert custody.emit(tmp_path, custody.STARTED, {"run_id": "r-live", "task_id": "p", "root_task_id": "p"})
+    [work] = wp.works_snapshot(tmp_path, [], {})["works"]
+    assert work["tails"][0]["ids"] == ["r-done", "r-live"]
+    assert custody.emit(tmp_path, custody.TERMINAL_OBSERVED, {
+        "run_id": "r-done", "task_id": "p", "state": "succeeded", "observation_seq": 1,
+        "source_ref": {"sha256": "0" * 64}})
+    [work] = wp.works_snapshot(tmp_path, [], {})["works"]
+    assert work["tails"][0]["ids"] == ["r-live"]
+
 
 
 # ---- controls -----------------------------------------------------------------------------------------

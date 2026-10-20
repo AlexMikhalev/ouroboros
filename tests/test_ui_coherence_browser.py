@@ -203,7 +203,7 @@ def test_settings_footer_controls_are_reachable_at_content_breakpoints(subscript
     for width in [640, 641, 760, 768, 980, 981]:
         page.set_viewport_size({"width": width, "height": 600})
         if width <= 640:
-            page.wait_for_function("document.querySelector('#primary-sidebar').getBoundingClientRect().right<=1")
+            setup_browser.wait_drawer_closed(page)
         for sidebar in [220, 280]:
             page.evaluate("value => document.documentElement.style.setProperty('--sidebar-width',value+'px')", sidebar)
             for name, message, busy, restart in states:
@@ -274,7 +274,7 @@ def test_short_sidebar_bounds_projects_list_and_cost_cards_keep_local_table_over
     for width in [390, 641, 768, 981]:
         page.set_viewport_size({"width": width, "height": 600})
         if width <= 640:
-            page.wait_for_function("document.querySelector('#primary-sidebar').getBoundingClientRect().right<=1")
+            setup_browser.wait_drawer_closed(page)
         for card in page.locator(".costs-stats-grid > .stat-card").all():
             card.scroll_into_view_if_needed()
             box = hit_box(card)

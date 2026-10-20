@@ -639,6 +639,21 @@ test('closed, the capsules keep their names while the line holds them; a narrowe
     m.controls.destroy();
 });
 
+test('a phone\'s ☰, gone down beside the field while the row folds, is not the line the capsules are read by', () => {
+    const m = mountPair();
+    const menu = new ElementStub('button', m.doc);
+    menu.className = 'mobile-nav-toggle composer-menu';
+    menu.getBoundingClientRect = () => ({ top: 21, bottom: 53, width: 32 });  // composer_fold.js: at the field's middle
+    m.row.prepend(menu);
+    m.effortEl.getBoundingClientRect = () => ({ top: 40, bottom: 72, width: 130 });  // the names push Effort onto a second line
+    m.controls.syncState({});
+    assert.equal(m.row.dataset.ownerCompact, 'true', 'the capsules\' own line still wraps: the row keeps its fit');
+    m.effortEl.getBoundingClientRect = () => ({ top: 0, bottom: 32, width: 130 });
+    m.controls.syncState({});
+    assert.equal(m.row.dataset.ownerCompact, undefined, 'room again: the names come back');
+    m.controls.destroy();
+});
+
 test('row/strip resize delivery defers feedback, coalesces work and cancels it on destroy', () => {
     const observers = [], frames = new Map();
     let nextFrame = 0;

@@ -217,15 +217,18 @@ def test_a_rooms_menu_stays_above_the_keyboard(shell_ui, tmp_path, room):
     assert facts['menuBottom'] <= 500 and facts['fieldBottom'] <= 500, ('above the keyboard', facts)
 
 
-# Every frame for `ms`, the scrim's opacity and hidden state and the drawer's x, from just before an action.
+# Every frame for `ms`, the scrim's opacity and hidden state, the drawer's x and the room card's x, from just before an
+# action.
 FRAMES = """ms => new Promise((resolve) => {
     const scrim = document.getElementById('nav-drawer-backdrop');
     const side = document.getElementById('primary-sidebar');
+    const room = document.getElementById('content');
     const out = [];
     const start = performance.now();
     const step = () => {
         out.push({t: performance.now() - start, opacity: Number(getComputedStyle(scrim).opacity), hidden: scrim.hidden,
-                  x: side.getBoundingClientRect().x, settle: side.style.getPropertyValue('--drawer-settle')});
+                  x: side.getBoundingClientRect().x, room: room.getBoundingClientRect().x,
+                  settle: side.style.getPropertyValue('--drawer-settle')});
         if (performance.now() - start < ms) requestAnimationFrame(step); else resolve(out);
     };
     requestAnimationFrame(step);
@@ -245,10 +248,10 @@ def collected(page):
 
 
 def test_the_drawer_and_its_scrim_settle_smoothly_and_a_drifting_thumb_keeps_it(chromium_ui, tmp_path):
-    """☰ slides the drawer in on its curve while the scrim fades in; × slides it out while the scrim fades out, and
-    the scrim leaves the page only after; a fling settles at the finger's speed; a thumb that drifts down halfway
-    through a drag keeps the drawer, and the feed under it does not scroll (owner 19.10: it came off halfway, and
-    nothing moved smoothly)."""
+    """☰ pushes the room aside as a card on its curve while the drawer comes up from under it and its clear scrim
+    comes with it; × runs it back, and the scrim leaves the page only after; a fling settles at the finger's speed; a
+    thumb that drifts down halfway through a drag keeps the drawer, and the feed under it does not scroll (owner 19.10:
+    it came off halfway, and nothing moved smoothly)."""
     page = seed_page(chromium_ui, 390, 844)
     facts = {}
     try:
@@ -321,9 +324,12 @@ def test_the_drawer_and_its_scrim_settle_smoothly_and_a_drifting_thumb_keeps_it(
     assert between, ('the scrim fades in, not at once', opening)
     assert any(-300 < f['x'] < -5 for f in opening), ('the drawer slides in', opening)
     assert opening[-1]['opacity'] == 1 and opening[-1]['x'] == 0, opening[-1]
+    assert opening[0]['room'] == 0 and any(5 < f['room'] < 280 for f in opening), ('the room slides as the card', opening)
+    assert abs(opening[-1]['room'] - 0.75 * 390) < 1, ('a quarter of the room stays', opening[-1])
     fading = [f for f in closing if not f['hidden'] and 0.05 < f['opacity'] < 0.95]
     assert fading, ('the scrim fades out while it is still on the page', closing)
     assert any(-330 < f['x'] < -5 for f in closing), ('the drawer slides out', closing)
+    assert any(5 < f['room'] < 285 for f in closing) and closing[-1]['room'] == 0, ('the card comes back', closing)
     assert closing[-1]['hidden'] is True, ('and it leaves once it has faded', closing[-1])
     assert all(not f['hidden'] and f['dragging'] for f in facts['regrab_held']), (
         'a finger that takes the drawer during the close keeps its scrim, past the close\'s fade', facts['regrab_held'])
@@ -384,3 +390,100 @@ def test_a_pull_past_fully_open_shows_the_drawer_at_the_edge_not_the_room(chromi
     assert facts['back']['p'] > 1 and facts['back']['x'] < facts['pulled']['x'] - 0.5, (
         'pulled back, the drawer gives back: every pixel of the finger still moves it', facts)
     assert facts['after']['open'] is True, ('released, it settles back to fully open', facts)
+
+
+CARD = """sel => {
+    const room = document.querySelector(sel);
+    const veil = room.querySelector(':scope > .room-veil');
+    const side = document.getElementById('primary-sidebar');
+    const at = (x, y) => document.elementFromPoint(x, y);
+    const cs = getComputedStyle(room);
+    return {x: room.getBoundingClientRect().x, transform: cs.transform, radius: cs.borderTopLeftRadius,
+            shadow: cs.boxShadow, veil: Number(getComputedStyle(veil).opacity), drawerUnder: side.contains(at(120, 400)),
+            quarter: at(350, 400)?.id || '', open: side.classList.contains('open'),
+            p: Number(side.style.getPropertyValue('--drawer-p') || 0),
+            project: document.getElementById('project-panel').classList.contains('open'),
+            projectScrim: getComputedStyle(document.getElementById('project-panel-backdrop')).display};
+}"""
+
+
+def held(page, sel, xs, y):
+    """A finger put down at the first x and moved through the rest, still down: the room card where the finger has it.
+    Then the finger lifts and the drawer settles."""
+    cdp = page.context.new_cdp_session(page)
+    try:
+        for i, x in enumerate(xs):
+            cdp.send('Input.dispatchTouchEvent', {'type': 'touchStart' if i == 0 else 'touchMove',
+                                                  'touchPoints': [{'x': x, 'y': y, 'id': 1}]})
+            page.wait_for_timeout(16)
+        facts = page.evaluate(CARD, sel)
+        cdp.send('Input.dispatchTouchEvent', {'type': 'touchEnd', 'touchPoints': []})
+    finally:
+        cdp.detach()
+    page.wait_for_timeout(600)
+    return facts
+
+
+@pytest.mark.parametrize('room', ['main', 'project'])
+def test_the_room_is_the_card_the_drawer_pushes_aside(chromium_ui, tmp_path, room):
+    """Owner 19.10 (the iOS board, 1A): ☰ pushes the room (Main, or the Project open over it) right by three quarters of
+    the screen as a card with rounded corners, a shadow and faded words; the drawer under it takes the finger, the
+    quarter left showing is the way back, and a finger moves the card and its veil with it: opening the drawer,
+    taking the open one back from the drawer or from the quarter, and pulling it past open, where the card gives like
+    a rubber band. (While the drawer was open the open card's rule outranked the finger's, and both stood still.)"""
+    page = seed_page(chromium_ui, 390, 844)
+    sel = '#content' if room == 'main' else '#project-panel'
+    menu = f'{"#page-chat" if room == "main" else "#project-panel"} .chat-toolbar-row [data-mobile-nav-toggle]'
+    facts = {'room': room}
+
+    def reopen():
+        if not page.evaluate(CARD, sel)['open']:
+            page.locator(menu).click()
+            page.wait_for_timeout(700)
+    try:
+        boot(page, chromium_ui)
+        if room == 'project':
+            open_project(page)
+        facts['closed'] = page.evaluate(CARD, sel)
+        page.locator(menu).click()
+        page.wait_for_timeout(700)
+        facts['open'] = page.evaluate(CARD, sel)
+        page.mouse.click(350, 400)  # the room's quarter
+        page.wait_for_timeout(700)
+        facts['back'] = page.evaluate(CARD, sel)
+        # A finger halfway, still down: the card and the veil are where the finger is.
+        feed = page.locator(f'{sel} .chat-messages, {sel} #chat-messages').first.bounding_box()
+        y = feed['y'] + feed['height'] / 2
+        facts['held'] = held(page, sel, (40, 60, 100, 140, 180), y)
+        # The open drawer taken back 90 px, from the drawer and from the quarter, and pulled past open.
+        reopen()
+        facts['closing'] = held(page, sel, (200, 190, 170, 150, 130, 110), y)
+        reopen()
+        facts['closing_quarter'] = held(page, sel, (370, 360, 340, 320, 300, 280), y)
+        reopen()
+        facts['past'] = held(page, sel, (100, 80, 160, 260, 380), y)
+        facts['after'] = page.evaluate(CARD, sel)
+    finally:
+        evidence(tmp_path, f'shell-room-card-{room}', facts)
+        page.close()
+    closed, opened, back, held_open = facts['closed'], facts['open'], facts['back'], facts['held']
+    assert closed['x'] == 0 and closed['radius'] == '0px' and closed['veil'] == 0, ('closed, the room is the screen', closed)
+    assert abs(opened['x'] - 0.75 * 390) < 1 and opened['radius'] == '44px' and opened['shadow'] != 'none', opened
+    assert abs(opened['veil'] - 0.42) < 0.01, ('its words are faded', opened)
+    assert opened['drawerUnder'] and opened['quarter'] == 'nav-drawer-backdrop', ('the drawer takes the finger, the quarter closes', opened)
+    assert opened['projectScrim'] == 'none', opened
+    assert back['open'] is False and back['x'] == 0 and back['project'] is (room == 'project'), ('the quarter brought it back', back)
+    assert 40 < held_open['x'] < 0.75 * 390 - 40 and 0.02 < held_open['veil'] < 0.4, (
+        'the card and its veil follow the finger', held_open)
+    # The open drawer under a finger: the card moves 1:1 by the drawer's own number and its veil fades by it.
+    for name in ('closing', 'closing_quarter'):
+        taken = facts[name]
+        assert taken['open'] is True and 0.6 < taken['p'] < 0.85, (f'setup: {name} holds the open drawer partway', taken)
+        assert abs(taken['x'] - taken['p'] * 0.75 * 390) < 1, (f'{name}: the card follows the finger back', taken)
+        assert abs(taken['veil'] - 0.42 * taken['p']) < 0.01, (f'{name}: the veil fades with it', taken)
+    past = facts['past']
+    assert past['p'] > 1 and abs(past['x'] - past['p'] * 0.75 * 390) < 1 and past['x'] > opened['x'] + 8, (
+        'past open the card gives like a rubber band', past)
+    assert abs(past['veil'] - 0.42) < 0.01, past
+    assert facts['after']['open'] is True and abs(facts['after']['x'] - opened['x']) < 1, (
+        'released past open, it settles back open', facts['after'])

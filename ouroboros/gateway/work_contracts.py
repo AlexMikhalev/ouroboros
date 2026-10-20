@@ -1,11 +1,11 @@
-"""``/api/state`` work projection contracts (v1, additive): one row per work, one rollup per room.
+"""``/api/state`` work projection contracts (v1): one row per work, one rollup per room.
 
 Descriptive, not runtime validation. The browser twin is ``web/modules/work_types.js``; the frozen census
 (``active_chat_activities``) stays beside these fields unchanged (docs/architecture/11-frozen-contracts-v1.md).
 """
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 try:  # Python 3.11+
     from typing import NotRequired, TypedDict  # type: ignore[attr-defined]
@@ -21,6 +21,26 @@ class WorkReason(TypedDict):
     count: NotRequired[int]
     ids: NotRequired[List[str]]
     since: NotRequired[Any]
+    by: NotRequired["PauseAuthor"]
+
+
+class PauseAuthor(TypedDict):
+    """The declared author of a decided Pause (``control_actor.pause_author``): ``owner`` or ``ouroboros``."""
+
+    actor: str
+    text: str
+    at: Any
+
+
+class WorkTail(TypedDict):
+    """What still runs beside or after the current episode, said as a second fact, never as the work's word."""
+
+    kind: str  # helper | run | review
+    state: str  # live | unknown
+    code: str
+    text: str
+    count: NotRequired[int]
+    ids: NotRequired[List[str]]
 
 
 class WorkTurn(TypedDict):
@@ -47,9 +67,6 @@ class WorkEpisode(TypedDict):
 
 
 class WorkMembers(TypedDict):
-    working: int
-    waiting: int
-    delegated: int
     ids: List[str]
 
 
@@ -71,9 +88,10 @@ class Work(TypedDict):
     transition: str
     call: str
     because: List[WorkReason]
+    tails: List[WorkTail]
+    live: bool
     turn: List[WorkTurn]
     release: str
-    paused_by: Optional[str]
     members: WorkMembers
     controls: List[WorkControl]
     since: Any

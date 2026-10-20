@@ -193,7 +193,7 @@ def _resume_outstanding(current: Dict[str, Any], fence: Dict[str, Any]) -> bool:
 
 def install_fence(root_drive: Any, root_task_id: str, *, request_id: str,
                   late_work: bool = False, requested_by: str = "owner",
-                  actor_id: str = "") -> Tuple[Dict[str, Any], bool]:
+                  actor_id: str = "", by: Optional[dict] = None) -> Tuple[Dict[str, Any], bool]:
     """Close the root's fence durably; ``(fence, created)``.
 
     Idempotent by ``request_id`` across Resume and later Pause generations;
@@ -206,7 +206,9 @@ def install_fence(root_drive: Any, root_task_id: str, *, request_id: str,
     terminal root refuses: a finished tree has nothing to pause — unless its
     answered task still owns late work: an open post-task checkpoint read
     under this lock (the Pause ends that upkeep at once), or a live review
-    operation the caller attests (``late_work``). Raises
+    operation the caller attests (``late_work``). ``by`` is the author a press
+    declared (``control_actor.pause_author``): the fence keeps its first one,
+    and a press that declared nobody claims none. Raises
     ``OwnerPauseRefused`` without any write on refusal; any write failure
     propagates, so the caller never acknowledges an undurable Pause.
     """
@@ -217,8 +219,9 @@ def install_fence(root_drive: Any, root_task_id: str, *, request_id: str,
     from ouroboros.task_store import patch_document
     from ouroboros.utils import utc_now_iso
 
-    from ouroboros.control_actor import control_actor
-    attribution = control_actor()
+    from ouroboros.control_actor import control_actor, pause_author
+    declared = {"by": dict(by)} if by else {}
+    attribution = {**control_actor(), **declared}
     outcome: Dict[str, Any] = {}
 
     def update(current: dict) -> Optional[dict]:
@@ -243,13 +246,13 @@ def install_fence(root_drive: Any, root_task_id: str, *, request_id: str,
             raise OwnerPauseRefused("task_terminal")
         if fence_closed(old) and not _resume_outstanding(actor_current if actor_current is not None else current, old):
             requests[request_id] = {**attribution, "fence_id": old["fence_id"], "generation": old.get("generation")}
-            fence = {**old, "requests": requests}
+            fence = {**old, **({} if pause_author(old)["actor"] else declared), "requests": requests}
             outcome.update(fence=fence, created=False)
             return stamp_task_result_schema({**current, "owner_pause": fence})
         fence = {
             **attribution, "fence_id": uuid.uuid4().hex, "request_id": str(request_id or ""),
-            # ``owner`` for the owner's own press; a stop door names itself
-            # (``server_shutdown``, ``owner_restart``): the next start reads it.
+            # ``owner``: this owner Pause control, whoever pressed it (``by`` is who declared the press);
+            # a stop door names itself (``server_shutdown``, ``owner_restart``): the next start reads it.
             "state": FENCE_REQUESTED, "requested_by": str(requested_by or "owner"), "requested_at": utc_now_iso(),
             "requested_at_ts": time.time(), "root_task_id": str(root_task_id),
             "generation": int(old.get("generation") or 0) + 1,
@@ -315,7 +318,7 @@ def set_fence_state(root_drive: Any, root_task_id: str, *, fence_id: str, state:
         fence = {**old, **fields, "state": state, f"{state}_at": utc_now_iso()}
         written.update(fence)
         from ouroboros.pause_notices import notice_fields
-        notice = (notice_fields(current, root_drive, root_task_id, fence_id, "owner")
+        notice = (notice_fields(current, root_drive, root_task_id, fence_id, "owner", fence=fence)
                   if state == FENCE_PAUSED and old.get("state") != FENCE_PAUSED else {})
         return stamp_task_result_schema({**current, **notice, "owner_pause": fence})
 

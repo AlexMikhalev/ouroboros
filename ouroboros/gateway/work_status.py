@@ -5,12 +5,23 @@ Continue episode and every live member (helper tasks, delegated runs still worki
 answer upkeep still in flight). The census (``gateway/state.py``) keeps its
 frozen per-root rows; this module groups the same facts into works and gives
 each work one state: an activity word from a closed set, typed reasons with one
-English sentence each, whose turn it is, and what can release it. Every surface
-and Ouroboros's own context read the result; none derives a word of its own.
+English sentence each, its tails, whose turn it is, and what can release it.
+Every surface and Ouroboros's own context read the result; none derives a word
+of its own.
+
+The word and its reason describe one subject. While the current episode lives,
+the word is the episode's own state and its reason the episode's; what still runs
+beside it (helpers, external runs, review work beside an episode that does not
+execute, runs nobody can confirm) is a typed ``tails`` list, said as a second fact and never promoted into
+the word: a paused episode whose review still finishes reads Paused with
+"Review work finishing", not Working. ``live`` says whether anything actually
+executes, which the room's mark shows. Only an ended episode, or a Continue held
+for its earlier attempt, takes its word from what still runs.
 
 The vocabulary splits by what releases a state. ``paused`` stays until someone
-presses Resume, and its reason says who or what stopped it (the owner,
-Ouroboros, the app stopping, the spending limit, a technical problem).
+presses Resume, and its reason says who or what stopped it: the author a Pause
+declared (the owner's press, Ouroboros's own sentence), the app stopping, the
+spending limit, a technical problem; a Pause that declared nobody names nobody.
 ``waiting`` continues when what it waits for happens: helpers of an earlier
 attempt finishing, a model becoming available, the owner's sign-in or answer.
 ``turn`` names what waits for the owner; ``release`` says who can move it.
@@ -47,17 +58,19 @@ REASON_TEXT = {
     "project_admission": "Waiting for Project verification",
     "queued": "Waiting for a free worker",
     "sleeping": "Sleeping until it is woken",
-    "paused_by_owner": "Paused by you",
-    "paused_by_mind": "Paused by Ouroboros",
-    "paused_by_host": "Paused while the app stopped",
-    "saved_on_stop": "Saved when the app stopped; Resume continues it",
-    "after_restart": "Held after a restart; Resume continues it",
-    "after_panic": "Stopped by Panic; Resume continues it",
+    # A decided Pause says its declared author; the Resume button already says how it continues.
+    "paused_by_owner": "You paused it",
+    "paused_by_mind": "Ouroboros paused it",
+    "paused_unattributed": "",
+    "saved_on_stop": "Saved when the app stopped",
+    "after_restart": "Held after a restart",
+    "after_panic": "Stopped by Panic",
     "spending_limit": "Spending limit reached",
-    "technical_pause": "Paused after a technical problem; Resume continues it",
+    "technical_pause": "After a technical problem",
     "awaiting_selection": "Waiting for Ouroboros or you to resume it",
     "restore_failed": "Its saved state could not be restored",
     "review_work_finishing": "Review work finishing",
+    "external_runs_unconfirmed": ("1 external run may still be running", "{count} external runs may still be running"),
     "held": "Held",
 }
 
@@ -73,7 +86,7 @@ def reason(code: str, *, count: Optional[int] = None, ids: Iterable[str] = (), s
     if isinstance(phrase, tuple):
         text = phrase[0] if count == 1 else phrase[1].format(count=count)
     else:
-        text = phrase or code
+        text = phrase if phrase is not None else code
     if code == "held" and raw:
         text = f"Held: {raw}"
     row: Dict[str, Any] = {"code": code, "text": text}
@@ -128,29 +141,40 @@ def _call(row: Mapping[str, Any]) -> str:
     return "working"
 
 
-def _paused_by(fence: Mapping[str, Any]) -> str:
-    if fence.get("actor") == "mind":
-        return "mind"
-    requested = str(fence.get("requested_by") or "owner")
-    return "owner" if requested == "owner" else "host"
+_PAUSE_CODES = {"owner": "paused_by_owner", "ouroboros": "paused_by_mind"}
+
+
+def _decided_pause(author: Mapping[str, Any], since: Any) -> Dict[str, Any]:
+    """The reason of a Pause someone decided: its declared author and, for Ouroboros, its own sentence."""
+    actor = str(author.get("actor") or "")
+    entry = reason(_PAUSE_CODES.get(actor, "paused_unattributed"), since=author.get("at") or since)
+    text = str(author.get("text") or "").strip()
+    if actor == "ouroboros" and text:
+        entry["text"] = f"Ouroboros: {text}"
+    if actor:
+        entry["by"] = {"actor": actor, "text": text, "at": author.get("at") or ""}
+    return entry
 
 
 def classify_member(row: Mapping[str, Any], raw: Optional[Mapping[str, Any]] = None) -> Dict[str, Any]:
     """Classify one census row (``decision_owners`` shape) with the raw facts the census drops.
 
-    ``raw`` carries the queue row's hold and pause records, the owner fence's attribution and the
-    task's own identity facts (see ``work_projection``). Returns the member's own state only."""
+    ``raw`` carries the queue row's hold and pause records, the declared author of the tree's Pause
+    (``pause_by``, ``control_actor.pause_author``), the members that Pause already parked and the task's
+    own identity facts (see ``work_projection``), ``running`` when the queue runs it, and ``sent_review`` while a
+    review it sent from a warm park still runs. Returns the member's
+    own state only; ``live`` says whether the member itself executes now: under a settling Pause only a running
+    member the Pause has not parked does, never a queued one or one that already saved its place."""
     raw = raw or {}
     task_id = str(row.get("activity_id") or "")
     phase = str(row.get("phase") or "unknown")
     state: Dict[str, Any] = {"task_id": task_id, "activity": "unknown", "transition": "none", "call": "",
-                             "reasons": [], "turn": [], "release": "self", "paused_by": None, "confirmed": True}
+                             "reasons": [], "turn": [], "release": "self", "confirmed": True, "live": False}
     if phase == "unknown":
         state["confirmed"] = False
         return state
     hold = raw.get("hold") if isinstance(raw.get("hold"), dict) else {}
     hold = {} if hold.get("selected") else hold
-    fence = raw.get("fence") if isinstance(raw.get("fence"), dict) else {}
     since = raw.get("paused_at") or row.get("started_at") or None
     if phase in {"budget_paused", "budget_pausing"}:
         cause = str(row.get("pause_cause") or "unknown")
@@ -163,9 +187,9 @@ def classify_member(row: Mapping[str, Any], raw: Optional[Mapping[str, Any]] = N
         elif hold_reason in _RESTART_HOLDS:
             code = _RESTART_HOLDS[hold_reason]
         elif cause == "owner":
-            state["paused_by"] = _paused_by(fence)
-            code = f"paused_by_{state['paused_by']}"
-            release = "mind" if state["paused_by"] == "mind" else "owner"
+            author = raw.get("pause_by") if isinstance(raw.get("pause_by"), dict) else {}
+            code = _PAUSE_CODES.get(str(author.get("actor") or ""), "paused_unattributed")
+            release = "mind" if code == "paused_by_mind" else "owner"
         elif cause == "budget":
             code = "spending_limit"
         elif cause == "authority":
@@ -175,19 +199,24 @@ def classify_member(row: Mapping[str, Any], raw: Optional[Mapping[str, Any]] = N
         elif hold_reason.startswith("restore_refused:"):
             code, release = "restore_failed", "none"
         elif cause == "sleep":
-            code, activity = "sleeping", "waiting"
+            code, activity, release = "sleeping", "waiting", "self"
         elif cause == "restart":
             code = "after_restart"
         else:
             code, release = "held", "none"
-        state["reasons"].append(reason(code, since=since, raw=hold_reason or cause))
+        if code in _PAUSE_CODES.values() or code == "paused_unattributed":
+            state["reasons"].append(_decided_pause(raw.get("pause_by") or {}, since))
+        else:
+            state["reasons"].append(reason(code, since=since, raw=hold_reason or cause))
         if phase == "budget_pausing" and activity == "paused":
-            state.update(activity="working", transition="pausing", call="")
+            # Still finishing its step unless the settling Pause already parked it.
+            state.update(activity="working", transition="pausing", call="",
+                         live=bool(raw.get("running")) and task_id not in set(raw.get("parked") or ()))
         else:
             state["activity"] = activity
         state["release"] = release
-        if row.get("finishing_reviews"):
-            state["reasons"].append(reason("review_work_finishing"))
+        # Reviews the Pause lets finish are the work's tail, never the episode's reason.
+        state["reviews_finishing"] = bool(row.get("finishing_reviews") or raw.get("sent_review"))
         # Main's attention rule (main_decisions.owner_actions) is the turn: the census's explicit-Resume rule.
         if _owner_actions(row)[1]:
             state["turn"].append({"kind": "action", "task_id": task_id, "code": code})
@@ -232,10 +261,10 @@ def classify_member(row: Mapping[str, Any], raw: Optional[Mapping[str, Any]] = N
         state["reasons"].append(reason("queued"))
         return state
     if phase == "finalizing":
-        state.update(activity="working", transition="finalizing")
+        state.update(activity="working", transition="finalizing", live=True)
         return state
     if phase in {"working", "thinking", "preparing"}:
-        state.update(activity="working", call=_call(row))
+        state.update(activity="working", call=_call(row), live=True)
         return state
     state["confirmed"] = False
     return state
@@ -244,7 +273,7 @@ def classify_member(row: Mapping[str, Any], raw: Optional[Mapping[str, Any]] = N
 # Pauses the owner's Resume door releases: an owner/mind/host Pause over the tree, an explicit-Resume hold,
 # a budget checkpoint, or a member waiting for selection. A writer hold releases itself; an unrestorable or
 # unread hold has no Resume the door would accept (it answers cancel_or_new_run).
-_RESUMABLE_CODES = {"paused_by_owner", "paused_by_mind", "paused_by_host", "saved_on_stop", "after_restart",
+_RESUMABLE_CODES = {"paused_by_owner", "paused_by_mind", "paused_unattributed", "saved_on_stop", "after_restart",
                     "after_panic", "spending_limit", "technical_pause", "awaiting_selection"}
 _RUNNING_PHASES = {"working", "thinking", "preparing", "finalizing"}
 
@@ -299,9 +328,15 @@ def _outcome(row: Mapping[str, Any]) -> str:
     return str(lifecycle.get("status") or row.get("status") or "")
 
 
-def mark_of(activity: str, confirmed: bool) -> str:
+def mark_of(activity: str, confirmed: bool, *, live: bool = False, unknown: bool = False) -> str:
     """The shape a work or a room shows on every surface (docs/DESIGN.md "Status marks"): what the work does, never
-    whose move it is (that is ``turn``). Work that is observed running keeps moving even in an incomplete read."""
+    whose move it is (that is ``turn``). ``live`` (something actually executes) moves the mark whatever the word; an
+    execution nobody can confirm draws a ring while nothing else moves. Work that is observed running keeps moving
+    even in an incomplete read."""
+    if live:
+        return "moving"
+    if unknown:
+        return "ring"
     if activity == "working":
         return "moving"
     if not confirmed:
@@ -309,72 +344,125 @@ def mark_of(activity: str, confirmed: bool) -> str:
     return {"queued": "still", "waiting": "still", "paused": "pause", "idle": "none"}.get(activity, "ring")
 
 
+# Tail kinds: what still runs beside (or after) the current episode, each said by one REASON_TEXT sentence.
+RUN_KINDS = ("run", "review")
+TAIL_STATES = ("live", "unknown")
+# A run whose own task ended this way may outlive it unobserved: its liveness is unconfirmed, not running.
+_FAILED_OWNER = frozenset({"failed", "cancelled"})
+
+
+def run_tail(source: Any, owner: Optional[Mapping[str, Any]], *, stop_unknown: bool = False) -> tuple:
+    """How one open delegated run is said beside its work, ``(kind, state)``: the one typing the server's work
+    projection and Ouroboros's own roster share. A review-owned ``source`` is review work; a run nobody can confirm
+    is one whose own task (``owner``, its stored result) ended failed or cancelled, or whose stop that task's live
+    Pause could not confirm (``stop_unknown``, ``external_runs.EXTERNAL_STOP_UNKNOWN``); every other open run is
+    live. Facts the readers already hold, never a new probe."""
+    from ouroboros.delegate_registration_policy import review_owned_source
+
+    if review_owned_source(source):
+        return "review", "live"
+    return "run", "unknown" if stop_unknown or _outcome(owner or {}) in _FAILED_OWNER else "live"
+
+
+def _tail(kind: str, code: str, ids: List[str], *, state: str = "live", count: Optional[int] = None) -> Dict[str, Any]:
+    entry = reason(code, count=len(ids) if count is None else count, ids=ids)
+    entry.update(kind=kind, state=state)
+    if code == "review_work_finishing":
+        entry.pop("count", None)  # the fence names reviewed tasks, never a reviewer count
+    return entry
+
+
+def work_tails(helper_ids: List[str], runs: Iterable[Mapping[str, Any]], *, reviewing: bool = False,
+               named: Iterable[str] = ()) -> List[Dict[str, Any]]:
+    """What still runs beside an episode, in the order and words every reader says it: working helpers, live
+    external runs, review work (never beside an episode that executes), runs nobody can confirm. ``runs`` are
+    typed by ``run_tail``; ``named`` holds the kinds the episode's own sentence already says (a Continue held for
+    its earlier attempt)."""
+    runs = [run for run in runs if run.get("kind") in RUN_KINDS and run.get("state") in TAIL_STATES]
+    live = [str(run["run_id"]) for run in runs if run["kind"] == "run" and run["state"] == "live"]
+    reviews = [str(run["run_id"]) for run in runs if run["kind"] == "review" and run["state"] == "live"]
+    unknown = [str(run["run_id"]) for run in runs if run["state"] == "unknown"]
+    tails: List[Dict[str, Any]] = []
+    if helper_ids and "helper" not in named:
+        tails.append(_tail("helper", "helpers_running", list(helper_ids)))
+    if live and "run" not in named:
+        tails.append(_tail("run", "delegated_running", live))
+    if reviewing or reviews:
+        tails.append(_tail("review", "review_work_finishing", reviews))
+    if unknown:
+        tails.append(_tail("run", "external_runs_unconfirmed", unknown, state="unknown"))
+    return tails
+
+
 def roll_up_work(work_id: str, members: List[Dict[str, Any]], *, episode: Mapping[str, Any],
-                 name: str = "", room: Any = None, focus: Any = None, delegated: int = 0,
+                 name: str = "", room: Any = None, focus: Any = None, runs: Iterable[Mapping[str, Any]] = (),
                  outcome: str = "", gaps: Iterable[Dict[str, Any]] = ()) -> Dict[str, Any]:
-    """One work from its classified members.
+    """One work from its classified members and its open delegated runs.
 
     ``episode`` is the current episode: ``{task_id, live, state?}`` — ``state`` is its own classified
     member when the episode root is live; an ended episode carries only its outcome. Helpers of any
-    episode are the other members."""
+    episode are the other members. ``runs`` are the work's unsettled delegated runs as
+    ``{run_id, kind: run|review, state: live|unknown}`` (``work_projection`` types them)."""
     gaps = list(gaps)
     current = episode.get("state") if isinstance(episode.get("state"), dict) else None
+    # Review work is a tail beside an episode that is not executing; a running episode's own review is its own work.
+    executing = bool(current is not None and current.get("live") and current["transition"] != "pausing")
+    runs = [run for run in runs if run.get("kind") in RUN_KINDS and run.get("state") in TAIL_STATES
+            and not (executing and run["kind"] == "review")]
     helpers = [member for member in members if member is not current]
-    working_helpers = [member for member in helpers if member["activity"] == "working"]
-    lead = current if current is not None else (min(members, key=lambda m: _rank(m["activity"])) if members else None)
-    reasons: List[Dict[str, Any]] = []
-    turn: List[Dict[str, Any]] = []
-    if lead is not None and (current is not None or not working_helpers):
-        reasons.extend(lead["reasons"])
-    held = [entry for entry in reasons if entry.get("code") == "earlier_work_unconfirmed"]
-    if held and working_helpers:
-        reasons = [reason("earlier_attempt_finishing", count=len(working_helpers),
-                          ids=[member["task_id"] for member in working_helpers])
-                   if entry.get("code") == "earlier_work_unconfirmed" else entry for entry in reasons]
-    elif held and delegated:
-        reasons = [reason("earlier_runs_finishing", count=delegated)
-                   if entry.get("code") == "earlier_work_unconfirmed" else entry for entry in reasons]
-    elif current is None and working_helpers:
-        reasons.append(reason("helpers_running", count=len(working_helpers),
-                              ids=[member["task_id"] for member in working_helpers]))
-    elif delegated and not working_helpers:
-        reasons.append(reason("delegated_running", count=delegated))
-    for member in members:
-        turn.extend(member["turn"])
-    known = [member["activity"] for member in members if member["activity"] != "unknown"]
-    if delegated:
-        known.append("working")
-    activity = min(known, key=_rank) if known else "unknown"
-    working = [member for member in members if member["activity"] == "working"]
-    transitions = {member["transition"] for member in working}
-    transition = "none"
-    if activity == "working" and working and not delegated:
-        if transitions == {"finalizing"}:
-            transition = "finalizing"
-        elif "pausing" in transitions and "none" not in transitions:
-            transition = "pausing"
-    calls = {member["call"] for member in working if member["call"]}
-    call = calls.pop() if len(calls) == 1 and not delegated else ""
-    if activity == "working":
-        release = "self"
-    elif lead is not None:
-        release = lead["release"]
+    working_helpers = [member for member in helpers if member["activity"] == "working" and member["live"]]
+    helper_ids = [member["task_id"] for member in working_helpers]
+    live_runs = [str(run["run_id"]) for run in runs if run["kind"] == "run" and run["state"] == "live"]
+    review_runs = [str(run["run_id"]) for run in runs if run["kind"] == "review" and run["state"] == "live"]
+    unknown_runs = [str(run["run_id"]) for run in runs if run["state"] == "unknown"]
+    reviewing = bool(review_runs) or any(member.get("reviews_finishing") for member in members)
+    turn = [item for member in members for item in member["turn"]]
+    held = current is not None and any(entry.get("code") == "earlier_work_unconfirmed" for entry in current["reasons"])
+    named = set()  # tails a held Continue already names in its own sentence
+    if current is not None and held and (helper_ids or live_runs):
+        # A Continue held for its earlier attempt says what it waits for: those helpers or runs (owner's 17.10 words).
+        sentence = (reason("earlier_attempt_finishing", count=len(helper_ids), ids=helper_ids) if helper_ids
+                    else reason("earlier_runs_finishing", count=len(live_runs)))
+        reasons = [sentence if entry.get("code") == "earlier_work_unconfirmed" else entry for entry in current["reasons"]]
+        activity, transition, call, release = "working", "none", "", "self"
+        named = {"helper", "run"}
+    elif current is not None:
+        # The live episode speaks: its word, its reason; what runs beside it is a tail, never its word.
+        reasons = list(current["reasons"])
+        activity, transition, call, release = current["activity"], current["transition"], current["call"], current["release"]
+    elif working_helpers or live_runs or reviewing:
+        # The episode ended: what still runs is all there is.
+        reasons, activity, release = [], "working", "self"
+        transitions = {member["transition"] for member in working_helpers}
+        transition = "finalizing" if transitions == {"finalizing"} else (
+            "pausing" if "pausing" in transitions and "none" not in transitions and not live_runs else "none")
+        calls = {member["call"] for member in working_helpers if member["call"]}
+        call = calls.pop() if len(calls) == 1 and not live_runs else ""
+    elif members:
+        lead = min(members, key=lambda member: _rank(member["activity"]))
+        reasons = list(lead["reasons"])
+        activity, transition, call, release = lead["activity"], lead["transition"], lead["call"], lead["release"]
     else:
-        release = "none"
+        # Only runs nobody can confirm remain: the work stays listed (its Stop reaches them), its word unconfirmed.
+        reasons, activity, transition, call, release = [], "unknown", "none", "", "none"
+    tails = work_tails(helper_ids, runs, reviewing=reviewing, named=named)
+    episode_live = bool(current is not None and current.get("live"))
+    live = episode_live or bool(working_helpers or live_runs or reviewing)
     if turn:
         release = "owner"
     work: Dict[str, Any] = {
         "work_id": work_id, "room": room, "name": name,
         "episode": {"task_id": str(episode.get("task_id") or work_id), "live": bool(current is not None)},
         "activity": activity, "transition": transition, "call": call,
-        "because": reasons, "turn": turn, "release": release,
-        "paused_by": lead.get("paused_by") if lead is not None and activity == "paused" else None,
-        "members": {"working": len(working_helpers), "waiting": sum(member["activity"] in {"waiting", "queued"}
-                                                                    for member in helpers),
-                    "delegated": int(delegated), "ids": [member["task_id"] for member in members]},
+        "because": reasons, "tails": tails, "live": live, "turn": turn, "release": release,
+        "members": {"ids": [member["task_id"] for member in members]},
         "confirmed": all(member["confirmed"] for member in members) and not gaps,
     }
-    work["mark"] = mark_of(activity, work["confirmed"])
+    # The work's own mark follows its episode (the Paused mark lights when the tasks are parked; what they let
+    # finish, or a run nobody can confirm, is the line beside it); an ended episode's mark follows what still runs.
+    # The room's mark moves while anything in it runs (roll_up_room).
+    work["mark"] = mark_of(activity, work["confirmed"], live=episode_live if current is not None else live,
+                           unknown=current is None and bool(unknown_runs) and not live)
     if outcome:
         work["outcome"] = outcome
     if isinstance(focus, dict) and str(focus.get("text") or "").strip():
@@ -385,7 +473,9 @@ def roll_up_work(work_id: str, members: List[Dict[str, Any]], *, episode: Mappin
 
 
 def roll_up_room(works: List[Mapping[str, Any]], *, complete: bool = True) -> Dict[str, Any]:
-    """One room from its works: the most active work speaks; whose turn it is never replaces it."""
+    """One room from its works: the most active work speaks; whose turn it is never replaces it. The mark moves
+    while anything in the room actually runs, a paused work's finishing review included: in a room, motion wins and
+    each work's row says the rest."""
     if not works:
         activity = "idle" if complete else "unknown"
         return {"activity": activity, "transition": "none", "call": "", "turn": [], "amber": False,
@@ -402,8 +492,10 @@ def roll_up_room(works: List[Mapping[str, Any]], *, complete: bool = True) -> Di
     calls = {work["call"] for work in working if work.get("call")}
     turn = [{"work_id": work["work_id"], **item} for work in works for item in work["turn"]]
     confirmed = complete and all(work["confirmed"] for work in works)
+    live = any(work.get("live") for work in works)
+    unknown = any(tail.get("state") == "unknown" for work in works for tail in work.get("tails") or ())
     return {"activity": activity, "transition": transition, "call": calls.pop() if len(calls) == 1 else "",
-            "turn": turn, "amber": bool(turn), "mark": mark_of(activity, confirmed),
+            "turn": turn, "amber": bool(turn), "mark": mark_of(activity, confirmed, live=live, unknown=unknown),
             "confirmed": confirmed, "works": [work["work_id"] for work in works]}
 
 

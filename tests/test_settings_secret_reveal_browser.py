@@ -9,6 +9,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.ui_chat_viewport_smoke import wait_drawer_closed
+
 pytest_plugins = ("tests.test_ui_smoke_playwright",)
 
 ANTHROPIC = "sk-ant-api03-SYNTHETIC-" + "0123456789abcdef" * 7 + "-END"
@@ -108,7 +110,7 @@ def test_saved_secret_show_preserves_settings_and_drafts(direct_server_with_data
                 if menu.is_visible():
                     if menu.get_attribute("aria-expanded") == "true":
                         menu.click()
-                    page.wait_for_function("document.getElementById('primary-sidebar').getBoundingClientRect().right <= 1")
+                    wait_drawer_closed(page)
                 preview.scroll_into_view_if_needed()
                 expect(preview).to_have_text(ANTHROPIC)
                 assert page.locator(".settings-scroll").evaluate("e => e.scrollWidth <= e.clientWidth + 1")

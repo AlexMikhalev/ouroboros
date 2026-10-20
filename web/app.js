@@ -301,7 +301,7 @@ function syncNavigationState() {
         button.setAttribute('aria-expanded', drawerOpen ? 'true' : 'false');
     });
     syncDrawerScrim(drawerOpen);
-    // In the stack layout the closed drawer is off screen: inert and out of the tab order.
+    // In the stack layout the closed drawer lies under the room: inert and out of the tab order.
     if (primarySidebar) primarySidebar.inert = isStackLayout() && !drawerOpen;
     // The drawer is a modal layer (its scrim stays live); the Project panel's layer, modal only where it covers the
     // room (stack), is pushed below once the panel is shown.
@@ -390,9 +390,22 @@ document.addEventListener('click', (event) => {
     setMobileDrawerOpen(!navState.mobileDrawerOpen);
 });
 navDrawerBackdrop?.addEventListener('click', () => setMobileDrawerOpen(false));
+// On a phone the room is the card the drawer pushes aside (style.css, owner 19.10 1A): Main, and a Project open over
+// it, move with the drawer, and a veil of each room's own fades its words (one box per frame: --drawer-p is not
+// inherited, so neither a child nor a pseudo-element of the room could follow the finger).
+const roomEl = document.getElementById('content');
+const roomVeils = new Map([roomEl, projectPanel].filter(Boolean).map((room) => {
+    const veil = document.createElement('div');
+    veil.className = 'room-veil';
+    veil.setAttribute('aria-hidden', 'true');
+    room.append(veil);
+    return [room, veil];
+}));
+const movingRooms = () => [roomEl, projectPanel?.classList.contains('open') ? projectPanel : null]
+    .filter(Boolean).flatMap((room) => [room, roomVeils.get(room)]);
 // The drawer follows a finger (drawer_drag.js; DRAWER_DRAG switches it off); ☰ and × remain its controls.
 const disposeDrawerDrag = DRAWER_DRAG ? bindDrawerDrag({
-    sidebar: primarySidebar, scrim: navDrawerBackdrop,
+    sidebar: primarySidebar, scrim: navDrawerBackdrop, also: movingRooms,
     isOpen: () => navState.mobileDrawerOpen, setOpen: (open) => setMobileDrawerOpen(open),
     isStack: () => isStackLayout(), isCoarse: () => window.matchMedia('(pointer: coarse)').matches,
     onGrab: releaseDrawerScrim, onLayout: (sync) => onLayoutChange(() => sync()), onSnap: () => haptic('snap'),

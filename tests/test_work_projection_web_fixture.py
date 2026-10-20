@@ -28,6 +28,7 @@ def _row(task_id, phase="working", **extra):
 
 
 _HOLD = {"_budget_pause_hold": {"reason": "continuation_writer_unsettled"}}
+_RUNNING = {"running": True}  # the census's RUNNING fact (gateway/state.py): the member executes now
 
 # name -> (census owner rows, raw queue facts, stored task results, held delegated runs)
 CASES = {
@@ -67,7 +68,28 @@ CASES = {
     ),
     "queued_and_pausing": (
         [_row("q", "queued", started_at=90.0), _row("z", "budget_pausing", pause_cause="owner")],
-        {}, {}, {},
+        {"z": _RUNNING}, {}, {},
+    ),
+    # The owner's Pause still settles: the root and one helper finish their step; a helper that never started is
+    # queued, not working, so only the running one is said.
+    "pausing_with_queued_helper": (
+        [_row("pr", "budget_pausing", pause_cause="owner"),
+         *[_row(task, "budget_pausing", pause_cause="owner", parent_task_id="pr", root_task_id="pr")
+           for task in ("pc-run", "pc-new")]],
+        {"pr": _RUNNING, "pc-run": _RUNNING}, {}, {},
+    ),
+    # Two works in one room: the room says Working for the one that runs, never the newer one's Pause reason.
+    "two_works_one_pausing": (
+        [_row("wb", suggested_name="Write the notes"), _row("wa", "budget_pausing", pause_cause="owner", started_at=200.0)],
+        {"wb": _RUNNING, "wa": _RUNNING}, {}, {},
+    ),
+    # A running task's own review is its own work: no tail beside it.
+    "working_with_review": (
+        [_row("wr")], {"wr": _RUNNING}, {}, {"wr": [{"run_id": "run-own-review", "source": "review_substrate"}]},
+    ),
+    # The owner's Pause could not confirm the stop of the task's own run: Paused, with that run said unconfirmed.
+    "paused_stop_unknown": (
+        [_row("so", "budget_paused", pause_cause="owner", can_resume=False)], {}, {}, {"so": ["run-s"]},
     ),
     "finalizing_failed": (
         [_row("f", "finalizing", status="failed", outcome_axes={"lifecycle": {"status": "failed"}})],
@@ -84,17 +106,41 @@ CASES = {
         [_row("h", parent_task_id="p", root_task_id="p")], {},
         {"p": {"task_id": "p", "status": "completed", "chat_id": 42}}, {},
     ),
+    # The 20.10 card: the owner's Pause settled while a review it lets finish still runs. Paused, never Working.
+    "paused_review_finishing": (
+        [_row("rv", "budget_paused", pause_cause="owner", can_resume=False, finishing_reviews=True)], {}, {},
+        {"rv": [{"run_id": "run-review", "source": "review_substrate"}]},
+    ),
+    # A run whose own task failed and that nobody can confirm: unconfirmed, listed with its Stop.
+    "unconfirmed_run": (
+        [], {}, {"x": {"task_id": "x", "status": "failed", "chat_id": 42}, "x-h": {"task_id": "x-h", "status": "failed"}},
+        {"x": [{"run_id": "run-u", "task_id": "x-h"}]},
+    ),
+    # A Pause pressed through the API with no declared author names nobody.
+    "paused_unattributed": (
+        [_row("n", "budget_paused", pause_cause="owner", can_resume=False)], {}, {}, {},
+    ),
 }
 
-# The owner fence records who paused: the owner, or Ouroboros itself (the mind's own Pause).
-FENCES = {"o": {"requested_by": "owner"}, "m": {"requested_by": "owner", "actor": "mind", "actor_task_id": "mind-1"},
-          "z": {"requested_by": "owner"}}
+# The owner fence records who declared the Pause: the owner's own press, or Ouroboros with its sentence (here a
+# fence written before ``by`` existed). An undeclared press ("n") names nobody.
+_PRESSED = "2026-10-17T15:00:00Z"
+FENCES = {"o": {"by": {"actor": "owner", "text": "", "at": _PRESSED}, "requested_at": _PRESSED},
+          "m": {"requested_by": "owner", "actor": "mind", "actor_task_id": "mind-1",
+                "reason": "pause before the update you asked for", "requested_at": _PRESSED},
+          "z": {"by": {"actor": "owner", "text": "", "at": _PRESSED}, "requested_at": _PRESSED},
+          "rv": {"by": {"actor": "owner", "text": "", "at": _PRESSED}, "requested_at": _PRESSED},
+          "n": {"requested_by": "owner", "requested_at": _PRESSED},
+          **{task: {"by": {"actor": "owner", "text": "", "at": _PRESSED}, "requested_at": _PRESSED}
+             for task in ("pr", "wa", "so")}}
+# The runs whose stop a task's live Pause could not confirm (its pause row's ``external_runs``).
+STOPS = {"so": ["run-s"]}
 
 
 def project(name):
     """The ``/api/state`` work fields the server builds for one case."""
     owners, raw, stored, held = CASES[name]
-    return work_fields(owners, raw, results=stored, fences=FENCES, held=held)
+    return work_fields(owners, raw, results=stored, fences=FENCES, held=held, stops=STOPS)
 
 
 def reason_sentences():
@@ -116,7 +162,9 @@ def test_the_web_fixture_is_the_servers_projection():
 @pytest.mark.parametrize("name, activity", [
     ("held_continue", "working"), ("direct_question", "waiting"), ("paused_by_owner", "paused"),
     ("spending_limit", "paused"), ("queued_and_pausing", "working"), ("unknown", "unknown"),
-    ("helper_after_parent", "working"),
+    ("helper_after_parent", "working"), ("paused_review_finishing", "paused"), ("unconfirmed_run", "unknown"),
+    ("paused_unattributed", "paused"), ("pausing_with_queued_helper", "working"), ("two_works_one_pausing", "working"),
+    ("working_with_review", "working"), ("paused_stop_unknown", "paused"),
 ])
 def test_each_fixture_room_is_the_state_its_name_says(name, activity):
     """The fixture is meaningful, not merely equal: each room is the case the web tests read it as."""

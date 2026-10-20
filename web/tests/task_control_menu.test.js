@@ -74,6 +74,25 @@ test('Pause retries an unknown answer with the same id, then a new action gets a
     assert.match(menuSrc, /anchor\.dataset\?\.id \|\| anchor\.closest\?\.\('\[data-task-id\]'\)/);
 });
 
+test("the owner's Pause press declares the owner through the shared client, the same on its retry", async () => {
+    const prior = globalThis.fetch;
+    const posts = [];
+    globalThis.fetch = async (url, init) => {
+        posts.push([url, init.method, JSON.parse(init.body)]);
+        const latch = posts.length === 1;
+        return { ok: true, status: latch ? 202 : 200, json: async () => ({ ok: true, state: 'requested', latch_pending: latch }) };
+    };
+    try {
+        assert.equal(await pauseTaskAction('owner-root', { toast: () => {}, wait: async () => {} }), true);
+    } finally { globalThis.fetch = prior; }
+    assert.deepEqual(posts.map(([url, method]) => [url, method]),
+        [['/api/tasks/owner-root/pause', 'POST'], ['/api/tasks/owner-root/pause', 'POST']]);
+    const [[, , body], [, , retry]] = posts;
+    assert.match(body.request_id, /^pause-/);
+    assert.deepEqual(body, { request_id: body.request_id, actor: 'owner' }, 'the owner declares itself, with no text');
+    assert.deepEqual(retry, body, 'completing the same action repeats the same declared press');
+});
+
 test('Resume retires an unconfirmed Pause id, but a refused Resume leaves it retryable', async () => {
     const ids = [];
     const pause = async (_id, requestId) => { ids.push(requestId); throw new Error('response lost'); };

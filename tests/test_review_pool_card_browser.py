@@ -19,6 +19,7 @@ from ouroboros.agent_task_pipeline import _store_task_result
 from ouroboros.post_task_synthesis import _record_task_facts
 from tests.test_review_record_card_projection import _pool_record
 from tests.test_ui_smoke_playwright import _browser_missing, _open_review_checkpoint
+from tests.ui_chat_viewport_smoke import wait_drawer_closed
 
 pytest_plugins = ("tests.test_ui_smoke_playwright",)
 pytestmark = [pytest.mark.ui_browser, pytest.mark.serial]
@@ -59,10 +60,8 @@ def _go(page, place: str) -> None:
         page.locator("[data-mobile-nav-toggle]:visible").first.click()
         page.wait_for_function("() => document.body.classList.contains('nav-drawer-open')", timeout=10_000)
     page.click(f'[data-nav-page="{place}"]')
-    if phone:  # choosing a place closes the drawer; nothing is read until it has left the room
-        page.wait_for_function("() => !document.body.classList.contains('nav-drawer-open')"
-                               " && document.querySelector('#primary-sidebar').getBoundingClientRect().right <= 0",
-                               timeout=10_000)
+    if phone:  # choosing a place closes the drawer; nothing is read until the room has settled back over it
+        wait_drawer_closed(page, timeout=10_000)
 
 
 def _open_agents(page, url: str):

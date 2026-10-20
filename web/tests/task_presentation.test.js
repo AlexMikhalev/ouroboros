@@ -20,6 +20,7 @@ import {
     setInertCardPresentation,
     setLiveCardPhase,
     syncParkedPhase,
+    taskActivityPresentation,
 } from '../modules/task_phase_chip.js';
 import { ElementStub, TextStub } from './chat_dom_fixture.js';
 
@@ -623,45 +624,51 @@ test('Batch4: chat feeds every census phase to its card', () => {
     assert.match(hydrate, /syncParkedPhase\(record, v\.phase, v\);/);
 });
 
-test('an owner Pause shows the review work it lets finish, and the line clears when it ends', () => {
-    const record = chipRecord();
+test('an owner Pause says the review work it lets finish beside its word, and the line clears when it ends', () => {
+    const record = chipRecord({ phaseSecondaryEl: { textContent: '', hidden: true, isConnected: true } });
+    const line = () => [record.phaseSecondaryEl.textContent, record.phaseSecondaryEl.hidden];
     // The census `owner` cause also covers Ouroboros's own Pause: who paused is the work projection's to say.
     assert.equal(syncParkedPhase(record, 'budget_paused', { pause_cause: 'owner', finishing_reviews: true }), true);
-    assert.equal(record.phaseEl.textContent, 'Paused · review work finishing');
+    assert.deepEqual([record.phaseEl.textContent, ...line()], ['Paused', 'Review work finishing', false]);
+    assert.equal(record.attrs.get('aria-label'), 'Task status: Paused, Review work finishing', 'one status, said whole');
     assert.equal(syncParkedPhase(record, 'budget_paused', { pause_cause: 'owner', finishing_reviews: true }), false,
         'an unchanged fact writes nothing');
-    assert.doesNotMatch(record.phaseEl.textContent, /\d/, 'the census names tasks and sends alike: never a count');
+    assert.doesNotMatch(record.phaseSecondaryEl.textContent, /\d/, 'the census names tasks and sends alike: never a count');
     assert.equal(syncParkedPhase(record, 'budget_paused', { pause_cause: 'owner' }), true);
-    assert.equal(record.phaseEl.textContent, 'Paused');
+    assert.deepEqual([record.phaseEl.textContent, ...line()], ['Paused', '', true]);
     syncParkedPhase(record, 'budget_pausing', { pause_cause: 'owner', finishing_reviews: true });
-    assert.equal(record.phaseEl.textContent, 'Pausing…', 'only a settled Pause names finishing review work');
+    assert.deepEqual([record.phaseEl.textContent, ...line()], ['Pausing…', '', true],
+        'only a settled Pause names finishing review work');
 });
 
-test('pause causes come only from current typed facts, in their short reason words, and update without a phase transition', () => {
+test('a census pause says its word alone whatever its cause, and follows current typed facts without a phase transition', () => {
     const record = chipRecord();
-    for (const [pause_cause, label] of [['budget', 'Paused · spending limit'], ['owner', 'Paused'],
-        ['restart', 'Paused · app stopped'], ['authority', 'Paused · technical problem'], ['sleep', 'Waiting · sleeping']]) {
-        assert.equal(syncParkedPhase(record, 'budget_paused', { pause_cause }), true);
-        assert.equal(record.phaseEl.textContent, label);
+    for (const [pause_cause, label] of [['budget', 'Paused'], ['owner', 'Paused'], ['restart', 'Paused'],
+        ['authority', 'Paused'], ['future-cause', 'Paused'], ['sleep', 'Waiting']]) {
+        syncParkedPhase(record, 'budget_paused', { pause_cause });
+        assert.equal(record.phaseEl.textContent, label, pause_cause);
     }
-    syncParkedPhase(record, 'budget_paused', { pause_cause: 'future-cause' });
-    assert.equal(record.phaseEl.textContent, 'Paused', 'unknown cause stays generic');
+    // A cold sleep waits (still dots); every other cause holds its bars.
+    assert.equal(markOf(record.phaseEl), 'still/ink');
+    assert.equal(syncParkedPhase(record, 'budget_paused', { pause_cause: 'budget' }), true, 'the cause changed the look');
+    assert.equal(markOf(record.phaseEl), 'pause/ink');
     syncParkedPhase(record, 'budget_pausing', { pause_cause: 'budget' });
-    assert.equal(record.phaseEl.textContent, 'Pausing… · spending limit');
+    assert.equal(record.phaseEl.textContent, 'Pausing…');
     assert.equal(record.phaseEl.dataset.chipTone, 'neutral', 'submitted work settles without the live word');
     const late = desiredLiveCardPhase({ finalizingHold: true, observedOutcome: 'error',
-        parkedPhase: 'budget_paused', pauseCause: 'restart' });
-    assert.equal(late.text, 'Failed');
-    assert.equal(late.secondary, 'Paused · app stopped');
+        parkedPhase: 'budget_paused', pauseCause: 'restart', finishingReviews: true });
+    assert.deepEqual([late.text, late.secondary], ['Failed', 'Paused · Held after a restart · Review work finishing'],
+        'the outcome owns the chip; the pause, what holds it and what it lets finish stand beside it');
 });
 
-test('the card of a work\'s current episode says the work\'s word and reason; Stop and a closed socket still win', () => {
+test('the card of a work\'s current episode says the work\'s word and line; Stop and a closed socket still win', () => {
     const record = chipRecord();
-    record.workView = { phase: 'paused', text: 'Paused · by Ouroboros', secondary: '', classes: 'paused',
-        tone: 'neutral', waiting: true };
+    record.workView = { phase: 'paused', text: 'Paused', secondary: 'Ouroboros: pause before the update',
+        classes: 'paused', tone: 'neutral', waiting: true };
     record.workLook = { mark: 'pause', owner: false };
     assert.equal(syncParkedPhase(record, 'budget_paused', { pause_cause: 'owner' }), true);
-    assert.equal(record.phaseEl.textContent, 'Paused · by Ouroboros');
+    assert.equal(record.phaseEl.textContent, 'Paused');
+    assert.equal(desiredLiveCardPhase(record).secondary, 'Ouroboros: pause before the update');
     assert.equal(record.phaseEl.className, 'chat-live-phase paused');
     assert.deepEqual([markOf(record.phaseEl), record.phaseEl.dataset.chipTone], ['pause/ink', 'neutral'],
         'Ouroboros\'s Pause is not amber');
@@ -671,4 +678,22 @@ test('the card of a work\'s current episode says the work\'s word and reason; St
     record.workView = null;
     syncParkedPhase(record, 'budget_paused', { pause_cause: 'owner' });
     assert.equal(record.phaseEl.textContent, 'Paused', 'without its work the card keeps its own census words');
+});
+
+test('a census pause says its word alone and what holds it on its line, never who', () => {
+    const view = (pauseCause, phase = 'budget_paused') => taskActivityPresentation({ phase, pauseCause });
+    for (const [cause, word, line] of [
+        ['budget', 'Paused', 'Spending limit reached'],
+        ['restart', 'Paused', 'Held after a restart'],
+        ['authority', 'Paused', 'After a technical problem'],
+        ['sleep', 'Waiting', 'Sleeping until it is woken'],
+    ]) {
+        assert.deepEqual([view(cause).text, view(cause).secondary], [word, line], cause);
+    }
+    // The census's owner cause cannot tell the owner's Pause from Ouroboros's: the word alone, no line.
+    assert.deepEqual([view('owner').text, view('owner').secondary], ['Paused', undefined]);
+    assert.equal(view('owner', 'budget_pausing').text, 'Pausing…');
+    for (const cause of ['budget', 'restart', 'authority', 'sleep', 'owner']) {
+        assert.doesNotMatch(view(cause).text, / · /, `${cause}: the chip never carries a reason`);
+    }
 });

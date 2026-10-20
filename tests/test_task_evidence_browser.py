@@ -92,10 +92,11 @@ def test_speechless_history_and_direct_resume(direct_server_with_data, engine):
                 assert page.locator(".chat-bubble.assistant:not(.typing-bubble)").count() == 0
                 assert "24 tool calls" in card.inner_text()
                 assert "outcome unknown" not in card.inner_text(), "unrelated archives cannot unsettle known calls"
-                # The running direct turn's Pause is still settling: the work's word and who paused it.
+                # The running direct turn's Pause is still settling: the work's word alone (who paused is its line;
+                # this controlled row's press declared nobody).
                 turn = page.locator(f'.chat-live-card[data-task-id="{turn_id}"]')
                 turn.wait_for(state="visible")
-                page.wait_for_function("id => document.querySelector(`.chat-live-card[data-task-id='${id}'] [data-live-phase]`)?.textContent === 'Pausing… · by you'", arg=turn_id)
+                page.wait_for_function("id => document.querySelector(`.chat-live-card[data-task-id='${id}'] [data-live-phase]`)?.textContent === 'Pausing…'", arg=turn_id)
                 assert turn.locator("[data-resume-run]").count() == 0
                 assert turn.locator("[data-cancel-run]").is_visible()
                 page.screenshot(path=str(diagnostic_directory(root.parent, "task-evidence") / f"task-evidence-{engine}-{width}-pausing.png"), full_page=True)
@@ -105,7 +106,7 @@ def test_speechless_history_and_direct_resume(direct_server_with_data, engine):
                 resume = turn.locator("[data-resume-run]")
                 resume.wait_for(state="visible")
                 assert resume.inner_text() == "Resume"
-                assert turn.locator("[data-live-phase]").inner_text() == "Paused · by you"
+                assert turn.locator("[data-live-phase]").inner_text() == "Paused"
                 assert page.locator("#chat-messages").evaluate("el => el.scrollWidth <= el.clientWidth + 1")
                 assert resume.evaluate("el => { const r=el.getBoundingClientRect(); return r.left>=0 && r.right<=innerWidth; }")
                 turn.locator("[data-cancel-run]").click()
@@ -128,7 +129,7 @@ def test_speechless_history_and_direct_resume(direct_server_with_data, engine):
                 # refuses a turn with no resumable queue/fence authority.
                 resume.click()
                 page.locator(".toast", has_text="Resume refused").wait_for(state="visible")
-                assert turn.locator("[data-live-phase]").inner_text() == "Paused · by you"
+                assert turn.locator("[data-live-phase]").inner_text() == "Paused"
                 assert card.locator("[data-live-phase]").inner_text() == "Done"
                 context.close()
         finally:

@@ -11,6 +11,7 @@ import json
 import pytest
 
 from tests.test_emoji_free_browser import _browser, _open, _server
+from tests.ui_chat_viewport_smoke import wait_drawer_closed
 
 direct_server_with_data = _server
 pytestmark = [pytest.mark.ui_browser, pytest.mark.serial]
@@ -159,9 +160,9 @@ def test_storage_dashboard_real_server_consumer(direct_server_with_data, request
         page.set_viewport_size({"width": 390, "height": 844})
         if page.locator("body").evaluate("node => node.classList.contains('nav-drawer-open')"):
             if page.locator("#nav-drawer-backdrop").is_visible():
-                page.locator("#nav-drawer-backdrop").click(position={"x": 380, "y": 20})
+                page.locator("#nav-drawer-backdrop").click()  # the room's quarter, all the scrim covers
             page.wait_for_timeout(300)
-        page.wait_for_function("document.querySelector('#primary-sidebar').getBoundingClientRect().right <= 1")
+        wait_drawer_closed(page)
         page.screenshot(path=str(evidence / "storage-narrow.png"), full_page=True)
         body = page.locator("#page-storage .costs-scroll")
         overflow = body.evaluate("node => node.scrollWidth - node.clientWidth")

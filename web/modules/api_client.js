@@ -243,8 +243,11 @@ export function hurryTask(taskId, requestId) {
 }
 
 /**
- * Owner Pause of a whole task tree (Batch4): text-free like hurry — the body is
- * ONLY the stable request_id (the same id on retry is idempotent). The answer
+ * Owner Pause of a whole task tree (Batch4): the body is the stable request_id
+ * (the same id on retry is idempotent) and this client's declaration that the
+ * owner pressed it (`actor: "owner"`, no text), which the card words as "You
+ * paused it" and which grants no power. Every shell that opens the core's own
+ * page (a browser, the desktop window, the Telegram Mini App) sends it here. The answer
  * arrives after the root's durable fence landed; its `state` is `requested`
  * while members still settle, `paused` once saved, or `released` on replay
  * after that action was resumed. A 202 `latch_pending` answer is accepted
@@ -256,7 +259,7 @@ export function hurryTask(taskId, requestId) {
 export function pauseTask(taskId, requestId) {
     return jsonPost(
         `/api/tasks/${encodeURIComponent(taskId)}/pause`,
-        { request_id: String(requestId || '') },
+        { request_id: String(requestId || ''), actor: 'owner' },
         { rejectOkFalse: true },
     );
 }

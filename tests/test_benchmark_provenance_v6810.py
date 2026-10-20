@@ -714,6 +714,11 @@ _TRUNCATION_DECISIONS: dict[str, tuple[bool, str]] = {
         "gateway/task_hurry.py hurry ingress refusal (400, text-free contract); never a task terminal",
     ),
     "task_not_live": (False, "gateway/task_hurry.py hurry ingress refusal (404); never a task terminal"),
+    "pause_reason_invalid": (
+        False,
+        "gateway/task_pause.py refuses a declared Pause reason that is not text or exceeds 400 characters (HTTP 400); "
+        "nothing is written and no task transition happens",
+    ),
     # #Q-2b decision-ingress refusal codes — HTTP replies, never task terminals.
     "unknown_decision_family": (False, "gateway/task_decision.py ingress refusal (400)"),
     "decision_family_not_served": (False, "gateway/task_decision.py ingress refusal (501)"),

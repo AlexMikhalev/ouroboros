@@ -1372,10 +1372,7 @@
  * @typedef {Object} ScheduleDeleteResponse
  * @property {boolean} ok
  */
-/**
- * @typedef {Object} TaskPauseRequest
- * @property {string} request_id
- */
+/** @typedef {import('./task_activity_types.js').TaskPauseRequest} TaskPauseRequest */
 /** @typedef {import('./task_activity_types.js').TaskPauseResponse} TaskPauseResponse */
 /**
  * @typedef {Object} TaskContinueRequest

@@ -2057,9 +2057,10 @@ def _mobile_keyboard_drawer_assertions(page, url: str, screenshot_path: pathlib.
     assert scroll["overflowY"] in {"auto", "scroll"}, scroll
     page.screenshot(path=str(diagnostic_directory(screenshot_path.parent, "ui-smoke") / screenshot_path.name), full_page=True)
 
-    # Exercise the real backdrop click in the visible strip to the right of the
-    # 320px drawer, then require all state/ARIA projections to close together.
-    page.locator("#nav-drawer-backdrop").click(position={"x": 380, "y": 400})
+    # Exercise the real backdrop click on the room's quarter left showing beside
+    # the drawer (all the scrim covers), then require all state/ARIA projections
+    # to close together.
+    page.locator("#nav-drawer-backdrop").click()
     page.wait_for_function(
         "() => !document.body.classList.contains('nav-drawer-open')"
         " && !document.querySelector('#primary-sidebar').classList.contains('open')"

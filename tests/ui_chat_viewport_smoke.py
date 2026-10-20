@@ -102,6 +102,22 @@ def set_viewport(page, width, height, timeout=10_000):
     page.wait_for_function(_FEEDS_HOLD_WIDTH, polling="raf", timeout=timeout)
 
 
+# On a phone (the stack layout) the closed drawer lies under the room, a step to the left (style.css), so its own box
+# no longer says whether it is closed. Closed is the drawer's own state (no nav-drawer-open, the sidebar inert: app.js)
+# with every room (Main, a Project open over it) back at the screen's left edge, its motion finished.
+_DRAWER_CLOSED = """() => {
+    const side = document.getElementById('primary-sidebar');
+    const rooms = [document.getElementById('content'), document.querySelector('#project-panel.open')].filter(Boolean);
+    return !document.body.classList.contains('nav-drawer-open') && side.inert
+        && rooms.every((room) => Math.abs(room.getBoundingClientRect().left) < 0.5 && !room.getAnimations().length);
+}"""
+
+
+def wait_drawer_closed(page, timeout=None):
+    """On a phone, wait until the drawer is closed and the room has settled back over it (the page's default timeout)."""
+    page.wait_for_function(_DRAWER_CLOSED, timeout=timeout)
+
+
 def _emit_ws_frame(page, frame):
     page.evaluate(
         """frame => {

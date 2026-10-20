@@ -31,7 +31,6 @@ const CHIP = {
     thinking: () => tr('task.chip.thinking', 'Thinking'),
     queued: () => tr('task.chip.queued', 'Queued'),
     ownerWait: () => tr('task.chip.waiting_for_answer', 'Waiting for your answer'),
-    reviewWorkFinishing: () => tr('task.chip.review_work_finishing', 'review work finishing'),
     ownerHurry: () => tr('task.chip.owner_hurry_applied', 'Owner hurry applied'),
     background: () => tr('task.fact.in_background', 'in background'),
 };
@@ -39,33 +38,25 @@ const CHIP = {
 /** One chip word by its name (the room and the work rows say the cards' own words). */
 export const chipWord = (name) => CHIP[name]?.() || '';
 
-// The short reasons beside Paused or Waiting: who or what holds the work, keyed by the server's reason code
-// (gateway/work_status.py). A code without one is said in its sentence.
-const APP_STOPPED = () => tr('work.short.app_stopped', 'app stopped');
-const SHORT_REASON = {
-    paused_by_owner: () => tr('work.short.by_you', 'by you'),
-    paused_by_mind: () => tr('work.short.by_ouroboros', 'by Ouroboros'),
-    paused_by_host: APP_STOPPED, saved_on_stop: APP_STOPPED, after_restart: APP_STOPPED,
-    spending_limit: () => tr('work.short.spending_limit', 'spending limit'),
-    technical_pause: () => tr('work.short.technical_problem', 'technical problem'),
-    sleeping: () => tr('work.short.sleeping', 'sleeping'),
-};
-export const shortReason = (code) => SHORT_REASON[code]?.() || '';
-
-// A census pause cause read in the same words. The census's `owner` cause also covers Ouroboros's own Pause,
-// so only the work projection may say who paused: its reason code (paused_by_owner, …) may stand as the cause.
-const CAUSE_REASON = { budget: 'spending_limit', restart: 'after_restart', authority: 'technical_pause', sleep: 'sleeping' };
-
-export function pausePhaseLabel(phase, cause = '', finishingReviews = false) {
-    // A cold sleep continues by itself when it is woken: it waits, it is not paused.
-    const label = phase === 'budget_pausing' ? CHIP.pausing() : cause === 'sleep' ? CHIP.waiting() : CHIP.paused();
-    const reason = shortReason(CAUSE_REASON[cause] || cause);
-    const text = reason ? fmt('{state} · {reason}', { state: label, reason }) : label;
-    // Owner 2026-10-08: reviewers already launched finish separately and visibly.
-    // The census names tasks and model sends alike, so the chip names no count.
-    return finishingReviews ? fmt('{state} · {finishing}', { state: text,
-        finishing: CHIP.reviewWorkFinishing() }) : text;
+// A census pause says its word alone: who or what holds the work is its reason, said beside the word on the work's
+// line (work_status.workLine); the census's `owner` cause cannot even tell the owner's Pause from Ouroboros's. A cold
+// sleep continues by itself when it is woken: it waits, it is not paused.
+export function pausePhaseLabel(phase, cause = '') {
+    return phase === 'budget_pausing' ? CHIP.pausing() : cause === 'sleep' ? CHIP.waiting() : CHIP.paused();
 }
+
+// Reviewers a settled Pause lets finish run on separately and visibly: said beside its word, in the work line's own
+// words. The census names tasks and model sends alike, so it names no count.
+const reviewsFinishing = () => tr('work.because.review_work_finishing', 'Review work finishing');
+
+// What a census pause cause says on the card's line, in the work's own sentences (gateway/work_status.py REASON_TEXT).
+// The census's `owner` cause cannot tell the owner's Pause from Ouroboros's, so it says nothing there.
+const CAUSE_SENTENCES = {
+    budget: () => tr('work.because.spending_limit', 'Spending limit reached'),
+    restart: () => tr('work.because.after_restart', 'Held after a restart'),
+    authority: () => tr('work.because.technical_pause', 'After a technical problem'),
+    sleep: () => tr('work.because.sleeping', 'Sleeping until it is woken'),
+};
 
 export function activityWaitPhase(activity = {}) {
     const question = activity.owner_wait ?? activity.required_question;
@@ -163,17 +154,21 @@ export function taskActivityPresentation({ phase = 'working', outcome = '', ende
     let current;
     const modelPhase = modelActivityPresentation(modelActivity);
     if (phase === 'unknown') current = phaseView('unknown', CHIP.unconfirmed(), 'warn', { mark: CENSUS_MARKS.unknown });
-    // The card of a work's current episode says the work's word and reason (work_status.cardWorkView).
+    // The card of a work's current episode says the work's word and its line (work_status.cardWorkView).
     else if (workView) current = { ...phaseView(workView.phase, workView.text, workView.classes, { mark: work?.mark,
-        tone: workView.tone, waiting: workView.waiting }), ...(workView.secondary ? { secondary: workView.secondary } : {}) };
+        tone: workView.tone, waiting: workView.waiting }), ...(workView.secondary ? { secondary: workView.secondary } : {}),
+        // The exact call still explains the work's word in the card's details where both say the same word.
+        ...(modelPhase?.detail && modelPhase.text === workView.text ? { detail: modelPhase.detail } : {}) };
     else if (['budget_paused', 'budget_pausing'].includes(phase)) {
-        // Only a settled Pause names the reviews it lets finish (owner 2026-10-08).
-        const finishing = phase === 'budget_paused' && Boolean(finishingReviews);
-        const label = [pausePhaseLabel(phase, pauseCause, finishing), hold].filter(Boolean).join(' · ');
+        // The chip says the word; what holds it, a hold and the reviews a settled Pause lets finish are its quieter
+        // second fact.
+        const beside = [CAUSE_SENTENCES[pauseCause]?.() || '', hold,
+            phase === 'budget_paused' && finishingReviews ? reviewsFinishing() : ''].filter(Boolean);
         // A cold sleep wakes by itself: it waits, it is not paused.
         const mark = phase === 'budget_paused' && pauseCause === 'sleep' ? 'still' : CENSUS_MARKS[phase];
-        current = withOwner(phaseView(phase === 'budget_paused' ? 'paused' : 'working', label,
+        current = withOwner(phaseView(phase === 'budget_paused' ? 'paused' : 'working', pausePhaseLabel(phase, pauseCause),
             phase === 'budget_paused' ? 'warn' : 'working waiting', { mark, waiting: true }), resumeAction);
+        if (beside.length) current.secondary = beside.join(' · ');
     } else if (ownerWait === 'owner_wait') {
         current = phaseView('waiting', CHIP.ownerWait(), 'warn', { mark: 'still', tone: 'owner', owner: true, waiting: true });
     } else if (modelWaiting) {
@@ -190,8 +185,8 @@ export function taskActivityPresentation({ phase = 'working', outcome = '', ende
     else current = phaseView('unknown', CHIP.unconfirmed(), 'warn', { mark: CENSUS_MARKS.unknown });
     current = withOwner(current, theirs);
     // The outcome owns the chip; the work still running is its quieter second fact, and the owner's move keeps its dot.
-    if (finalizing && outcome) return { ...outcomeView(outcome), secondary: current.text, waiting: current.waiting,
-        owner: current.owner };
+    if (finalizing && outcome) return { ...outcomeView(outcome), secondary: [current.text, current.secondary]
+        .filter(Boolean).join(' · '), waiting: current.waiting, owner: current.owner };
     return current;
 }
 
