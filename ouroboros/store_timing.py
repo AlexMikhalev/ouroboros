@@ -25,6 +25,9 @@ _STORE_FRAMES = frozenset({"store.py", "store_timing.py", "store_hot_facts.py", 
                            "dialogue_store.py", "usage_store.py", "contextlib.py"})
 _LOCK = threading.Lock()
 _WINDOW: Dict[str, Dict[str, Dict[str, Any]]] = {}
+# The hold clock: high resolution on every OS (``time.monotonic`` ticks at ~15.6 ms on Windows, where a short hold
+# would measure 0.0).
+clock = time.perf_counter
 
 
 def kind_of(path: Any) -> str:
@@ -33,16 +36,17 @@ def kind_of(path: Any) -> str:
 
 
 def record(conn: Any, write: bool, started: float) -> None:
-    """One transaction held its lock from ``started`` (``time.monotonic``) until now; never raises."""
+    """One transaction held its lock from ``started`` (``clock()``) until now; never raises. A hold as long as the
+    window's longest names its site too, so a window whose holds all measure 0.0 still names one."""
     try:
-        held = time.monotonic() - started
+        held = clock() - started
         kind = getattr(conn, "_store_kind", None) or "other"
         with _LOCK:
             bucket = _WINDOW.setdefault(kind, {}).setdefault(
                 "write" if write else "read", {"count": 0, "total_sec": 0.0, "max_sec": 0.0, "max_site": ""})
             bucket["count"] += 1
             bucket["total_sec"] += held
-            if held > bucket["max_sec"]:
+            if held >= bucket["max_sec"]:
                 bucket["max_sec"], bucket["max_site"] = held, _site()
     except Exception:  # a diagnostic never changes the transaction's outcome
         pass

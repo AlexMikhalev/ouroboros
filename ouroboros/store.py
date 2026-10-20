@@ -946,7 +946,7 @@ def transaction(conn: sqlite3.Connection, *, write: bool, commit_wait_sec: Optio
         began = True
         if not write:  # take the read lock now
             conn.execute("SELECT 1 FROM meta LIMIT 1").fetchone()
-        held = time.monotonic()
+        held = store_timing.clock()
         if commit_wait_sec is not None:
             conn.execute(f"PRAGMA busy_timeout = {int(commit_wait_sec * 1000)}")
         yield conn
