@@ -275,6 +275,16 @@ def stored(monkeypatch):
     return results
 
 
+def test_an_answered_root_whose_late_work_runs_keeps_its_works_identity(stored, tmp_path):
+    """The census marks an answered root's late work under a settling Pause as running and nothing else: that entry
+    carries no identity, so the work still takes its id and name from the episode's stored result."""
+    stored["late"] = {"task_id": "late", "status": "completed", "chat_id": 42,
+                      "metadata": {"continuation": {"work_id": "prev-1", "work_name": "Original work"}}}
+    owners = [row("late", "budget_pausing", pause_cause="owner")]
+    [work] = wp.works_snapshot(tmp_path, owners, {"late": {"running": True}})["works"]
+    assert (work["work_id"], work["name"], work["live"]) == ("prev-1", "Original work", True)
+
+
 def test_a_held_continue_with_helpers_of_its_failed_attempt_is_one_working_work(stored, tmp_path):
     stored["p"] = {"task_id": "p", "status": "failed", "suggested_name": "Ouroboros 7.7.0 — finish the saved release",
                    "title": "НОВОЕ ПРЯМОЕ решение"}

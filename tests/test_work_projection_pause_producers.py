@@ -99,3 +99,27 @@ def test_a_warm_park_executes_nothing_and_its_unconfirmed_stop_stays_unconfirmed
     tails = peer_roster._tree_tails(tmp_path, tree, owner_pause.read_fence(tmp_path, "root-1"))
     assert [(tail["code"], tail["state"]) for tail in tails] == [
         ("review_work_finishing", "live"), ("external_runs_unconfirmed", "unknown")]
+
+    # The root parks cold and the helper's custody review settles, while a native review it already sent still runs:
+    # the census says that review, so the work stays live; once it ends, only the unconfirmed run remains.
+    from ouroboros import budget_pause, review_operation
+    from supervisor.events_budget import install_exact_budget_pause
+
+    ctx = SimpleNamespace(DRIVE_ROOT=tmp_path, RUNNING=workers.RUNNING, PENDING=workers.PENDING,
+                          WORKERS=workers.WORKERS, sort_pending=lambda: None,
+                          persist_queue_snapshot=queue.persist_queue_snapshot, bridge=None)
+    saved = _owner_park(tmp_path, monkeypatch, "root-1", [])
+    install_exact_budget_pause(ctx, "root-1", budget_pause.exact_pause_marker(saved)["checkpoint"])
+    assert delegate_custody.emit(tmp_path, delegate_custody.SETTLED,
+                                 {"run_id": "review-run", "task_id": "child-run", "state": "succeeded"})
+    native = {"child-run"}
+    monkeypatch.setattr(review_operation, "task_has_live_review_operation",
+                        lambda root, task_id, sent_only=False: task_id in native)
+    [work] = _works(tmp_path)
+    assert work["live"] is True
+    assert [(tail["code"], tail["state"]) for tail in work["tails"]] == [
+        ("review_work_finishing", "live"), ("external_runs_unconfirmed", "unknown")]
+    native.clear()
+    [work] = _works(tmp_path)
+    assert work["live"] is False
+    assert [(tail["code"], tail["state"]) for tail in work["tails"]] == [("external_runs_unconfirmed", "unknown")]

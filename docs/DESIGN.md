@@ -1206,7 +1206,7 @@ state under the name and its quiet line beside it, the row's mark before it (an
 outcome is a dot in its tone: Done and Done with warnings green, Stopped neutral,
 Failed red). The word is the current episode's alone; the line says its reason, then
 what still runs beside it (helpers, external runs, review work beside a task that is not
-running, such as one a Pause lets finish, a run nobody can confirm); a work card's chip says the same word with the same line
+running, such as the review a Pause lets finish, a run nobody can confirm); a work card's chip says the same word with the same line
 beside it, and the sidebar's name says both. An outcome stays beside `Finalizing…`; `Paused` stays until Resume, its
 line saying who or what paused it (the owner's press with its time, Ouroboros in its
 own sentence, nobody when a press declared no one);

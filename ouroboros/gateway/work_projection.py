@@ -123,7 +123,9 @@ def _work_of(root_id: str, raw: Mapping[str, Mapping[str, Any]], obs: _Observati
         if current in memo:
             work_id, name = memo[current]
             break
-        source = raw.get(current) or obs.result(current) or {}
+        facts = raw.get(current) or {}
+        # A census entry that only says the episode runs carries no identity: its stored result does.
+        source = facts if set(facts) - {"running"} else obs.result(current) or {}
         continuation = _continuation(source)
         if continuation.get("work_id"):
             work_id, name = str(continuation["work_id"]), str(continuation.get("work_name") or "")

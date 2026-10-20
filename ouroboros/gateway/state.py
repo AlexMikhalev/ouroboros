@@ -717,6 +717,8 @@ def _chat_activities_snapshot(drive_root, task_bindings, direct_rows, pending_ro
                                             root=root, can_resume=resume, owner_resumed=interrupted is True))
                 if work_facts is not None:
                     work_facts[task_id] = _raw_work_facts(row)
+        from ouroboros.post_task_checkpoint import post_task_synthesis_in_flight
+        from ouroboros.review_operation import task_has_live_review_operation
         for task_id, row, started_at in running_rows:
             if task_id:
                 root = _is_root(task_id, row)
@@ -736,10 +738,11 @@ def _chat_activities_snapshot(drive_root, task_bindings, direct_rows, pending_ro
                 else:
                     phase = "finalizing" if _managed_task_finalizing(drive_root, task_id) else "working"
                 activities.append(_activity(task_id, row, phase, started_at, root=root))
+                if phase == "budget_pausing" and row.get("_owner_pause_warm") and task_has_live_review_operation(
+                        drive_root, task_id, sent_only=True):
+                    activities[-1]["finishing_reviews"] = True  # its stack waits while the review it sent runs
                 if work_facts is not None:  # the one fact that a settling Pause's member still executes
                     work_facts[task_id] = {**_raw_work_facts(row), "running": not row.get("_owner_pause_warm")}
-        from ouroboros.post_task_checkpoint import post_task_synthesis_in_flight
-        from ouroboros.review_operation import task_has_live_review_operation
         visible = {row["activity_id"]: row for row in activities}
         for root_id, latch in fence_rows.items():
             # An answered root under the owner's Pause whose late work is the tree's
