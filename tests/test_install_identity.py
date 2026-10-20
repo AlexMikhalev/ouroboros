@@ -386,3 +386,40 @@ def test_forward_to_worker_names_a_foreign_child_mailbox_and_writes_nothing_ther
     delivered = _forward_to_worker(ctx, "own-child", "stay here")
     assert "Message forwarded" in delivered
     assert "stay here" in (own_child / "memory" / "owner_mailbox" / "own-child.jsonl").read_text(encoding="utf-8")
+
+
+def test_a_copied_main_debt_never_stops_this_install_replaying_its_own(installs):
+    from supervisor import terminal_delivery as td
+
+    a, b = installs
+    write_task_result(b, "foreign", "completed", result="Copied answer", root_task_id="foreign",
+                      drive_root=str(a), artifact_status="ready")
+    write_task_result(b, "own", "completed", result="Own answer", root_task_id="own")
+    old = "2000-01-01T00:00:00+00:00"
+    pending = {
+        "project-completion:foreign": {"chat_id": 1, "task_id": "foreign", "text": "copied main card",
+                                        "terminal_projection_token": "tok", "registered_at": old, "ts": old},
+        "final:own:abc": {"chat_id": 1, "task_id": "own", "text": "Own answer", "registered_at": old, "ts": old},
+    }
+    registry = b / "state" / "terminal_deliveries.json"
+    registry.write_text(json.dumps({"schema_version": 3, "delivered": [], "pending": pending}), encoding="utf-8")
+    puts = []
+    bus = SimpleNamespace(put_unless_outstanding=lambda event: puts.append(event) or True,
+                          delivery_outstanding=lambda _did: False)
+    assert td.replay_pending_deliveries(b, event_queue=bus) == ["final:own:abc"]
+    assert [event["delivery_id"] for event in puts] == ["final:own:abc"]
+    assert {row["delivery_id"] for row in td.pending_deliveries(b)} == set(pending)  # the copied debt stays retained
+
+
+def test_this_installs_shutdown_door_never_reads_its_identity(installs, monkeypatch):
+    from ouroboros import owned_shutdown
+
+    a, b = installs
+    (b / identity.IDENTITY_PATH).write_text("{not json", encoding="utf-8")
+    stop, stamped = owned_shutdown._Stop(), []
+    monkeypatch.setattr(owned_shutdown, "_GENERATION_STOP", stop)
+    monkeypatch.setattr(owned_shutdown, "_stamp", lambda root, *_a, **_k: stamped.append(root))
+    owned_shutdown.begin_owned_stop(b)  # an unreadable identity never blocks this install's own stop
+    assert stop.deadline is not None and stamped == [b]
+    with pytest.raises(store.StoreError):
+        owned_shutdown.installation_root(a / "task_drives" / "task")  # another root still needs a readable verdict

@@ -685,20 +685,24 @@ def revalidate_consumed_resume_holds() -> None:
     before its empty-project-holds early return and before normal admission.
 
     Safe every tick: without consumed or marker-less superseded holds, the queue
-    scan is in-memory only, with no store reads/writes or snapshot publication.
+    scan is in-memory only, with no store reads/writes or snapshot publication;
+    with them its store reads are zero-wait, contention retrying next tick.
     """
     from supervisor import queue as q
     from supervisor.events_budget import BUDGET_HOLD_KEY
     from supervisor.queue_snapshot import _fence_snapshot_running_rows
 
+    from ouroboros.store import StoreError, admission_acquisition
+
     changed = False
     for task in q.PENDING:
         before = task.get(BUDGET_HOLD_KEY)
         try:
-            if resume_hold_requires_fence(task, q.DRIVE_ROOT):
-                _fence_snapshot_running_rows([{"id": task["id"]}], restored_ids=set())
+            with admission_acquisition():  # under Q nothing waits: a busy read keeps the hold for the next tick
+                if resume_hold_requires_fence(task, q.DRIVE_ROOT):
+                    _fence_snapshot_running_rows([{"id": task["id"]}], restored_ids=set())
             changed |= before != task.get(BUDGET_HOLD_KEY)
-        except (OSError, ValueError, TypeError, RuntimeError):
+        except (StoreError, OSError, ValueError, TypeError, RuntimeError):
             log.warning("Continuation basis unreadable for %s; hold retained", task.get("id"), exc_info=True)
     if changed:
         q.persist_queue_snapshot(reason="consumed_resume_hold_revalidated")

@@ -1550,8 +1550,8 @@ def update_task(root: Any, task_id: str, mutator: Callable[[Dict[str, Any]], Opt
                 pending_drive: Any = None) -> Optional[Dict[str, Any]]:
     """Merge CURRENT under the published write gate; ``None`` commits without a write.
     ``pending_drive`` is a value or ``(txn, current, updated) -> Optional[bool]``, ``current`` the
-    pristine document (the mutator works on its own copy, decoded from the same stored bytes: no
-    encode under the lock). Schema preparation precedes the callback, including on a first-touched
+    pristine document (the mutator works on its own copy, decoded from the same stored bytes, not
+    an encoded deep copy). Schema preparation precedes the callback, including on a first-touched
     old child store."""
     while True:
         with open_store(root, write=True) as txn:

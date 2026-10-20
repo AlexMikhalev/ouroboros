@@ -77,10 +77,10 @@ def installation_root(drive_root: Any) -> pathlib.Path:
     from ouroboros.config import resolve_data_dir
     from ouroboros.install_identity import require_owned_root
 
-    drive = require_owned_root(drive_root)
-    data = resolve_data_dir().resolve(strict=False)
+    drive, data = pathlib.Path(drive_root).resolve(strict=False), resolve_data_dir().resolve(strict=False)
     if drive == data or data in drive.parents:
-        return data
+        return data  # this install's own set: no identity read, so shutdown doors stay fail-soft
+    drive = require_owned_root(drive)
     while True:
         parents = drive.parents
         if (len(parents) > 3 and drive.name == "data" and parents[1].name == "headless_tasks"

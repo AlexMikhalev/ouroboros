@@ -291,10 +291,18 @@ def emit(drive_root: Any, kind: str, payload: Dict[str, Any], *, propagate_conte
     return written
 
 def daemon_says_absent(exc: Any, *, gateway: Any = None, run: Optional[RunCustody] = None) -> bool:
-    """A run's 404 proves absence only in its owning store; project cleanup uses raw HTTP."""
-    return int(getattr(exc, "status_code", 0) or 0) == 404 and (run is None or bool(
-        run.daemon_store_id and run.daemon_store_id == getattr(gateway, "store_identity", "")
-        and not run.terminal_source))
+    """A run's 404 proves absence in its owning store; project cleanup uses raw HTTP.
+
+    A run bound to a store (handshake ``storeId``) is absent only for that store. An unbound
+    run (started before engines named their store, or never read) keeps the earlier contract:
+    the one managed daemon's 404 closes it.
+    """
+    return int(getattr(exc, "status_code", 0) or 0) == 404 and (run is None or _absence_provable(run, gateway))
+
+
+def _absence_provable(run: RunCustody, gateway: Any) -> bool:
+    return not run.terminal_source and (not run.daemon_store_id
+                                        or run.daemon_store_id == getattr(gateway, "store_identity", ""))
 
 
 def bind_daemon_store(drive_root: Any, gateway: Any, entry: RunCustody) -> None:
@@ -1089,8 +1097,7 @@ def close_absent_run(drive_root: Any, gateway: Any, custody: RunCustody, reason:
         if current.settled:
             custody.settled = True
             return
-        if (not current.daemon_store_id or current.daemon_store_id != getattr(gateway, "store_identity", "")
-                or current.terminal_source):
+        if not _absence_provable(current, gateway):
             raise ClaudexorUnavailable("daemon_store_identity_unproven", "Run absence is unproven in its owning store")
         custody.settled = emit(drive_root, CLOSED_ABSENT, {
             "run_id": custody.run_id, "task_id": custody.task_id,

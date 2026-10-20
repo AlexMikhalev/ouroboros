@@ -35,7 +35,7 @@ def test_body_absence_requires_owning_store_and_closes_once(tmp_path, monkeypatc
 
     gateway.get_run = read
     observer = runtime(tmp_path, lambda: gateway)
-    if kind == "same_store_restart":
+    if kind in {"same_store_restart", "legacy"}:  # an unbound (older) row keeps the daemon's 404 contract
         observer._observe(entry)
         observer._observe(entry)  # stale caller's copy cannot duplicate the closing fact
         assert current.run(tmp_path, entry.run_id).settled
@@ -47,7 +47,7 @@ def test_body_absence_requires_owning_store_and_closes_once(tmp_path, monkeypatc
         fresh = current.run(tmp_path, entry.run_id)
         assert not fresh.settled and not fresh.terminal_source
         assert not any(row["type"] == c.CLOSED_ABSENT for row in c.custody_rows(tmp_path))
-        if kind in {"legacy", "replaced_store"}:
+        if kind == "replaced_store":
             assert fresh.containment_fault["reason"] == "run_absence_identity_unproven"
             monkeypatch.setattr(body.BodyRuntime, "active", property(lambda _self: True))
             submits = []
@@ -139,7 +139,7 @@ def test_requested_external_stop_requires_owning_store_absence(tmp_path, monkeyp
     prior = {"runs": [{"run_id": entry.run_id, "stop_policy": "request_stop", "stop_outcome": "requested"}]}
     observed = external_runs.observe_task_runs(tmp_path, entry.task_id, prior=prior)
     row, = observed["runs"]
-    confirmed = kind == "same_store"
+    confirmed = kind in {"same_store", "legacy"}  # an unbound (older) row keeps the daemon's 404 contract
     assert row["stop_outcome"] == (c.CANCEL_CONFIRMED if confirmed else "unverified")
     assert row["state"] == (external_runs.EXTERNAL_STOP_CONFIRMED if confirmed else external_runs.EXTERNAL_STOP_UNKNOWN)
     assert external_runs.task_owned_runs_open(observed) is not confirmed
