@@ -24,6 +24,7 @@ import inspect
 import json
 import pathlib
 import sys
+import threading
 import types
 
 import pytest
@@ -555,9 +556,15 @@ def test_server_boot_leaves_the_settings_bytes_alone(tmp_path, monkeypatch):
     monkeypatch.setattr("ouroboros.server_auth.get_configured_network_password", lambda: "")
     before = settings_path.read_bytes()
     before_mtime = settings_path.stat().st_mtime_ns
+    running = set(threading.enumerate())
 
     with TestClient(srv.app):
         pass
+    # The lifespan hands the drive root to its import owner, a daemon that then runs the steps
+    # waiting on publication; a slow runner is still inside them when the client closes.
+    for thread in set(threading.enumerate()) - running:
+        if thread.name in ("current-store-import", "store-ready-steps"):
+            thread.join(60)
 
     assert settings_path.read_bytes() == before, "boot rewrote the settings document"
     assert settings_path.stat().st_mtime_ns == before_mtime
