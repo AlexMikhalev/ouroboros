@@ -840,13 +840,21 @@ def test_an_unwritable_inbound_row_fails_the_turn_before_the_model_runs(tmp_path
     """The no-re-log rule assumes the inbound row landed; a failed append is a failed turn, then a retry logs it."""
     calls: list = []
     kwargs = _v1_kwargs(tmp_path, calls)
-    real_append = dialogue_store.append_quietly  # the runner's best-effort writer: a store failure answers None
-    monkeypatch.setattr(dialogue_store, "append_quietly", lambda root, stream, row, **_kw: None)
+    from ouroboros.store import StoreBusy
+
+    real_append = dialogue_store.append  # the inbound row is a required write: a store failure raises
+
+    def unwritable_inbound(root, stream, row, **kw):
+        if stream == "chat" and row.get("direction") == "in":
+            raise StoreBusy("held by another writer")
+        return real_append(root, stream, row, **kw)
+
+    monkeypatch.setattr(dialogue_store, "append", unwritable_inbound)
     with pytest.raises(PresenceTurnError) as raised:
         run_presence_turn(**kwargs)
     assert raised.value.code == "chat_log_unwritable" and calls == []
     assert load_task_result(tmp_path, _task_id(_admission(), kwargs["event"])) is None  # no lost attempt to inherit
-    monkeypatch.setattr(dialogue_store, "append_quietly", real_append)
+    monkeypatch.setattr(dialogue_store, "append", real_append)
     first = run_presence_turn(**kwargs)
     rows = [r for r in _chat_rows(tmp_path) if r.get("task_id") == first.task_id]
     # The retry logged the inbound row once and spoke nothing itself; the root's free host-facts
