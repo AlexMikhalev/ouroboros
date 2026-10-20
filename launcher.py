@@ -1178,7 +1178,7 @@ def main(argv=()):
             return
         webview.create_window(
             "Ouroboros",
-            html="<html><body style='background:#1a1a2e;color:white;font-family:system-ui;display:flex;align-items:center;justify-content:center;height:100vh;margin:0'>"
+            html="<html><body style='background:#0f0f11;color:#efeff2;font-family:system-ui;display:flex;align-items:center;justify-content:center;height:100vh;margin:0'>"
             "<div style='text-align:center'><h2>Ouroboros is already running</h2><p>Only one instance can run at a time.</p></div></body></html>",
             width=420,
             height=200,
@@ -1249,7 +1249,7 @@ def main(argv=()):
         git_window = webview.create_window(
             "Ouroboros — Setup Required",
             html=(
-                """<html><body style="background:#1a1a2e;color:white;font-family:system-ui;display:flex;align-items:center;justify-content:center;height:100vh;margin:0">
+                """<html><body style="background:#0f0f11;color:#efeff2;font-family:system-ui;display:flex;align-items:center;justify-content:center;height:100vh;margin:0">
             <div style="text-align:center">
                 <h2>Git is required</h2>
                 <p>Ouroboros needs Git to manage its local repository.</p>
@@ -1259,7 +1259,7 @@ def main(argv=()):
                 <p id="status" style="color:#fbbf24;margin-top:12px"></p>
             </div></body></html>"""
                 if IS_MACOS
-                else f"""<html><body style="background:#1a1a2e;color:white;font-family:system-ui;display:flex;align-items:center;justify-content:center;height:100vh;margin:0">
+                else f"""<html><body style="background:#0f0f11;color:#efeff2;font-family:system-ui;display:flex;align-items:center;justify-content:center;height:100vh;margin:0">
             <div style="text-align:center">
                 <h2>Git is required</h2>
                 <p>Ouroboros needs Git to manage its local repository.</p>
@@ -1383,7 +1383,7 @@ def main(argv=()):
         webview.create_window(
             "Ouroboros — Startup Failed",
             html=(
-                "<html><body style='background:#1a1a2e;color:white;font-family:system-ui;"
+                "<html><body style='background:#0f0f11;color:#efeff2;font-family:system-ui;"
                 "display:flex;align-items:center;justify-content:center;height:100vh;margin:0'>"
                 "<div style='text-align:center;max-width:460px;padding:24px'>"
                 "<h2>Ouroboros failed to start</h2>"
@@ -1558,7 +1558,7 @@ def main(argv=()):
         width=1100,
         height=750,
         min_size=(800, 500),
-        background_color="#0d0b0f",
+        background_color="#0f0f11",
         text_select=True, hidden=background.start_hidden(options.launch_intent),
     )
     _webview_window = attach_media_permissions(background.attach(window), url)  # Persist cookies and website data (ouroboros.theme); rebuild/limits: ARCHITECTURE §3.

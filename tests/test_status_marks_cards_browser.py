@@ -222,7 +222,11 @@ def test_cards_activity_logs_and_budget_speak_the_status_marks(tmp_path, engine)
                     assert "thinking" not in sub.inner_text()
                     stop = page.locator('[data-act="task-control"][data-id="direct-1"]')
                     assert stop.get_attribute("class") == "btn btn-xs btn-default"
-                    assert stop.evaluate("el => getComputedStyle(el).backgroundColor") != tokens["--tone-red"]
+                    stop_paint = stop.evaluate("el => [getComputedStyle(el).backgroundColor, getComputedStyle(el).color]")
+                    # Danger red is the red tone's body and the red ink. On dark that body is the same neutral veil as
+                    # a neutral capsule's, so there the ink is what tells them apart.
+                    assert stop_paint[1] != tokens["--status-error-fg"], stop_paint
+                    assert theme == "dark" or stop_paint[0] != tokens["--tone-red"], stop_paint
 
                     # Logs: a settled headline takes the cards' tone; a warn-level event stays amber.
                     page.evaluate("""() => {

@@ -1364,8 +1364,8 @@
 }
 
 /* ---- Airy dopamine (DESIGN.md design bible) -------------------------------------------------------------------
-   A segmented choice is the one capsule control: neutral options standing on the rest shadow, the chosen one in its
-   tone (crimson) and still standing, no outline. Hover and press change colour, never height. A setting's value is
+   A segmented choice is the one capsule control: neutral options standing on the rest shadow, the chosen one in the
+   soft crimson and still standing, no outline. Hover and press change colour, never height. A setting's value is
    never amber: Advisory reads like every other value. */
 :root[data-theme] .ui-segment {
     border-color: transparent;
@@ -1380,7 +1380,7 @@
 :root[data-theme] .ui-segment:not(:disabled):active { transform: none; filter: var(--press); }
 :root[data-theme] .settings-effort-btn.active,
 :root[data-theme] [data-enforcement-group] .settings-effort-btn[data-effort-value="blocking"].active {
-    border-color: transparent; background: var(--tone-crimson); color: var(--tone-crimson-ink);
+    border-color: transparent; background: var(--tone-crimson-soft); color: var(--tone-crimson-soft-ink);
 }
 :root[data-theme] .ui-segment:disabled { box-shadow: none; }
 :root[data-theme] .settings-effort-btn:disabled:hover { border-color: transparent; background: var(--surface-capsule); }
