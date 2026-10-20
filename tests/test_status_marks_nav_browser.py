@@ -500,6 +500,7 @@ def test_a_long_press_opens_a_rows_menu_on_touch_where_the_dots_take_no_column(c
         # It opens the menu by the keyboard and stays drawn under it while the focus is in the menu.
         page.keyboard.press('Enter')
         page.locator(MENU).wait_for()
+        expect()(kebab).to_have_attribute('aria-expanded', 'true')  # the menu can paint a frame before its trigger says so
         facts['kebab_under_menu'] = {**kebab.evaluate(drawn), 'expanded': kebab.get_attribute('aria-expanded'),
                                      'focus': page.evaluate("() => document.activeElement.dataset.prm || ''")}
     finally:

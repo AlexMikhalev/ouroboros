@@ -28,13 +28,15 @@ from ouroboros.claudexor_startup_failure import (
 
 @pytest.fixture(autouse=True)
 def _no_owed_delivery_wake(monkeypatch):
-    """An owed-delivery wake an earlier test in this worker left set would start the maintenance sweep's
-    terminal_delivery_replay duty beside the threads these tests count."""
+    """An owed-delivery wake an earlier test in this worker left set, or retained dialogue rows that rebind
+    it at once (dialogue_retry.bind_wake), would start the maintenance sweep's terminal_delivery_replay duty
+    beside the threads these tests count."""
     import threading
 
-    from ouroboros import server_maintenance
+    from ouroboros import dialogue_retry, server_maintenance
 
     monkeypatch.setattr(server_maintenance, "_DELIVERY_WAKE", threading.Event())
+    monkeypatch.setattr(dialogue_retry, "bind_wake", lambda _wake: None)
 
 
 # Sanitized excerpts of the real OOM output in the live daemon.log (2026-09-13,
