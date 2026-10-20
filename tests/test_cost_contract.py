@@ -251,8 +251,14 @@ JOB_NAMES = tuple(getattr(_maintenance(), "JOBS", {}))
 
 def job_runner(name: str) -> Callable[[pathlib.Path], Any]:
     """One named job's run in this process: ``maintenance.run_job(root, name)``."""
+    from tests._store_shared import as_install
+
     maintenance = _maintenance()
-    return lambda root: maintenance.run_job(root, name, should_stop=lambda: False)
+
+    def run(root: pathlib.Path) -> Any:
+        with as_install(root):  # the maintenance child runs as the install it maintains
+            return maintenance.run_job(root, name, should_stop=lambda: False)
+    return run
 
 
 def _rests_at_every_size(measured: Dict[Any, Any], run: Callable[[pathlib.Path], Any], what: str) -> None:

@@ -149,7 +149,7 @@ def imported_binding_seeds():
 
 
 def _materialize_imported_seed(root, checkpoint, seeds):
-    from ouroboros import usage_store
+    from ouroboros import install_identity as identity, usage_store
 
     # The fixture has 184 file states and 185 (files, environment) states.
     # Keep the environment in the key: defaults can affect an import.
@@ -158,8 +158,10 @@ def _materialize_imported_seed(root, checkpoint, seeds):
         _materialize(root, checkpoint)
         usage_store.migrate_from_journal(root)
         usage_store.forget(root)
+        # The install identity names its own root; each case's root mints its own on first write.
         snapshot = tuple((path.relative_to(root), path.read_bytes())
-                         for path in sorted(root.rglob("*")) if path.is_file())
+                         for path in sorted(root.rglob("*")) if path.is_file()
+                         and path.relative_to(root) != pathlib.Path(identity.IDENTITY_PATH))
         # These golden states contain no root paths. Fail explicitly if a future
         # fixture/import changes that, rather than copying an address into another case.
         addresses = (str(root).encode("utf-8"), json.dumps(str(root))[1:-1].encode("utf-8"))

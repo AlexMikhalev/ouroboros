@@ -423,3 +423,13 @@ def test_this_installs_shutdown_door_never_reads_its_identity(installs, monkeypa
     assert stop.deadline is not None and stamped == [b]
     with pytest.raises(store.StoreError):
         owned_shutdown.installation_root(a / "task_drives" / "task")  # another root still needs a readable verdict
+
+
+def test_one_directory_under_another_spelling_keeps_its_identity(tmp_path, monkeypatch):
+    root = tmp_path / "Data"
+    first = boot(monkeypatch, root)
+    variant = tmp_path / "DATA"
+    if not variant.exists():
+        pytest.skip("case-sensitive filesystem: two spellings are two directories")
+    assert boot(monkeypatch, variant)["id"] == first["id"]  # no copy is minted for a spelling
+    assert identity.owned_root(root / "task_drives" / "task")  # pointers in the first spelling stay own

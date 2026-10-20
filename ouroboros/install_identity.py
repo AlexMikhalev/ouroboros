@@ -11,6 +11,8 @@ ancestors again.
 """
 from __future__ import annotations
 
+import contextlib
+import contextvars
 import json
 import logging
 import os
@@ -56,7 +58,36 @@ def layout_root(path: Any) -> pathlib.Path:
             return root
 
 
+def _same_root(recorded: Any, root: pathlib.Path) -> bool:
+    """One directory under two spellings (letter case on a case-insensitive disk) is one install."""
+    if str(recorded) == str(root):
+        return True
+    if str(recorded).casefold() != str(root).casefold():
+        return False  # no stat for an ordinary different path
+    try:
+        return os.path.samefile(recorded, root)
+    except OSError:
+        return False
+
+
+_ACTING = contextvars.ContextVar("ouroboros_acting_install", default=None)
+
+
+@contextlib.contextmanager
+def acting_as(root: Any):
+    """Act as the install ROOT names for this context: tooling that launched an isolated install
+    (a benchmark isolate) reads its store from outside, as that install's own process would."""
+    token = _ACTING.set(layout_root(root))
+    try:
+        yield
+    finally:
+        _ACTING.reset(token)
+
+
 def canonical_root() -> pathlib.Path:
+    acting = _ACTING.get()
+    if acting is not None:
+        return acting
     configured = os.environ.get("OUROBOROS_DATA_DIR")
     if configured is None:
         configured = (None, os.environ.get("OUROBOROS_APP_ROOT"), os.path.expanduser("~"))
@@ -99,14 +130,14 @@ def initialize_install() -> dict:
     if root in _INITIALIZED:
         return _INITIALIZED[root]
     record = _read(root)
-    if record and record["root"] == str(root):
+    if record and _same_root(record["root"], root):
         _INITIALIZED[root] = record
         return record
     from ouroboros.store import bounded_wait
     wait = bounded_wait(5.0)
     with name_lock(root, "install.lock", timeout_sec=wait):
         record = _read(root)
-        if record and record["root"] == str(root):
+        if record and _same_root(record["root"], root):
             _INITIALIZED[root] = record
             return record
         previous = record.get("root") if record else None
@@ -140,7 +171,7 @@ def _ownership(path: Any, *, initialize: bool = True) -> tuple[pathlib.Path, pat
     # only on first use of a path in this identity's lifetime.
     for candidate in (root, *root.parents):
         candidate = layout_root(candidate)
-        if candidate == current:
+        if candidate == current or _same_root(candidate, current):
             break
         if str(candidate) in origins or _read(candidate) is not None:
             foreign = candidate
