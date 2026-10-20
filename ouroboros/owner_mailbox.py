@@ -199,8 +199,10 @@ def acknowledge_task_messages(
     """Acknowledge messages only after their full content entered a transcript; the rows
     land under the task's mail lock, so a custody read under it sees the mailbox and its
     acknowledgements as one state."""
+    from ouroboros.install_identity import require_owned_root
     from ouroboros.task_custody import task_mail_lock
 
+    require_owned_root(drive_root)
     path = _ack_path(drive_root, task_id)
     path.parent.mkdir(parents=True, exist_ok=True)
     with task_mail_lock(drive_root, task_id) as locked:
@@ -272,6 +274,9 @@ def write_owner_message(
     valid): the drain rebuilds the card's frame for the model from it, while
     ``text`` stays the owner's own words.
     """
+    from ouroboros.install_identity import StoreForeign, require_owned_root
+
+    require_owned_root(drive_root)
     path = _mailbox_path(drive_root, task_id)
     path.parent.mkdir(parents=True, exist_ok=True)
     entry = {
@@ -301,6 +306,8 @@ def write_owner_message(
             log.warning("Failed to durably append owner message for task %s", task_id)
             return False
         return True
+    except StoreForeign:
+        raise
     except Exception:
         log.warning("Failed to write owner message for task %s", task_id, exc_info=True)
         return False
@@ -329,6 +336,9 @@ def write_task_message(
 
     if provenance not in TASK_MESSAGE_PROVENANCES:
         return False
+    from ouroboros.install_identity import StoreForeign, require_owned_root
+
+    require_owned_root(drive_root)
     path = _mailbox_path(drive_root, task_id)
     path.parent.mkdir(parents=True, exist_ok=True)
     entry = {
@@ -349,6 +359,8 @@ def write_task_message(
         entry["review_feedback"] = dict(review_feedback)
     try:
         return _append_mail(drive_root, task_id, path, entry)
+    except StoreForeign:
+        raise
     except Exception:
         log.warning("Failed to write task message for task %s", task_id, exc_info=True)
         return False

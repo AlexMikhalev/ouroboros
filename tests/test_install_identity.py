@@ -90,7 +90,10 @@ def test_projection_prepare_and_mailbox_refuse_foreign_effects(installs):
     a, b = installs
     with pytest.raises(identity.StoreForeign):
         _prepare(a, "task", {}, {})
-    assert not write_task_message(a, "must stay here", "task", source_task_id="sender")
+    before = {path.relative_to(a) for path in a.rglob("*")}
+    with pytest.raises(identity.StoreForeign):
+        write_task_message(a, "must stay here", "task", source_task_id="sender")
+    assert {path.relative_to(a) for path in a.rglob("*")} == before
     assert not _mailbox_path(a, "task").exists()
     assert write_task_message(b, "addressed", "task", source_task_id="sender")
     assert "addressed" in _mailbox_path(b, "task").read_text()
