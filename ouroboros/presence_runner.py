@@ -1034,22 +1034,16 @@ def _log_dialogue(
             SimpleNamespace(drive_root=drive_root, task_id=task_id), "presence-event",
             json.dumps(source, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8"), "json")
     from ouroboros import dialogue_store
-
-    # An inbound row is a named acceptance (its source event id): a re-run that logs again rejoins
-    # the row it landed, never a second one. It is a required acceptance, so it waits for the store
-    # (``dialogue_store``'s rule); only the reply row is best effort and joins the retry buffer.
-    if direction == "in":
-        try:
-            written = dialogue_store.append(drive_root, "chat", row)
-        except (StoreError, OSError, ValueError):
-            log.warning("Presence inbound row not stored in %s", drive_root, exc_info=True)
-            written = None
-    else:
-        written = dialogue_store.append_quietly(drive_root, "chat", row)
-    if direction == "in" and written is None:
-        # A re-run of a lost attempt relies on the inbound row having landed, so a turn whose row
-        # cannot be written fails here, before the model runs; the transport retries.
-        raise PresenceTurnError("chat_log_unwritable", "chat")
+    # The inbound row is a named acceptance (a re-run rejoins the row it landed) and required: it waits for
+    # the store, and a turn whose row cannot be written fails before the model runs (the transport retries).
+    if direction != "in":
+        dialogue_store.append_quietly(drive_root, "chat", row)  # the reply: best effort, retry buffer
+        return
+    try:
+        dialogue_store.append(drive_root, "chat", row)
+    except (StoreError, OSError, ValueError) as exc:
+        log.warning("Presence inbound row not stored in %s", drive_root, exc_info=True)
+        raise PresenceTurnError("chat_log_unwritable", "chat") from exc
 
 
 def _build_task(
