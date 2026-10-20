@@ -657,6 +657,9 @@ def revalidate_project_holds() -> None:
     from ouroboros.delegate_recovery import planned_handoff_resume_allowed
     from supervisor.events_budget import BUDGET_HOLD_KEY, HOLD_RESTORE_REFUSED_PREFIX, budget_hold_fact
 
+    from supervisor.budget_resume import revalidate_consumed_resume_holds
+
+    revalidate_consumed_resume_holds()  # spent-Resume holds re-decided every tick; memory-only without them
     held = [task for task in queue.PENDING if task.get("_project_admission_restore_hold")]
     if not held:
         return

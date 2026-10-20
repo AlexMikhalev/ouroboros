@@ -122,3 +122,21 @@ def test_tick_without_spent_holds_does_no_store_work(tmp_path, monkeypatch, popu
         revalidate_consumed_resume_holds()
         revalidate_consumed_resume_holds()
     assert workers.PENDING == before
+
+
+def test_the_assignment_tick_entry_re_decides_spent_holds(tmp_path, monkeypatch):
+    """``revalidate_project_holds`` (the assignment pass's hold revalidation) runs the re-decision first,
+    so a stranded continuation returns on the next tick even when no Project hold is pending."""
+    from ouroboros.task_results import write_task_result
+    from supervisor.task_admission import revalidate_project_holds
+
+    q, _state, workers = _install_queue(tmp_path, monkeypatch)
+    write_task_result(tmp_path, "continuing", "running", task_attempt=1)
+    task = {"id": "continuing", "_attempt": 2,
+            "_working_recovery": {"source_task_id": "continuing", "from_attempt": 1, "cause": "update_aborted"}}
+    eb.hold_budget_row(task, reason=eb.HOLD_GRANT_CONSUMED_STALE_ROW, extra={"pause_id": "p", "grant_id": "g"})
+    workers.PENDING.append(task)
+    assert not any(row.get("_project_admission_restore_hold") for row in workers.PENDING)
+    with q._queue_lock:
+        revalidate_project_holds()
+    assert eb.budget_hold_fact(workers.PENDING[0]) is None
