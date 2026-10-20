@@ -25,6 +25,18 @@ from ouroboros.claudexor_startup_failure import (
     read_startup_log_interval,
 )
 
+
+@pytest.fixture(autouse=True)
+def _no_owed_delivery_wake(monkeypatch):
+    """An owed-delivery wake an earlier test in this worker left set would start the maintenance sweep's
+    terminal_delivery_replay duty beside the threads these tests count."""
+    import threading
+
+    from ouroboros import server_maintenance
+
+    monkeypatch.setattr(server_maintenance, "_DELIVERY_WAKE", threading.Event())
+
+
 # Sanitized excerpts of the real OOM output in the live daemon.log (2026-09-13,
 # thirty crashes at the 4095 MB V8 default old space); paths and pids stripped.
 _OOM_REACHED = b"""
