@@ -334,8 +334,8 @@ def _preserve_unprocessed_updates(bridge, updates, consumed: int) -> int:
     return kept
 
 
-def _process_bridge_updates(bridge, offset: int, ctx: Any) -> int:
-    updates = bridge.get_updates(offset=offset, timeout=1)
+def _process_bridge_updates(bridge, offset: int, ctx: Any, *, timeout: float = 1) -> int:
+    updates = bridge.get_updates(offset=offset, timeout=timeout)
     cursor = [0]  # updates taken up so far, the one in flight included
     try:
         return _handle_bridge_update_batch(bridge, updates, offset, ctx, cursor)
@@ -902,8 +902,9 @@ def _run_supervisor(settings: dict) -> None:
             # WS3: intake new bridge messages EARLY — before the heavy steps
             # (enforce_task_timeouts / assign_tasks / evolution) — so a later
             # blocking step can never starve new-message intake (the wedge class
-            # where no task_received fired for hours until a full restart).
-            offset = _process_bridge_updates(bridge, offset, _event_ctx)
+            # where no task_received fired for hours until a full restart). A drain that stopped
+            # at its bound only polls: the idle wait would steal its backlog's second.
+            offset = _process_bridge_updates(bridge, offset, _event_ctx, timeout=0 if backlog else 1)
             # The one budget-projection write of this turn (llm_usage events only mark it dirty).
             flush_budget_projection(_event_ctx)
 

@@ -166,7 +166,8 @@ def drain_worker_events(event_q: Any, ctx: Any, liveness: list, *, on_restart: C
     can never starve owner-message intake. A dequeued event carrying a
     ``delivery_id`` is released from the bus's outstanding-delivery membership after
     its handler returned or raised, whichever path it took. Returns True when the
-    pass stopped at its bound (a backlog may remain: the caller skips its idle sleep)."""
+    pass stopped at its bound (a backlog may remain: the caller skips its idle sleep
+    and polls intake without its wait)."""
     from supervisor.events import dispatch_event
 
     deadline = time.monotonic() + SUPERVISOR_EVENT_BATCH_MAX_SEC
