@@ -190,17 +190,17 @@ def test_a_checkout_surviving_its_removal_keeps_its_row_and_is_retried(world, mo
     stubborn = _copy(world, "stubborn")
     write_task_result(data, "stubborn", "completed")
     _age(data)
-    monkeypatch.setattr(sw, "_force_rmtree", lambda _path: None)  # the removal fails to delete anything
-    monkeypatch.setattr(sw, "_git_quiet", lambda *_args: None)
-
-    report = _prune(world, retention_days=0, live=lambda _task: False)
+    with monkeypatch.context() as failed:
+        failed.setattr(sw, "_force_rmtree", lambda _path: None)  # the removal fails to delete anything
+        failed.setattr(sw, "_git_quiet", lambda *_args: None)
+        report = _prune(world, retention_days=0, live=lambda _task: False)
     assert report == {"removed": 0, "kept": 1}
     [row] = sw.list_worktrees(data_dir=data)
     assert row["task_id"] == "stubborn" and row["removal_failed"]
     assert stubborn.is_dir()
     assert _git(repo, "branch", "--list", "subagent/stubborn*").stdout.strip(), "the branch is kept with the row"
 
-    monkeypatch.undo()
+    # Restore only deletion faults, keeping the fixture's canonical install selected.
     (stubborn / "released").touch()
     assert _prune(world, retention_days=0, live=lambda _task: False) == {"removed": 1, "kept": 0}
     assert not stubborn.exists() and sw.list_worktrees(data_dir=data) == []
@@ -226,15 +226,14 @@ def test_a_snapshot_surviving_its_removal_keeps_its_row_and_pin_and_only_selects
     monkeypatch.setattr("supervisor.queue.task_settlement_liveness", lambda _task: False)
     one = sw.provision_execution_snapshot(target_root=repo, task_id="t1", snapshot_id="snapOne", worktree_root=root, data_dir=data)
     two = sw.provision_execution_snapshot(target_root=repo, task_id="t2", snapshot_id="snapTwo", worktree_root=root, data_dir=data)
-    monkeypatch.setattr(sw, "_force_rmtree", lambda _path: None)
-    report = sw.prune_execution_snapshots(set(), worktree_root=root, data_dir=data, only={"snapOne"})
+    with monkeypatch.context() as failed:
+        failed.setattr(sw, "_force_rmtree", lambda _path: None)
+        report = sw.prune_execution_snapshots(set(), worktree_root=root, data_dir=data, only={"snapOne"})
     assert report == {"removed": [], "kept": ["snapOne"]}
     assert sw.find_execution_snapshot("snapOne", data_dir=data)["removal_failed"]
     assert pathlib.Path(one.path).is_dir() and pathlib.Path(two.path).is_dir()
     assert _git(repo, "rev-parse", "--verify", one.baseline_ref).stdout.strip(), "the pin stays with the row"
-    monkeypatch.undo()
     (pathlib.Path(one.path) / "released").touch()
-    monkeypatch.setattr("supervisor.queue.task_settlement_liveness", lambda _task: False)
     assert sw.prune_execution_snapshots(set(), worktree_root=root, data_dir=data, only={"snapOne"}) == {"removed": ["snapOne"], "kept": []}
     assert not pathlib.Path(one.path).exists() and pathlib.Path(two.path).is_dir()
     assert sw.find_execution_snapshot("snapTwo", data_dir=data) is not None

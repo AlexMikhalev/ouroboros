@@ -116,14 +116,14 @@ def test_a_section_that_cannot_get_the_publication_lock_defers_the_rest(root, mo
             threading.Thread(target=holder, daemon=True).start()
             assert taken.wait(10)
 
-    calls = _between_sections(monkeypatch, hold)
-    swept = []
-    monkeypatch.setattr(packer, "record_swept", lambda *args: swept.append(args))
-    monkeypatch.setattr(packs, "os", _SlowUnlinks(0.1))
-    report = packer.run_pass(root)
-    assert report["faults"] == 0 and len(calls) == 2  # no section after the refused one
-    assert 0 < report["unlinked"] < 13 and _loose(refs) and not swept  # partial, deferred, retried later
-    monkeypatch.undo()
+    with monkeypatch.context() as patch:
+        calls = _between_sections(patch, hold)
+        swept = []
+        patch.setattr(packer, "record_swept", lambda *args: swept.append(args))
+        patch.setattr(packs, "os", _SlowUnlinks(0.1))
+        report = packer.run_pass(root)
+        assert report["faults"] == 0 and len(calls) == 2  # no section after the refused one
+        assert 0 < report["unlinked"] < 13 and _loose(refs) and not swept  # partial, deferred, retried later
     assert packer.run_pass(root)["faults"] == 0 and not _loose(refs)
 
 
@@ -135,12 +135,12 @@ def test_an_export_between_sections_stops_the_deletion_until_published_again(roo
             with store.open_store(root, write=True, service=True) as txn:
                 txn.set_meta("phase", store.EXPORTING)
 
-    _between_sections(monkeypatch, export)
-    monkeypatch.setattr(packs, "os", _SlowUnlinks(0.1))
-    report = packer.run_pass(root)
-    assert report["faults"] == 0 and 0 < report["unlinked"] < 13 and _loose(refs)
-    loose_after_export = len(_loose(refs))
-    monkeypatch.undo()
+    with monkeypatch.context() as patch:
+        _between_sections(patch, export)
+        patch.setattr(packs, "os", _SlowUnlinks(0.1))
+        report = packer.run_pass(root)
+        assert report["faults"] == 0 and 0 < report["unlinked"] < 13 and _loose(refs)
+        loose_after_export = len(_loose(refs))
     assert packer.run_pass(root)["unlinked"] == 0 and len(_loose(refs)) == loose_after_export
     with store.open_store(root, write=True, service=True) as txn:
         txn.set_meta("phase", store.PUBLISHED)

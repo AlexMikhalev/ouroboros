@@ -1170,9 +1170,8 @@ def open_store(root: Any, *, write: bool, wait_sec: float = STORE_WAIT_SEC, serv
     import owner thread's, ``service_thread``): their transactions pass both checks. A ``barrier``
     holds the write lock and the gate without writing (the evidence packer's phase gate) and ends
     in ROLLBACK, so its release never waits for readers to drain as a COMMIT would."""
-    if write:
-        from ouroboros.install_identity import require_owned_root
-        require_owned_root(root)
+    from ouroboros.install_identity import check_store_root
+    check_store_root(root, write=write)
     if _ADMISSION_NO_WAIT.get():
         wait_sec = 0.0
     elif _WAIT_BUDGET.get() is not None:

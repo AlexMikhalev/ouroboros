@@ -29,13 +29,12 @@ def installs(tmp_path, monkeypatch):
 
 @pytest.mark.parametrize("journal", ["PERSIST", "WAL"])
 @pytest.mark.parametrize("service", [False, True])
-def test_foreign_write_refuses_before_any_store_connection_but_history_reads(
+def test_foreign_store_refuses_before_any_connection_but_local_history_reads(
         installs, monkeypatch, journal, service):
     a, b = installs
     monkeypatch.setattr(store, "_journal_mode", lambda *_: journal)
     with store.open_store(b, write=True):
         pass  # The import owner publishes before service-mode transactions.
-    before = load_task_result(a, "task", strict=True)
     connections, real = [], store.connection
 
     def connect(path, *args, **kwargs):
@@ -47,10 +46,23 @@ def test_foreign_write_refuses_before_any_store_connection_but_history_reads(
         with store.open_store(a, write=True, service=service):
             pytest.fail("foreign write transaction opened")
     assert refused.value.reason == "foreign_install_root" and connections == []
-    assert load_task_result(a, "task", strict=True) == before
+    with pytest.raises(identity.StoreForeign):
+        with store.open_store(a, write=False):
+            pytest.fail("read transaction opened a foreign rw connection")
+    assert connections == []
     with store.open_store(b, write=True, service=service) as txn:
         txn.set_meta("own_write", journal)
         assert txn.conn.execute("PRAGMA journal_mode").fetchone()[0] == journal.lower()
+    with store.open_store(b, write=False) as txn:
+        assert txn.meta("own_write") == journal
+
+
+def test_empty_own_read_does_not_create_install_identity(tmp_path, monkeypatch):
+    root = tmp_path / "fresh"
+    monkeypatch.setenv("OUROBOROS_DATA_DIR", str(root))
+    with store.open_store(root, write=False) as txn:
+        assert txn.task_ids() == []
+    assert not root.exists()
 
 
 @pytest.mark.parametrize("kind", ["custody", "mail", "projection"])
@@ -111,7 +123,82 @@ def test_copied_owned_process_pointer_never_reaches_the_stop_owner(installs, mon
     assert len(called) == 1
 
 
-@pytest.mark.parametrize("pointer", ["budget_drive_root", "drive_root", "child_drive_root"])
+
+@pytest.mark.parametrize("kind", ["foreground", "service"])
+@pytest.mark.parametrize("pointer", ["drive_root", "record_path"])
+def test_copied_registry_paths_never_reach_executor_load_stop_or_forget(installs, monkeypatch, kind, pointer):
+    from ouroboros import owned_shutdown, workspace_executor as executor
+
+    a, b = installs
+    own_path = b / "state" / executor._PROCESS_STATE_DIR / "own.json"
+    foreign = {"record_id": "foreign", "kind": kind, "drive_root": str(b),
+               "record_path": str(own_path.with_name("foreign.json"))}
+    foreign[pointer] = str(a if pointer == "drive_root" else a / "state" / "processes" / "foreign.json")
+    own = {"record_id": "own", "kind": kind, "drive_root": str(b), "record_path": str(own_path)}
+    owned_shutdown.owned_processes_path(b).write_text(json.dumps({"records": {"foreign": foreign, "own": own}}))
+    loaded, stopped, forgotten = [], [], []
+    monkeypatch.setattr(executor, "_FOREGROUND", {})
+    monkeypatch.setattr(executor, "_SERVICES", {})
+    monkeypatch.setattr(executor, "_load_process_record",
+                        lambda path: loaded.append(path) or {"record_type": kind, "id": path.stem})
+    monkeypatch.setattr(executor, "_valid_process_record", lambda *a, **k: True)
+    monkeypatch.setattr(executor, "_stop_record_process", lambda path, *a, **k: stopped.append(path) or True)
+    monkeypatch.setattr(executor, "_forget_process", lambda path: forgotten.append(path))
+    cleanup = executor.kill_all_foreground if kind == "foreground" else executor._kill_durable_service_records
+    assert len(cleanup(b)) == 1
+    assert loaded == stopped == forgotten == [own_path]
+    assert "foreign" in {entry["record_id"] for entry in owned_shutdown.owned_records(b)}
+
+
+@pytest.mark.parametrize("relocation", ["copy", "move", "original"])
+def test_legacy_process_import_requires_original_install_provenance(tmp_path, monkeypatch, relocation):
+    from ouroboros import owned_shutdown, workspace_executor as executor
+
+    a, b = tmp_path / "A", tmp_path / "B"
+    boot(monkeypatch, a)
+    payload = {"record_type": "service", "service_id": "task:svc", "task_id": "task", "name": "svc",
+               "executor_type": "docker_exec", "executor_id": "docker", "container_name": "bench",
+               "backend_pid": "4242", "host_pid": 0}
+    path = executor._register_process(a, payload)
+    before = path.read_bytes()
+    owned_shutdown.owned_processes_path(a).unlink()  # legacy installation, before its one-time import
+    if relocation == "copy":
+        shutil.copytree(a, b)
+    elif relocation == "move":
+        a.rename(b)
+    else:
+        b = a
+    boot(monkeypatch, b)
+    loaded, real = [], executor._load_process_record
+    monkeypatch.setattr(executor, "_load_process_record", lambda path: loaded.append(path) or real(path))
+    copied_path = b / path.relative_to(a)
+    assert owned_shutdown.import_inherited_records(b) == (1 if relocation == "original" else 0)
+    assert loaded == ([copied_path] if relocation == "original" else [])
+    mark = json.loads(owned_shutdown.owned_processes_path(b).read_text())["inherited_import"]
+    if relocation != "original":
+        assert mark["reason_code"] == "foreign_install_root"
+        assert not owned_shutdown.owned_records(b)
+    assert copied_path.read_bytes() == before
+    assert owned_shutdown.import_inherited_records(b) is None
+    own_path = executor._register_process(b, payload)
+    assert own_path in owned_shutdown.executor_record_paths(b, "service")
+
+
+def test_foreign_stop_does_not_start_this_installs_shutdown_grace(installs, monkeypatch):
+    from ouroboros import owned_shutdown
+
+    a, b = installs
+    stop, stamped = owned_shutdown._Stop(), []
+    monkeypatch.setattr(owned_shutdown, "_GENERATION_STOP", stop)
+    monkeypatch.setattr(owned_shutdown, "_stamp", lambda root, *a, **k: stamped.append(root))
+    with pytest.raises(identity.StoreForeign):
+        owned_shutdown.begin_owned_stop(a)
+    assert stop.deadline is None and not stop.started and stamped == []
+    owned_shutdown.begin_owned_stop(b)
+    assert stop.deadline is not None and stamped == [b]
+
+
+@pytest.mark.parametrize("pointer", identity.TASK_ROOT_FIELDS)
 def test_foreign_synthesis_member_rests_without_reading_its_authority(installs, monkeypatch, pointer):
     from ouroboros import agent_task_pipeline as pipeline, obligations
 
@@ -206,6 +293,16 @@ def test_copied_or_moved_root_mints_its_own_identity_once(tmp_path, monkeypatch,
         assert not identity.owned_root(a)
     else:
         assert not a.exists()
+        with pytest.raises(identity.StoreForeign):
+            write_task_result(a, "must-not-recreate", "completed")
+        assert not a.exists()
+        c = tmp_path / "C"
+        store.close_connections()
+        b.rename(c)
+        boot(monkeypatch, c)
+        assert identity.owned_root(c)
+        assert not identity.owned_root(a) and not identity.owned_root(b)
+        assert not a.exists() and not b.exists()
 
 
 def test_unreadable_identity_never_becomes_an_isolated_root(installs):

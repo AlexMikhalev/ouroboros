@@ -24,7 +24,7 @@ unsupported kernel locks refuse startup. Stop releases predating this lock first
 atomically mints an identity for a copy/move and logs it.
 Saved paths never authorize another install's locks, transactions or
 owned-process registration. Layout child drives belong to their parent install;
-identity-free isolated roots still work. Foreign tasks retain readable history
+identity-free isolated roots work. Foreign tasks retain copied local history
 and rest with `foreign_install_root` until explicitly moved.
 
 To move a task: stop and back up both installs, copy its required child files

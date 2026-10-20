@@ -231,17 +231,13 @@ def test_a_retained_drive_rests_until_its_inputs_change(data, monkeypatch):
     assert row["retained"]["held"]["reason"] == "post_work_open" and drive.is_dir()
 
     settle, attempts = task_custody.settle_child_drive, []
-    monkeypatch.setattr(task_custody, "settle_child_drive",
-                        lambda *a, **k: attempts.append(a[1]) or settle(*a, **k))
-    before, decodes = _revision(data), _decodes(monkeypatch)
-    sm._run_drive_custody_pass()
-    assert attempts == [] and decodes == [] and _revision(data) == before, "a resting verdict was re-attempted"
-    monkeypatch.undo()  # the probes go, the body reads count again: the post-work closes
-
-    prepare_startup_state(data)
-    monkeypatch.setattr(sm, "DATA_DIR", data)
-    monkeypatch.setattr("ouroboros.retention.age_cutoff", lambda *a, **k: 4_000_000_000)
-    monkeypatch.setattr("supervisor.queue.task_settlement_liveness", lambda _task: False)
+    with monkeypatch.context() as patch:
+        patch.setattr(task_custody, "settle_child_drive",
+                      lambda *a, **k: attempts.append(a[1]) or settle(*a, **k))
+        before, decodes = _revision(data), _decodes(patch)
+        sm._run_drive_custody_pass()
+        assert attempts == [] and decodes == [] and _revision(data) == before, "a resting verdict was re-attempted"
+    # Only the probes go; this install stays bound while the post-work closes.
     write_task_result(data, "held", "completed", root_phase_checkpoint={"post_task_synthesis": "completed"})
     sm._run_drive_custody_pass()
     assert not drive.exists() and "held" not in maintenance_jobs.job(data, "drive_settlement")["retained"]

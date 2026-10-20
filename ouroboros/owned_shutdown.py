@@ -152,9 +152,28 @@ def owned_records(drive_root: Any, *, strict: bool = False) -> List[Dict[str, An
     return [dict(entry) for entry in _read_document(installation_root(drive_root), strict=strict)["records"].values()]
 
 
+def _require_owned_entry(root: Any, entry: Dict[str, Any]) -> None:
+    from ouroboros.install_identity import require_owned_root
+
+    require_owned_root(entry.get("drive_root") or root)
+    if entry.get("record_path"):
+        require_owned_root(pathlib.Path(entry["record_path"]).resolve(strict=False).parent)
+
+
 def executor_record_paths(drive_root: Any, kind: str) -> List[pathlib.Path]:
-    return [pathlib.Path(entry["record_path"]) for entry in owned_records(drive_root)
-            if entry.get("kind") == kind and entry.get("record_path")]
+    from ouroboros.install_identity import StoreForeign
+
+    paths = []
+    for entry in owned_records(drive_root):
+        if entry.get("kind") != kind or not entry.get("record_path"):
+            continue
+        try:
+            _require_owned_entry(drive_root, entry)
+        except StoreForeign as exc:
+            log.warning("Owned-process record retained (%s): %s", exc.reason, exc)
+            continue
+        paths.append(pathlib.Path(entry["record_path"]))
+    return paths
 
 
 def _update(root: Any, change: Callable[[Dict[str, Any]], bool], *, timeout_sec: float = 2.0) -> bool:
@@ -445,10 +464,7 @@ def _stop_ledgered(root: Any, entry: Dict[str, Any], deadline: float, retained: 
 def _stop_entry(root: Any, entry: Dict[str, Any], deadline: float, retained: set,
                 skip_paths: frozenset = frozenset()) -> bool:
     """One record's bounded stop: True once its exit is confirmed and it left the set."""
-    from ouroboros.install_identity import require_owned_root
-    require_owned_root(entry.get("drive_root") or root)
-    if entry.get("record_path"):
-        require_owned_root(pathlib.Path(entry["record_path"]).resolve(strict=False).parent)
+    _require_owned_entry(root, entry)
     if entry.get("kind") in _EXECUTOR_KINDS:
         if entry.get("record_path") in skip_paths:
             return False  # its in-memory owner holds the Popen/backend handle and settles it
@@ -540,17 +556,17 @@ def _run_stop(root: pathlib.Path, deadline: float) -> Dict[str, Any]:
 def begin_owned_stop(drive_root: Any = None) -> None:
     """A shutdown door was entered: start the generation's one grace deadline (if no door did
     yet) and persist ``stop_requested_at`` on every target before any other owner waits."""
+    if drive_root is None:
+        from ouroboros.config import resolve_data_dir
+        drive_root = resolve_data_dir()
+    root = installation_root(drive_root)
     stop = _GENERATION_STOP
     with stop.lock:
         if stop.deadline is None:
             stop.deadline = time.monotonic() + _stop_budget_sec()
         deadline = stop.deadline
     try:
-        if drive_root is None:
-            from ouroboros.config import resolve_data_dir
-
-            drive_root = resolve_data_dir()
-        _stamp(installation_root(drive_root), "stop_requested_at", _is_stop_target,
+        _stamp(root, "stop_requested_at", _is_stop_target,
                timeout_sec=max(0.0, min(2.0, deadline - time.monotonic())))
     except Exception:
         log.warning("Owned-work stop requests not stamped at shutdown entry; the stop stamps them",
@@ -606,9 +622,25 @@ def import_inherited_records(drive_root: Any) -> Optional[int]:
     boot's background thread only, never on exit: one walk of ``data/state`` and
     ``data/task_drives`` that matches named directory symlinks without descending through them."""
     from ouroboros import workspace_executor as executor
+    from ouroboros.install_identity import canonical_root, initialize_install, StoreForeign
 
     root = installation_root(drive_root)
     if _read_document(root).get("inherited_import"):
+        return None
+    previous = initialize_install().get("copied_from") if root == canonical_root() else None
+    if previous:
+        # Legacy executor JSON has no install provenance. Its PID/backend may
+        # still name the original install's live process; a copy cannot adopt it.
+        error = StoreForeign(previous[-1], previous[-1])
+
+        def refuse(document: Dict[str, Any]) -> bool:
+            document["inherited_import"] = {"at": utc_now_iso(), "records": 0,
+                                             "reason_code": error.reason, "reason_detail": str(error)}
+            return True
+
+        if _update(root, refuse):
+            log.warning("Inherited process records retained (%s): %s", error.reason, error)
+            return 0
         return None
     entries: Dict[str, Dict[str, Any]] = {}
     for base in (root / "state", root / "task_drives"):
