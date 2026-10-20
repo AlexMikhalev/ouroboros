@@ -20,12 +20,12 @@ Keep containers' published port free.
 One server holds `<data>/state/server.lock` until exit, regardless of repository,
 PID file or port. A second waits briefly for Restart, then exits 2;
 unsupported kernel locks refuse startup. Stop releases predating this lock first.
-`state/install.json` binds identity to the canonical path. Boot/first write
-atomically mints an identity for a copy/move and logs it.
-Saved paths never authorize another install's locks, transactions or
-owned-process registration. Layout child drives belong to their parent install;
-identity-free isolated roots work. Foreign tasks retain copied local history
-and rest with `foreign_install_root` until explicitly moved.
+`state/install.json` binds the root. Boot/write atomically mints and logs a
+copy/move identity, clearing cached verdicts. Checks cache paths; identity stat
+changes trigger parsing. Stop before copy/move. Paths never authorize
+foreign locks, transactions or processes. Layout children belong to their install;
+bare roots work. Foreign tasks keep local history and rest with
+`foreign_install_root` until explicitly moved.
 
 To move a task: stop and back up both installs, copy its required child files
 into the destination's task layout, then call
