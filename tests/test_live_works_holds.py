@@ -61,7 +61,9 @@ def test_live_work_without_a_listed_root_is_visible_but_never_addressable(tmp_pa
                                                                "root_task_id": "p"}} for index in range(3)])
     rows = unlisted_live_work(tmp_path, set())
     assert rows == [{"work_id": "p", "title": "Release 7.7", "room": {"chat_id": 42, "project_id": ""},
-                     "root_status": "failed", "helpers_running": 3, "helpers_waiting": 0, "external_runs": 0}]
+                     "root_status": "failed", "helpers_running": 3, "helpers_waiting": 0, "tails": [
+                         {"code": "helpers_running", "text": "3 helpers still working", "count": 3,
+                          "ids": ["h0", "h1", "h2"], "kind": "helper", "state": "live"}]}]
     assert unlisted_live_work(tmp_path, {"p"}) == []
     present = live_works_present(tmp_path)
     assert present["works"] == [] and present["other_live_work"][0]["work_id"] == "p"
@@ -70,17 +72,111 @@ def test_live_work_without_a_listed_root_is_visible_but_never_addressable(tmp_pa
     assert independent_roots(tmp_path)["roots"] == []
 
 
-def test_runs_still_working_under_a_settled_root_count_as_its_live_work(tmp_path):
-    """Through the real custody store: started runs count; a settled run custody still holds does not."""
+def test_runs_still_working_under_a_settled_root_are_its_typed_tails(tmp_path):
+    """Through the real custody store, typed as the owner's card types them: a run whose own task answered is
+    live, a review is the review tail, a run whose own task failed is unconfirmed; a settled run custody still
+    holds and a run the engine already finished run nothing. The ended root stays in other_live_work."""
     from ouroboros import delegate_custody as custody
 
     write_task_result(tmp_path, "p", "done", title="Done work")
     write_task_result(tmp_path, "q", "done", title="Done earlier")
+    write_task_result(tmp_path, "p-h", "failed", parent_task_id="p", root_task_id="p")
     _snapshot(tmp_path)
     assert custody.emit(tmp_path, custody.STARTED, {"run_id": "r1", "task_id": "p-h", "root_task_id": "p"})
     assert custody.emit(tmp_path, custody.STARTED, {"run_id": "r2", "task_id": "p"})
+    assert custody.emit(tmp_path, custody.STARTED, {"run_id": "rv", "task_id": "p", "source": "review_substrate"})
+    assert custody.emit(tmp_path, custody.STARTED, {"run_id": "done", "task_id": "p"})
+    assert custody.emit(tmp_path, custody.TERMINAL_OBSERVED, {
+        "run_id": "done", "task_id": "p", "state": "succeeded", "observation_seq": 1,
+        "source_ref": {"sha256": "0" * 64}})
     assert custody.emit(tmp_path, custody.STARTED, {"run_id": "kept", "task_id": "q", "project_id": "x",
                                                      "project_owned": True})
     assert custody.emit(tmp_path, custody.SETTLED, {"run_id": "kept", "task_id": "q", "state": "succeeded"})
-    rows = unlisted_live_work(tmp_path, set())
-    assert [(row["work_id"], row["external_runs"], row["helpers_running"]) for row in rows] == [("p", 2, 0)]
+    [row] = unlisted_live_work(tmp_path, set())
+    assert (row["work_id"], row["helpers_running"], row["helpers_waiting"]) == ("p", 0, 0)
+    assert [(tail["kind"], tail["state"], tail["text"], tail["ids"]) for tail in row["tails"]] == [
+        ("run", "live", "1 external run still working", ["r2"]), ("review", "live", "Review work finishing", ["rv"]),
+        ("run", "unknown", "1 external run unconfirmed", ["r1"])]
+    assert live_works_present(tmp_path)["other_live_work"] == [row]
+
+
+def _paused_root(root, *, fence=None, helpers=()):
+    """A listed root parked as the exact pause of the owner's Pause, with its tree's helpers in the queue."""
+    write_task_result(root, "t", "scheduled", title="Paused work", chat_id=1, reason_code="budget_paused",
+                      budget_pause={"pause_id": "p-t", "state": "paused", "task_attempt": 1, "reason": "owner",
+                                    "rail": "owner_pause", "paused_at": 1790409600.0},
+                      owner_pause={"state": "paused", "fence_id": "f1", "requested_at": "2026-10-20T00:43:00Z",
+                                   "by": {"actor": "owner", "text": "", "at": "2026-10-20T00:43:00Z"},
+                                   **(fence or {})})
+    _snapshot(root, pending=[{"id": "t", "attempt": 1, "task": {"id": "t", "chat_id": 1, "_attempt": 1}}],
+              running=[{"id": helper, "task": {"id": helper, "parent_task_id": "t", "root_task_id": "t"}}
+                       for helper in helpers])
+
+
+def test_a_paused_root_says_what_of_its_tree_still_runs_as_the_owners_card_does(tmp_path, monkeypatch):
+    """Parked under the owner's press: Ouroboros reads the review its Pause lets finish and a run nobody can
+    confirm beside the wait, never as "resume now"; the owner's card types them by the same rule."""
+    from ouroboros import delegate_custody as custody
+    from ouroboros.gateway import work_status
+    from ouroboros.peer_roster import roster_fingerprint
+
+    _paused_root(tmp_path)
+    write_task_result(tmp_path, "h", "failed", parent_task_id="t", root_task_id="t")
+    assert custody.emit(tmp_path, custody.STARTED, {"run_id": "rv", "task_id": "t", "root_task_id": "t",
+                                                     "source": "review_substrate"})
+    assert custody.emit(tmp_path, custody.STARTED, {"run_id": "lost", "task_id": "h", "root_task_id": "t"})
+    roster = independent_roots(tmp_path)
+    [row] = roster["roots"]
+    assert row["waiting"][0]["kind"] == "owner_pause" and row["waiting"][0]["by"] == "owner"
+    assert [(tail["kind"], tail["state"], tail["text"], tail["ids"]) for tail in row["tails"]] == [
+        ("review", "live", "Review work finishing", ["rv"]), ("run", "unknown", "1 external run unconfirmed", ["lost"])]
+    assert "\n  tails: Review work finishing; 1 external run unconfirmed" in render_roster_note(roster)
+    [work] = live_works_present(tmp_path)["works"]
+    assert work["tails"] == row["tails"]
+    # The same tree reads the same whether its root is listed or not.
+    assert unlisted_live_work(tmp_path, set())[0]["tails"] == row["tails"]
+    # A tail that ends changes the roster (stale catalogue pages refuse); with none left, no tails line.
+    assert custody.emit(tmp_path, custody.SETTLED, {"run_id": "lost", "task_id": "h", "state": "cancelled"})
+    settled = independent_roots(tmp_path)
+    assert roster_fingerprint(settled) != roster_fingerprint(roster)
+    assert [tail["kind"] for tail in settled["roots"][0]["tails"]] == ["review"]
+    assert custody.emit(tmp_path, custody.SETTLED, {"run_id": "rv", "task_id": "t", "state": "succeeded"})
+    quiet = independent_roots(tmp_path)
+    assert "tails" not in quiet["roots"][0] and "tails:" not in render_roster_note(quiet)
+    # One typing for both readers: the roster follows the card's rule, never a copy of its own.
+    assert custody.emit(tmp_path, custody.STARTED, {"run_id": "r9", "task_id": "t", "root_task_id": "t"})
+    assert [tail["state"] for tail in independent_roots(tmp_path)["roots"][0]["tails"]] == ["live"]
+    monkeypatch.setattr(work_status, "run_tail", lambda source, owner: ("run", "unknown"))
+    assert [tail["state"] for tail in independent_roots(tmp_path)["roots"][0]["tails"]] == ["unknown"]
+
+
+def test_a_settled_pause_lists_its_finishing_reviews_without_a_custody_row(tmp_path):
+    _paused_root(tmp_path, fence={"finishing_reviews": ["t"]})
+    [row] = independent_roots(tmp_path)["roots"]
+    assert row["tails"] == [{"code": "review_work_finishing", "text": "Review work finishing", "kind": "review",
+                             "state": "live"}]
+    _paused_root(tmp_path, fence={"finishing_reviews": []})
+    assert "tails" not in independent_roots(tmp_path)["roots"][0]
+
+
+@pytest.mark.parametrize("fence, working", [
+    ({"state": "requested", "parked_members": ["h1"]}, ["h2"]),  # still settling: h2 finishes its step
+    ({"state": "paused", "parked_members": ["h1", "h2"]}, []),  # settled: the Pause parked them all
+    ({"state": "released", "parked_members": ["h1", "h2"]}, ["h1", "h2"]),  # a released fence parks nobody
+])
+def test_helpers_the_pause_parked_are_not_still_working(tmp_path, fence, working):
+    _paused_root(tmp_path, fence=fence, helpers=["h1", "h2"])
+    [row] = independent_roots(tmp_path)["roots"]
+    assert [tail["ids"] for tail in row.get("tails") or ()] == ([working] if working else [])
+
+
+def test_a_running_root_says_no_tails_its_own_status_already_says_it_runs(tmp_path):
+    from ouroboros import delegate_custody as custody
+
+    write_task_result(tmp_path, "r", "running", title="Busy", chat_id=1)
+    _snapshot(tmp_path, running=[{"id": "r", "attempt": 1, "task": {"id": "r", "chat_id": 1}},
+                                 {"id": "h", "task": {"id": "h", "parent_task_id": "r", "root_task_id": "r"}}])
+    assert custody.emit(tmp_path, custody.STARTED, {"run_id": "r1", "task_id": "r"})
+    [row] = independent_roots(tmp_path)["roots"]
+    assert "waiting" not in row and "tails" not in row
+    assert unlisted_live_work(tmp_path, {"r"}) == []  # its tree is listed: nothing moves into other_live_work
