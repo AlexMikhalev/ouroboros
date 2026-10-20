@@ -161,7 +161,8 @@ def classify_member(row: Mapping[str, Any], raw: Optional[Mapping[str, Any]] = N
 
     ``raw`` carries the queue row's hold and pause records, the declared author of the tree's Pause
     (``pause_by``, ``control_actor.pause_author``), the members that Pause already parked and the task's
-    own identity facts (see ``work_projection``), and ``running`` when the queue runs it. Returns the member's
+    own identity facts (see ``work_projection``), ``running`` when the queue runs it, and ``sent_review`` while a
+    review it sent from a warm park still runs. Returns the member's
     own state only; ``live`` says whether the member itself executes now: under a settling Pause only a running
     member the Pause has not parked does, never a queued one or one that already saved its place."""
     raw = raw or {}
@@ -215,7 +216,7 @@ def classify_member(row: Mapping[str, Any], raw: Optional[Mapping[str, Any]] = N
             state["activity"] = activity
         state["release"] = release
         # Reviews the Pause lets finish are the work's tail, never the episode's reason.
-        state["reviews_finishing"] = bool(row.get("finishing_reviews"))
+        state["reviews_finishing"] = bool(row.get("finishing_reviews") or raw.get("sent_review"))
         # Main's attention rule (main_decisions.owner_actions) is the turn: the census's explicit-Resume rule.
         if _owner_actions(row)[1]:
             state["turn"].append({"kind": "action", "task_id": task_id, "code": code})

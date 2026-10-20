@@ -19,6 +19,8 @@ from ouroboros.gateway import work_status as ws
 log = logging.getLogger(__name__)
 
 _CONTINUE_PREFIX = "Continue: "
+# The census's execution facts for a member (gateway/state.py), never a work's identity.
+_EXECUTION_FACTS = frozenset({"running", "owner_pause_warm"})
 
 
 def _strip_continue(name: str) -> str:
@@ -45,6 +47,7 @@ class _Observations:
         self.results: Dict[str, Optional[dict]] = {}
         self.fences: Dict[str, dict] = {}
         self.stops: Dict[str, frozenset] = {}
+        self.reviews: Dict[str, bool] = {}
         self.gaps: List[Dict[str, Any]] = []
 
     def result(self, task_id: str) -> Optional[dict]:
@@ -68,6 +71,19 @@ class _Observations:
             except Exception:
                 self.fences[root_id] = {}
         return self.fences[root_id]
+
+    def sent_review(self, task_id: str) -> bool:
+        """Whether a review the task already sent still runs (``review_operation``), read from its stored result."""
+        if task_id not in self.reviews:
+            try:
+                from ouroboros.review_operation import task_has_live_review_operation
+
+                self.reviews[task_id] = bool(task_has_live_review_operation(
+                    self.drive_root, task_id, sent_only=True, result_loader=lambda tid: self.result(tid) or {}))
+            except Exception:
+                log.debug("Work projection could not read the review of %s", task_id, exc_info=True)
+                self.reviews[task_id] = False  # an unreadable operation proves no review
+        return self.reviews[task_id]
 
     def stop_unknown(self, task_id: str, drive_root: Any = None, owner: Optional[Mapping[str, Any]] = None
                      ) -> frozenset:
@@ -124,8 +140,8 @@ def _work_of(root_id: str, raw: Mapping[str, Mapping[str, Any]], obs: _Observati
             work_id, name = memo[current]
             break
         facts = raw.get(current) or {}
-        # A census entry that only says the episode runs carries no identity: its stored result does.
-        source = facts if set(facts) - {"running"} else obs.result(current) or {}
+        # A census entry that only says whether the episode runs carries no identity: its stored result does.
+        source = facts if set(facts) - _EXECUTION_FACTS else obs.result(current) or {}
         continuation = _continuation(source)
         if continuation.get("work_id"):
             work_id, name = str(continuation["work_id"]), str(continuation.get("work_name") or "")
@@ -168,6 +184,9 @@ def _member_raw(row: Mapping[str, Any], raw: Mapping[str, Any], obs: _Observatio
     pause = raw.get("_budget_pause") if isinstance(raw.get("_budget_pause"), dict) else {}
     facts: Dict[str, Any] = {"hold": hold, "paused_at": pause.get("paused_at") or pause.get("requested_at"),
                              "running": bool(raw.get("running"))}
+    if row.get("phase") == "budget_pausing" and (raw.get("owner_pause_warm") or row.get("kind") == "direct_chat"):
+        # Parked warm under a Pause still settling: the review it already sent still runs beside it.
+        facts["sent_review"] = obs.sent_review(str(row.get("activity_id") or ""))
     if row.get("pause_cause") == "owner" and row.get("phase") in {"budget_paused", "budget_pausing"}:
         from ouroboros.control_actor import pause_author
 

@@ -101,7 +101,7 @@ def test_a_warm_park_executes_nothing_and_its_unconfirmed_stop_stays_unconfirmed
         ("review_work_finishing", "live"), ("external_runs_unconfirmed", "unknown")]
 
     # The root parks cold and the helper's custody review settles, while a native review it already sent still runs:
-    # the census says that review, so the work stays live; once it ends, only the unconfirmed run remains.
+    # its work says that review and stays live; once it ends, only the unconfirmed run remains.
     from ouroboros import budget_pause, review_operation
     from supervisor.events_budget import install_exact_budget_pause
 
@@ -114,7 +114,7 @@ def test_a_warm_park_executes_nothing_and_its_unconfirmed_stop_stays_unconfirmed
                                  {"run_id": "review-run", "task_id": "child-run", "state": "succeeded"})
     native = {"child-run"}
     monkeypatch.setattr(review_operation, "task_has_live_review_operation",
-                        lambda root, task_id, sent_only=False: task_id in native)
+                        lambda root, task_id, sent_only=False, **_: task_id in native)
     [work] = _works(tmp_path)
     assert work["live"] is True
     assert [(tail["code"], tail["state"]) for tail in work["tails"]] == [
