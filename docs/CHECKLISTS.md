@@ -693,9 +693,9 @@ A built-in whose manifest `os` excludes this host is neither offered nor newly
 installed; an installed copy is still re-seeded and discovery hides it, except a
 Windows Unix-remote choice: the re-seed records `legacy_remote_platform=win32` in
 `.seed-origin` for an enabled, formerly unrestricted Unix copy whose ON was not
-recorded as automatic. Declared isolated dependencies of bytes accepted without a
-review install at acceptance, at enable, or at boot for an enabled built-in, never
-through a paid review. Packaged installs take built-ins from the SHA-pinned
+recorded as automatic. Any executable acceptance admits its declared packages:
+Enable installs or repairs them; startup retries installed on/requested skills.
+Packages alone never require a paid review. Packaged installs take built-ins from the SHA-pinned
 `repo.bundle`; source mode copies worktree bytes, without that provenance.
 `skip_advisory_review` records only the commit's skipped preflight: the repo
 review wave, both parts, still runs.
@@ -918,8 +918,8 @@ two manifests as part of items 2 (`permissions_honesty`) and 5
    (`manifest_schema`) because the skill should not have landed.
    v5.8 generalises the same readiness contract to official and local
    manifests that declare reviewed `install` / `dependencies` metadata:
-   A fresh executable review installs auto specs into `.ouroboros_env`, and enable/load/exec
-   paths refuse missing, failed, or stale dependency fingerprints.
+   Executable acceptance admits auto specs into `.ouroboros_env`; Enable prepares them,
+   while load/exec refuse missing, failed, or stale dependency fingerprints.
 4. **Plugin packages** — `openclaw.plugin.json` in the file pack means
    the publisher shipped a Node/TS plugin. The adapter refuses these,
    so seeing one in a successfully-installed skill is a contradiction

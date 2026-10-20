@@ -160,10 +160,13 @@ def _deps_block_reason(drive_root: pathlib.Path, skill: LoadedSkill) -> str:
 
 
 def _apply_deps_block(state: Dict[str, Any], drive_root: pathlib.Path, skill: LoadedSkill) -> Dict[str, Any]:
+    """``reason`` keeps the typed code; ``load_error`` carries the owner's sentence for it."""
     if state.get("desired_live"):
         deps_reason = _deps_block_reason(pathlib.Path(drive_root), skill)
         if deps_reason:
-            state.update(desired_live=False, reason=deps_reason, load_error=deps_reason)
+            from ouroboros.skill_dependencies import dependency_sentence
+
+            state.update(desired_live=False, reason=deps_reason, load_error=dependency_sentence(deps_reason))
     return state
 
 

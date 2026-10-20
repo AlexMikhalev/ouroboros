@@ -107,8 +107,9 @@ def test_skills_does_not_redeclare_shared_helpers():
     assert "safeExternalHrefAttr as safeExternalUrl" in renderer
     assert "function boundedText(" not in src
     assert "function safeExternalUrl(" not in src + renderer
-    # Delete is offered only for a skill made here, inside the editable external bucket.
-    assert "['external', 'self_authored'].includes(sourceTag(skill)) && String(skill.payload_root || '').startsWith('skills/external/')" in renderer
+    # The host names the removal (listing `removal`); the card renders it and derives none itself (inverted pin).
+    assert "skill.removal === 'delete'" in renderer and "skill.removal === 'uninstall'" in renderer
+    assert "startsWith('skills/external/')" not in renderer and "if (!isBuiltIn(skill))" not in renderer
     assert "skills-delete-local" in renderer
     assert "apiClient.deleteSkill(name, payloadRoot || skill.payload_root, skill.content_hash)" in src
     assert "/api/skills/${encodeURIComponent(skill)}/delete" in api_client

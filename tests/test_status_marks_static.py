@@ -66,11 +66,12 @@ warning | web/style.css | .chat-quiz-storage-note | color
 warning | web/style.css | .chat-review-attempt.warn | border-inline-start-color
 warning | web/style.css | .document-reader-notice | background, border-bottom, color
 warning | web/style.css | .harness-exhausted | background
+warning | web/style.css | .harness-exhausted .harness-account-meta | color
 warning | web/style.css | .harness-maintenance-notice[data-tone="warn"] | color
 warning | web/style.css | .log-entry .log-phase:is(.warn, .empty):not([data-chip-tone]) | background, border-color, color
 warning | web/style.css | .msg-attachment-outcome | color
-warning | web/style.css | .new-project-trust-note | border
-warning | web/style.css | .settings-lan-hint[data-tone="warn"] | border-color
+warning | web/style.css | .new-project-trust-note | border, color
+warning | web/style.css | .settings-lan-hint[data-tone="warn"] | border-color, color
 warning | web/style.css | .skills-skip-glyph | color
 warning | web/style.css | .toast-warn | border-color, color
 warning | web/style.css | .updates-status-dot[data-tone="warn"] | color
@@ -119,9 +120,10 @@ data | web/style.css | .md-code-block .hljs-type | color
 data | web/style.css | :is(.storage-bar-seg, .storage-key)[data-group="temporary"] | background
 data | web/style.css | :root[data-theme="light"] .md-code-block .hljs-class .hljs-title | color
 # The palette that defines the amber tokens and their aliases.
-palette | web/ui.css | :root | --amber, --amber-dim, --mark-owner, --status-warn-bg, --status-warn-border, --status-warn-fg
-palette | web/ui.css | :root | --system-border, --system-bubble-bg, --system-sender, --tone-amber, --tone-amber-hover
-palette | web/ui.css | :root[data-theme="light"] | --status-warn-fg, --system-sender, --system-text, --tone-amber, --tone-amber-hover
+palette | web/ui.css | :root | --amber, --mark-owner, --status-warn-fg, --status-warn-word, --system-border, --system-sender
+palette | web/ui.css | :root[data-theme="light"] | --amber, --amber-dim, --status-warn-bg, --status-warn-border, --status-warn-fg
+palette | web/ui.css | :root[data-theme="light"] | --system-border, --system-bubble-bg, --system-sender, --system-text, --tone-amber
+palette | web/ui.css | :root[data-theme="light"] | --tone-amber-hover
 """
 
 # How many amber references each first-party script may hold, all data categories: a chart series colour (Evolution's

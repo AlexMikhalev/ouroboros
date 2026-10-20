@@ -42,7 +42,7 @@ log = logging.getLogger(__name__)
 
 BUILTIN_SOURCE = {"id": "builtin", "kind": "builtin", "name": "Built in"}
 SEED_MARKER = ".seed-origin"
-RECEIPT_SCHEMA_VERSION = 3  # requested instruction turn-ons must finish before the receipt
+RECEIPT_SCHEMA_VERSION = 4  # bundle reconciliation; package/turn-on work has its own pass
 _MANIFEST_NAMES = ("SKILL.md", "skill.json")
 
 
@@ -413,6 +413,8 @@ def _offer_default_builtins(drive: pathlib.Path, seed_root: pathlib.Path, logger
     marker = read_marker(drive)
     if str(marker.get("state") or "") in {"", "fresh", "running", "error"}:
         return  # the install's own starter has yet to present them
+    from ouroboros.skill_uninstall_state import UNINSTALL_TOMBSTONE_FILENAME
+
     done = set(marker.get("defaults_offered") or [])
     native = drive / "skills" / "native"
     offered: List[str] = []
@@ -420,6 +422,9 @@ def _offer_default_builtins(drive: pathlib.Path, seed_root: pathlib.Path, logger
         if name in done:
             continue
         target = native / name
+        if (skill_state_dir_path(drive, name) / UNINSTALL_TOMBSTONE_FILENAME).is_file() and not target.exists():
+            offered.append(name)  # the owner uninstalled it (before it was on by default, or since)
+            continue
         if target.exists():
             if (target / SEED_MARKER).is_file() and not (skill_state_dir_path(drive, name) / "enabled.json").exists():
                 record = read_install_record(drive, name)
@@ -441,63 +446,62 @@ def _offer_default_builtins(drive: pathlib.Path, seed_root: pathlib.Path, logger
 
 
 def _requested_on(drive: pathlib.Path, skill: Any) -> bool:
-    """An install that asked to turn on when ready and has no enablement choice yet."""
-    from ouroboros.skill_install_record import read_install_record
-    from ouroboros.skill_loader import skill_state_dir_path
+    """An install that asked to turn on when ready and that no owner choice keeps off (the one
+    intent predicate, shared with ``reconcile_turn_on_when_ready``)."""
+    from ouroboros.skill_lifecycle_actions import turn_on_blocker
 
-    if skill.enabled or (skill_state_dir_path(drive, skill.name) / "enabled.json").exists():
-        return False
-    return (read_install_record(drive, skill.name) or {}).get("turn_on_when_ready") is True
+    return not skill.enabled and turn_on_blocker(drive, skill.name) == ""
 
 
 def _wants_lifecycle_work(drive: pathlib.Path, skill: Any) -> bool:
-    """A built-in accepted without a review that is on, or asked to turn on (it stays off until
-    its dependencies are ready)."""
-    from ouroboros.skill_acceptance import accepted_without_review
-
-    if skill is None or skill.source != "native" or not accepted_without_review(skill):
+    """An installed skill that should run (on, or asked to turn on) whose exact bytes the review
+    gate admits: its packages are readied at startup and a requested turn-on finished.
+    The installed source does not change that intent."""
+    if skill is None or skill.load_error or not skill.review.gate_for(skill.content_hash)["executable_review"]:
         return False
     return bool(skill.enabled) or _requested_on(drive, skill)
 
 
-def _builtins_needing_work(drive: pathlib.Path, names: List[str], logger: Any, *,
-                           requested_on: bool) -> Optional[List[str]]:
-    """Unfinished dependency work and ready instruction turn-ons; ``requested_on`` also includes
-    turn-ons waiting for owner grants. Unknown inspection returns ``None``, never completion."""
+def _skills_needing_work(drive: pathlib.Path, names: Optional[List[str]], logger: Any) -> Optional[List[str]]:
+    """Missing packages or unfulfilled turn-ons among ``names`` (``None``: all installed skills).
+    Inspect each skill independently; unknowns are logged, not read as ready. With no known work,
+    any inspection failure returns ``None``. This never governs the seed receipt."""
     try:
         from ouroboros.config import get_skills_repo_path
         from ouroboros.skill_dependencies import skill_deps_not_ready
-        from ouroboros.skill_loader import find_skill, grant_status_for_skill
+        from ouroboros.skill_loader import discover_skills, find_skill
 
         repo_path = get_skills_repo_path() or None
-        found = [find_skill(drive, name, repo_path=repo_path) for name in names]
-        return [skill.name for skill in found if _wants_lifecycle_work(drive, skill) and (
-            skill_deps_not_ready(drive, skill, strict=True)[1] or (_requested_on(drive, skill) and (
-                requested_on or (skill.manifest.is_instruction()
-                                 and grant_status_for_skill(drive, skill)["all_granted"]))))]
+        found = ([find_skill(drive, name, repo_path=repo_path) for name in names] if names is not None
+                 else list(discover_skills(drive, repo_path=repo_path)))
     except Exception:
-        logger.warning("Built-in skill dependencies could not be inspected", exc_info=True)
+        logger.warning("Installed skills could not be inspected", exc_info=True)
         return None
+    pending = []
+    unknown = False
+    for skill in found:
+        try:
+            if _wants_lifecycle_work(drive, skill) and (
+                    skill_deps_not_ready(drive, skill, strict=True)[1] or _requested_on(drive, skill)):
+                pending.append(skill.name)
+        except Exception:
+            unknown = True
+            logger.warning("Skill %s dependencies could not be inspected", getattr(skill, "name", "unknown"), exc_info=True)
+    return pending if pending or not unknown else None
 
 
-def _builtins_needing_dependencies(drive: pathlib.Path, names: List[str], logger: Any) -> Optional[List[str]]:
-    """Do not certify unfinished dependencies or an instruction's interrupted turn-on.
-    A turn-on waiting for the owner's grants never holds the receipt."""
-    return _builtins_needing_work(drive, names, logger, requested_on=False)
-
-
-def _dependency_pass(drive: pathlib.Path, names: List[str], logger: Any) -> List[str]:
-    """Ready the dependencies of built-ins that want them (``_wants_lifecycle_work``) and finish a
-    requested turn-on, one lifecycle job each, then reconcile the extension. Off the boot path; a failure
-    stays in ``deps.json`` for the Skills page and the next boot retries it (an owner's OFF waits for the
-    enable, which runs the same step)."""
-    pending = _builtins_needing_work(drive, names, logger, requested_on=True)
+def _dependency_pass(drive: pathlib.Path, names: Optional[List[str]], logger: Any) -> List[str]:
+    """Ready the packages of skills that want them (``_wants_lifecycle_work``) and finish a requested
+    turn-on, one lifecycle job each, then reconcile the extension. Off the boot path and independent of
+    the seed receipt; a failure stays in ``deps.json`` for the Skills page and the next boot retries it
+    (an owner's OFF waits for the enable, which runs the same step)."""
+    pending = _skills_needing_work(drive, names, logger)
     if not pending:
         return []
     try:
         from ouroboros import extension_loader
         from ouroboros.config import get_skills_repo_path, load_settings
-        from ouroboros.skill_acceptance import accepted_release_dependencies
+        from ouroboros.skill_dependencies import ensure_skill_dependencies
         from ouroboros.skill_lifecycle_actions import reconcile_turn_on_when_ready
         from ouroboros.skill_lifecycle_queue import LifecycleJobOptions, run_lifecycle_job_blocking
         from ouroboros.skill_loader import find_skill
@@ -511,18 +515,19 @@ def _dependency_pass(drive: pathlib.Path, names: List[str], logger: Any) -> List
         skill = find_skill(drive, name, repo_path=repo_path)
         if not _wants_lifecycle_work(drive, skill):
             return {"deps_status": "skipped"}
-        status, error = accepted_release_dependencies(drive, skill, repo_path=repo_path)
-        turn_on = reconcile_turn_on_when_ready(drive, name, repo_path=repo_path, reason="dependencies ready at startup")
+        status, error = ensure_skill_dependencies(drive, skill)
+        # A failure just recorded is not re-run by the turn-on in the same job (Enable retries it).
+        turn_on = (reconcile_turn_on_when_ready(drive, name, repo_path=repo_path, reason="dependencies ready at startup")["action"]
+                   if status in {"installed", "not_required"} else "not_ready")
         state = (extension_loader.reconcile_extension(name, drive, load_settings, repo_path=repo_path)
                  if skill.manifest.is_extension() else {})
-        return {"deps_status": status, "error": error, "turn_on": turn_on["action"],
-                "extension_action": state.get("action")}
+        return {"deps_status": status, "error": error, "turn_on": turn_on, "extension_action": state.get("action")}
 
     for name in pending:
         try:
             run_lifecycle_job_blocking(
-                kind="deps", target=name, source="builtin", runner=lambda name=name: step(name),
-                dedupe_key=f"builtin-dependencies:{name}",
+                kind="deps", target=name, source="startup", runner=lambda name=name: step(name),
+                dedupe_key=f"dependencies:{name}",
                 options=LifecycleJobOptions(drive_root=drive, result_error=lambda result: result.get("error", "")),
             )
         except Exception:
@@ -535,12 +540,11 @@ def ensure_builtin_skills(drive_root: Optional[pathlib.Path] = None, *, log_obj:
     """Startup work for an existing data root: the one-time identity conversion (with install
     records for launcher-seeded built-ins), then, unless ``state/native_seed.json`` already names
     this committed bundled tree, re-seeding changed built-ins and releasing built-ins the app no
-    longer bundles. The receipt is removed before that pass and written only when it completed
-    with no dependencies or ready instruction turn-ons unfinished; the lifecycle pass runs off the boot path.
+    longer bundles. The receipt covers those bundle phases alone. The package/turn-on pass over
+    every installed skill runs off the boot path whether or not the receipt matches.
     Returns the number re-seeded."""
     from ouroboros.config import DATA_DIR
     from ouroboros.skill_identity import convert_skill_identities
-    from ouroboros.utils import atomic_write_json, read_json_dict
 
     logger = log_obj or log
     drive = pathlib.Path(drive_root or DATA_DIR)
@@ -555,6 +559,18 @@ def ensure_builtin_skills(drive_root: Optional[pathlib.Path] = None, *, log_obj:
         logger.warning("Skill identity conversion raised", exc_info=True)
     receipt = drive / "state" / "native_seed.json"
     identity = _seed_identity(repo)
+    try:
+        return _reconcile_bundle(drive, seed_root, repo, receipt, identity, logger)
+    finally:
+        if dependency_pass:  # after the bundle phases, whether or not the receipt matched
+            threading.Thread(target=_dependency_pass, args=(drive, None, logger),
+                             name="skill-dependencies", daemon=True).start()
+
+
+def _reconcile_bundle(drive: pathlib.Path, seed_root: pathlib.Path, repo: pathlib.Path, receipt: pathlib.Path,
+                      identity: Optional[Dict[str, Any]], logger: Any) -> int:
+    from ouroboros.utils import atomic_write_json, read_json_dict
+
     if identity and read_json_dict(receipt) == identity:
         return 0
     try:
@@ -580,17 +596,11 @@ def ensure_builtin_skills(drive_root: Optional[pathlib.Path] = None, *, log_obj:
     except Exception:
         failures.append("defaults")
         logger.warning("Default-on built-in offer raised", exc_info=True)
-    names = _bundled_names(seed_root)
-    if names is None or _builtins_needing_dependencies(drive, names, logger) != []:
-        failures.append("dependencies")  # unknown readiness is not completion
     if identity and not failures and identity == _seed_identity(repo):
         try:
             atomic_write_json(receipt, identity)
         except OSError:
             logger.warning("Built-in receipt not recorded; the next boot reconciles again", exc_info=True)
-    if dependency_pass and names:
-        threading.Thread(target=_dependency_pass, args=(drive, names, logger),
-                         name="builtin-dependencies", daemon=True).start()
     return upgraded
 
 

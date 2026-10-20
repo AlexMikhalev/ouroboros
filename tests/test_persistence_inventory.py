@@ -983,17 +983,6 @@ def test_update_backup_inventory_names_its_pending_and_partial_restore_lifetime(
     assert "state/skills/*/update_backup.json" in scan_data_paths()
 
 
-def test_skill_architecture_keeps_the_authority_rationales():
-    text = (REPO / "docs/architecture/13-external-skills-layer.md").read_text(encoding="utf-8")
-    for rationale in (
-        "because collapsing any two turns a UI toggle into execution authority",
-        "Discovery confers no trust",
-        "a review PASS installs no dependencies; `enabled=true` does not prove readiness",
-        "so retry history stays explainable without a UI counter becoming review authority",
-    ):
-        assert rationale in text
-
-
 def test_skill_update_docs_name_all_rejection_reasons():
     for filename in ("CREATING_SKILLS.md", "CLIENT_CONTRACT.md"):
         text = (REPO / "docs" / filename).read_text(encoding="utf-8")

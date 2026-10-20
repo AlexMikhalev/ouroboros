@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-from types import SimpleNamespace
 
 import pytest
 
@@ -167,20 +166,10 @@ def test_only_proven_later_owner_disable_supersedes_repair_intent(skill_actor, m
     assert result["ok"] and load_enabled(ctx.drive_root, "demo"), result
 
 
-def test_launcher_grant_preserves_server_reconcile_ownership(skill_actor):
-    ctx, _skill, revision = skill_actor
-    seen = []
-
-    def server_reconcile(loaded):
-        seen.append(loaded.content_hash)
-        assert load_skill_grants(ctx.drive_root, "demo")["granted_permissions"] == ["inject_chat"]
-        return {"action": "extension_inactive", "reason": "disabled", "process": "server", "live_loaded": False}
-
-    host = SimpleNamespace(drive_root=ctx.drive_root, repo_dir=ctx.repo_dir, task_id="", current_chat_id=0)
-    result = run_skill_action(host, "demo", "grant", expected_content_hash=revision, items=["inject_chat"],
-                             _owner_actor="owner_launcher", _reconcile_grant=server_reconcile)
-    assert result["ok"] and result["process"] == "server", result
-    assert seen == [revision]
+# Retired: test_launcher_grant_preserves_server_reconcile_ownership. Verdict: the launcher no longer runs the
+# grant owner in its own process (once turn-on installs packages that would run pip/venv inside the frozen
+# launcher); after its native confirm it POSTs /api/skills/<name>/grants, pinned in
+# tests/test_skill_enable_dependencies.py::test_the_launcher_grant_goes_through_the_server.
 
 
 def test_grant_canonicalizes_duplicate_items_once(skill_actor):

@@ -712,14 +712,14 @@ def _skill_state_dir(name: str) -> pathlib.Path:
 
 def _run_review_flow(slug: str, name: str) -> tuple[str, str, str, Dict[str, Any]]:
     """Review first, dependencies only after an executable review (the production ordering)."""
+    from ouroboros.skill_dependencies import ensure_skill_dependencies
     from ouroboros.skill_loader import review_status_allows_execution
-    from ouroboros.skill_review_runner import _reconcile_deps_after_pass_review
 
     status, findings, error = _run_skill_review(DATA_DIR, REPO_ROOT, name)
     payload: Dict[str, Any] = {"review_status": status, "review_findings": findings, "review_error": error}
     deps_status = "not_required"
     if review_status_allows_execution(status) and not error:
-        deps_status, deps_error = _reconcile_deps_after_pass_review(DATA_DIR, name)
+        deps_status, deps_error = ensure_skill_dependencies(DATA_DIR, find_skill(DATA_DIR, name))
         payload.update({"deps_status": deps_status, "deps_error": deps_error})
     return str(status), str(error or ""), str(deps_status), payload
 

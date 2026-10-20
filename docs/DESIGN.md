@@ -19,32 +19,46 @@ composition, not a second shared palette. This file names roles, not an inventor
 
 This distils the interface Ouroboros already has into rules, so every agent extends
 it the same way. Every rule below derives from these lines and holds in both themes;
-a component that needs its own exception is a design defect.
+a component that needs its own exception is a design defect. A rule names a role (whose
+object, what is chosen, what is primary); how a theme draws that role is its seed below,
+so a recipe is written once for both themes and a theme differs only in its token
+values (the few older light-only rules in style.css stay as they are and are not a
+pattern to copy).
 
 **In one sentence (for a designer).** A light, borderless soft UI in two themes: a
-plain room (white, or near-black violet under glass controls); voice-tinted objects resting on a soft shadow;
-everything pressable a capsule (a card when it carries a paragraph) standing on that shadow in one of three tones, whose
-states change its colour, never its height, as on macOS; one crimson accent and
-candy-coloured status chips; Apple system type in four sizes. iOS airiness with
-Material 3 tonal colour; no gradient behind content, and no glows, textures, outlines or neumorphism.
+plain room (white, or deep graphite with glass where controls float over content); voice-coloured objects, each one
+flat fill resting on a soft shadow; everything pressable a capsule (a card when it carries a paragraph) standing on that
+shadow in one of three tones, whose states change its colour, never its height, as on macOS; one crimson accent and
+candy-coloured status words and marks; Apple system type in four sizes. iOS airiness with Material 3 tonal colour; no
+gradient behind content or on an object, and no glows, textures, outlines or neumorphism.
 
 **Principles**
 
 1. **The room is plain.** Page, sidebar and panel backgrounds are the room colour or
    one step off it. Never a gradient, glow, wash, texture or animation behind content.
-2. **Objects rest; they are not outlined.** A bubble, card or group is a filled shape
-   on the *rest* shadow. What floats over moving content (the Shade, menus, the
+2. **Objects rest; they are not outlined.** A bubble, card or group is one flat fill
+   on the *rest* shadow: no gradient on it and no light along its edge. What floats over moving content (the Shade, menus, the
    composer field, dialogs, the drawer, ↓ latest) takes the *float* shadow. Inside an object a
    group or row is a *tray*, a soft neutral fill without a shadow, and fills never
    stack. Only fields keep a hairline, because an editable box must read as editable;
    the composer's field floats instead, and focus gives it the field's ring. On a dark
-   room a shadow barely shows, so each height is also a lighter surface (room, object,
-   capsule), and what floats over content is glass. The Shade is the one exception: it
+   room a shadow barely shows, so each neutral height is also a lighter surface: a white
+   veil over whatever lies under it (room, object, capsule), so a capsule reads one step
+   lighter on the room and on a voice alike; what floats over moving content is glass. The Shade is the one exception: it
    continues its bar's ink and hangs on the float shadow, so the bar and its Shade read as
    one surface unfolding.
-3. **Colour says who and what.** Each voice tints its own objects: the owner blue,
-   Ouroboros blush, System amber, a Project fuchsia. A state is a candy tint with its
-   own ink, or a status mark and a word. Hue says identity and fill strength importance, so a
+3. **Colour says who and what.** Each voice colours its own objects: the owner blue,
+   Ouroboros rose (its answers and its work cards alike), System amber (yellow on dark), a
+   Project fuchsia. A role keeps its hue family in both themes and the theme gives it its
+   material: on white a pale
+   tint of the hue, on a dark room a deep opaque colour of it, because a tint of the same
+   hue over black turns brown or ash. Yellow, amber and orange turn olive or brown whenever
+   they fill a dark surface, so there they never fill: they are the rail, the name and the
+   word's ink on a neutral body (System, the owner's turn, money, a warning), and a state's
+   green or red draws the same way on dark: a row whose light body is tinted keeps a neutral
+   body there and its words take the hue (`--status-warn-word` / `-error-word`). Each theme has
+   one ink polarity, dark text on every light surface and light text on every dark one,
+   never both in one room. A state is a tone with its own ink, or a status mark and a word. Hue says identity and fill strength importance, so a
    mark that only identifies stays quieter than the name it marks. Crimson is the one
    brand accent: the chosen place, the primary action, a room's live word, and *new for
    you* on a status mark. Amber is the owner's attention (§4 Status marks). Colour lives
@@ -52,8 +66,11 @@ Material 3 tonal colour; no gradient behind content, and no glows, textures, out
 4. **One control, three tones, one height.** Everything pressable with a body is a
    capsule standing on the rest shadow in every state (on the float shadow when it
    flies over moving content, like ↓ latest): *neutral* (the capsule surface)
-   or *tonal* (its hue's tint and ink: crimson for the primary action and the chosen
-   tab or place, green for save, red for danger, amber for the owner's turn). A
+   or *tonal* (its hue's fill and that fill's ink, Material 3's filled and tonal steps:
+   the crimson for the primary action, the chosen tab or place and a count; the soft crimson
+   for a chosen option or card, such as a filter, a segment, a switched-on capsule or the
+   current step of setup; green for save, red for danger, amber for the owner's turn, which
+   on a dark room are a neutral body with their hue's ink, principle 3). A
    *quiet* control (a link, a filter, an icon, a navigation row) has no body and never
    stands. A state changes colour, never height: hover deepens the fill, a press
    deepens it again, a chosen or switched-on capsule takes its tone and keeps standing;
@@ -61,8 +78,11 @@ Material 3 tonal colour; no gradient behind content, and no glows, textures, out
    one-line control is a capsule; a choice that carries a paragraph (an offered answer)
    is a card with the object radius, standing like every other. A label that acts takes the
    primary ink; a setting's name or an unchosen option the secondary ink; a setting's
-   value the meta ink, never the darkest; a chosen state its tone's ink. A status chip
-   is a flat tint: standing on a shadow means pressable.
+   value the meta ink, never the darkest; a chosen state its tone's ink, on the fill or, for a
+   control that stays bodiless when chosen (Read aloud while it speaks, a mark), as a word on
+   its own (`--tone-crimson-word`); a chosen choice in a menu (a model, a voice) keeps a faint
+   crimson wash of the accent ladder under the crimson word, and a selected file keeps its own
+   ink on that wash. A status chip lies flat: standing on a shadow means pressable.
 5. **Air is spacing, never paleness.** Text keeps reading contrast; lightness comes
    from room between and inside objects and from the absence of lines. Nothing is
    faded to say "not yet known"; it says so in words or with an unlit mark.
@@ -76,16 +96,21 @@ Material 3 tonal colour; no gradient behind content, and no glows, textures, out
 
 | Role | Light | Dark |
 | --- | --- | --- |
-| Room · sidebar | `#ffffff` · `#fafbfc` | `#0d0b0f` · `#0d0b0f` |
-| Object · tray | `#ffffff` · neutral 3 % | white 3.5 % · neutral 3.5 % |
-| Capsule (hover) · float | `#ffffff` (`#f5f6f8`) · `#ffffff` | violet glass `rgb(44 34 52 / .62)` (`rgb(60 46 70 / .72)`) · `rgb(38 31 46 / .94)` |
+| Room · sidebar | `#ffffff` · `#fafbfc` | `#0f0f11` · `#0f0f11` |
+| Object · tray | `#ffffff` · neutral 3 % | white 5.5 % · white 4.5 % |
+| Capsule (hover) · float | `#ffffff` (`#f5f6f8`) · `#ffffff` | white 9 % (13.5 %) · `rgb(32 32 34 / .92)` |
 | Glass on controls and sheets over content | none | `blur(18px)` |
-| Owner · Ouroboros · task card | `#e9eef9` · `#fdf2f4` · `#fff8f9` | blue glass `rgb(80 120 190 / .16)`→`rgb(55 85 155 / .13)` · crimson glass `rgb(201 53 69 / .2)`→`rgb(120 24 36 / .2)` · crimson 6 % |
-| Crimson ink · on its tonal fill | `#bf2f40` · `#b52b3b` | `#f07a86` · `#ffa0aa` |
-| Tonal fill, rest/hover | crimson `#c93545` 10/14 %, green 14/22, red 10/16, amber 18/26 | crimson `#f05a6a` 18/24 %, green, red, amber 16/24 |
-| Rest shadow | `0 1px 2px rgb(28 33 51 / .05), 0 6px 18px rgb(28 33 51 / .06)` | `0 1px 2px rgb(0 0 0 / .5), 0 8px 24px rgb(0 0 0 / .35)` |
-| Float shadow | `0 2px 6px rgb(28 33 51 / .06), 0 18px 44px rgb(28 33 51 / .11)` | `0 2px 8px rgb(0 0 0 / .55), 0 20px 50px rgb(0 0 0 / .6)` |
-| Press | `brightness(.95)` | `brightness(1.12)` |
+| Owner · Ouroboros · task card | `#e9eef9` · `#fdf2f4` · `#fff8f9` | sapphire `#103364` · garnet `#5c172a` · garnet `#5c172a` |
+| System | amber 12 %, an amber rail, name `#805000` | white 5.5 %, a yellow rail and name `#f2d441` |
+| Ink on every surface | dark (`#20232b`) | light (`#efeff2`) |
+| Crimson word · ink on its fill · without a fill | `#bf2f40` · `#b52b3b` · `#b52b3b` | `#ff756e` · white · `#ff756e` |
+| Crimson fill, strong · soft (hover) | crimson `#c93545` 10 % (14 %), both | `#d32d43` (deeper, `#c32a3f`) · `#872236` with ink `#ffdfe1` |
+| The chosen place's left mark | `#c93545` | white, the fill's ink |
+| A warning or failure on a row whose body cannot show it | the row's tint, its words in their own ink | a neutral row, its words in the hue's ink |
+| Green, red, amber fills (hover) | the hue at 14/22, 10/16, 18/26 % | white 16/20 % (green), 9/13.5 % (red, amber), each with its hue's ink (red `#ff8882`, a step lighter than the crimson word) |
+| Rest shadow | `0 1px 2px rgb(28 33 51 / .05), 0 6px 18px rgb(28 33 51 / .06)` | `0 1px 2px rgb(0 0 0 / .4), 0 6px 20px rgb(0 0 0 / .28)` |
+| Float shadow | `0 2px 6px rgb(28 33 51 / .06), 0 18px 44px rgb(28 33 51 / .11)` | `0 2px 8px rgb(0 0 0 / .45), 0 18px 44px rgb(0 0 0 / .5)` |
+| Press · on a solid fill under white | `brightness(.95)` · the same | `brightness(1.12)` · `brightness(.9)` |
 
 - Radii by role, both themes: capsule `999px` (every one-line control and chip) · object `18px`
   (bubbles, cards, groups, menus, answer cards) · inner `12px` (trays and rows inside an object) ·
@@ -99,7 +124,10 @@ Material 3 tonal colour; no gradient behind content, and no glows, textures, out
 - Where it lives: the values are `web/ui.css` tokens, dark in `:root` and light in
   `:root[data-theme="light"]` (`--elev-*`, `--radius-object` / `-inner` / `-sheet`,
   `--surface-object` / `-capsule` / `-float` / `-tray` / `-side`, `--glass`, `--voice-*`,
-  `--tone-*` with `--tone-crimson-ink`, `--press`); the recipes are ui.css "One control, three tones" and
+  `--tone-*` with `--tone-crimson-ink`, `--tone-crimson-soft` / `-soft-ink` and `--tone-crimson-word`,
+  `--place-mark`, `--status-warn-word` / `-error-word`, `--press` / `--press-solid`); the light
+  block restates its own values of the hues and tints the dark seed sets differently; the recipes are ui.css "One
+  control, three tones" and
   style.css "Airy dopamine", written once for both themes. A page maps its own
   elements onto these roles and adds no recipe.
 
@@ -238,10 +266,14 @@ Two failure modes this table exists to prevent, both observed in this codebase:
 The brand red is **one value**, `--accent`. Every appearance of it is either
 that token, the named roles built on it (`--accent-light` for accent text, the crimson ink on light,
 `--accent-dim` for a fill, `--focus-accent-border` / `--focus-accent-ring` for
-focus), or a rung of the accent alpha ladder (`--accent-04` … `--accent-55`; the crimson tone and its hover are `--accent-10` and `--accent-14`).
+focus), or a rung of the accent alpha ladder (`--accent-04` … `--accent-55`; in the light theme the crimson tone
+and its hover are `--accent-10` and `--accent-14`, while the dark theme's crimson tones are opaque fills of their own,
+listed in the seed table).
 A new alpha is a rung added to the ladder, never an `rgba()` literal in a rule:
 the ladder is what makes "make the accent calmer" a one-line change instead of
-a grep.
+a grep in the light theme. The dark theme's crimson roles (the tones, the crimson word, the
+focus border and ring) are values of its own seed rather than rungs of the ladder, so a new
+accent rewrites those few tokens there too.
 
 The app and first-run wizard consume the same palette source. A shared accent
 change updates its named roles and alpha ladder there; neither page shadows
@@ -427,10 +459,10 @@ simultaneously harder to read and flatter in hierarchy.
 
 **De-emphasise the secondary rather than amplifying the primary.** When
 something needs to stand out, drop the ink around it, do not raise its own. All
-Primary (15.9:1) and meta (9.2:1) clear the 4.5:1 floor against `--bg-primary`
-with room to spare. `--text-disabled` is deliberately BELOW it (3.5:1) and is
-therefore reserved for genuinely disabled or incidental content, which WCAG
-exempts; it must never carry meaning a reader has to obtain.
+Primary (16.7:1), meta (9.6:1) and secondary (6.8:1) clear the 4.5:1 floor against
+`--bg-primary` with room to spare. `--text-disabled` only just clears it (4.7:1) and is
+therefore reserved for genuinely disabled or incidental content; it must never carry
+meaning a reader has to obtain.
 
 ### A selected state is not exempt from contrast
 
@@ -438,10 +470,12 @@ A **status hue** and a **status foreground** are different values, and the
 selected state of a control must use the foreground. Selected Advisory in the
 enforcement group once read `--amber` (`#f59e0b`) over a 12% amber wash: ~2:1 on the
 light surface, unreadable exactly when the owner had chosen it. The rule that
-closes this: a selected control tints with the `--status-*-fg` /
-`--status-*-bg` / `--status-*-border` triple, which is defined per theme, and
-never with the raw hue token, which is not. A setting value carries no status
-tone at all: Advisory now takes the shared selected tone (Status marks).
+closes this: a selected control takes a tone, a fill with its own ink that each theme
+defines (a chosen option the soft crimson, `--tone-crimson-soft` with its `-soft-ink`); a
+status colour reaches a control only through the `--status-*-fg` / `-bg` / `-border`
+triple, also defined per theme, and never through the raw hue token, which is not. A
+setting value carries no status tone at all: Advisory now takes the shared chosen-option
+tone (Status marks).
 
 The same reasoning covers images. A colour baked into a `data:` URI cannot be
 themed, because a custom property cannot be interpolated into the URI string —
@@ -687,8 +721,8 @@ status sentence's or a composer chip's dot is its tone, §4).
   changes before an update, an Evolution or Consciousness pill that needs the owner
   or was stopped by the spending limit; (2) a warning worth reading — warn toasts and sentences,
   Settings and onboarding notes, warnings inside task timelines, reviews and Logs
-  events, account quota; (3) the System voice, a pale tint that is a voice, not a
-  status; (4) a few data categories that are not statuses (Logs and Storage
+  events, account quota; (3) the System voice (a pale tint in the light theme, its rail
+  and name in the dark one), a voice, not a status; (4) a few data categories that are not statuses (Logs and Storage
   categories). What goes on by itself or what someone chose — queued, waiting,
   paused, pausing, stopped, unconfirmed, work in flight, a mode, a level, a setting
   value — is never amber.
@@ -1551,7 +1585,9 @@ composer strip (`Replying to`, quoted author, one line, ×; Esc cancels). Send
 carries only the address; the host makes the snippet. Answerable questions use their own field.
 
 One quote component serves bubbles, strips and relays: above the text, a 2 px
-bar and tint in the quoted author's ink, one line cut on a word; a photo leads
+bar and tint in the quoted author's ink (the tint lies on the quote glass, so inside a
+dark voice it reads as a shade of graphite cooled or warmed by the quoted author, not as
+a second bubble), one line cut on a word; a photo leads
 with its thumbnail. Pressing a reply quote reveals the exact row, loading its
 bounded page in this room when present, otherwise its available home. Containing
 timelines open and scroll; the line is focused and highlighted below the header.
