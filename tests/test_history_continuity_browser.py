@@ -197,7 +197,7 @@ def test_terminal_publication_timing_and_answer_copy(direct_server_with_data, br
             assert check() == before
             page.set_viewport_size({'width':390, 'height':844})
             if page.locator('#nav-drawer-backdrop').is_visible():
-                page.locator('#nav-drawer-backdrop').click(position={'x':380, 'y':400})
+                page.locator('#nav-drawer-backdrop').click()  # the room's quarter, all the scrim covers
             page.evaluate(_FRAMES)
             assert check() == before
             _screenshot(page, tmp_path, f'terminal-times-narrow-{browser_engine}')

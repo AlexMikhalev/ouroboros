@@ -7,6 +7,7 @@ import {
 } from './effort_levels.js';
 import { beginMorph, stopMorph } from './capsule_morph.js';
 import { haptic } from './haptics.js';
+import { createComposerFold } from './composer_fold.js';
 
 const N = OWNER_TIERS.length - 1;
 const HANDLES = ['min', 'rec', 'max'];
@@ -933,8 +934,10 @@ export function createComposerOwnerControls({ row, byId, apiFetch, saveEffortRan
     // values. If long translated values still wrap, cap the widest with an ellipsis; accessible
     // names and open strips keep full words. The closed names never flicker between fits.
     const shownKids = () => Array.from(row.children || []).filter((kid) => widthOf(kid) > 0);
+    // A phone's ☰ leads the line and never wraps, so it is not what the line is read by: while the row folds it goes
+    // down beside the field (composer_fold.js) and the line it left still holds the capsules.
     function wraps() {
-        const kids = shownKids();
+        const kids = shownKids().filter((kid) => !kid.classList?.contains?.('composer-menu'));
         const first = kids[0]?.getBoundingClientRect?.();
         return Boolean(first) && kids.some((kid) => kid.getBoundingClientRect().top >= first.bottom);
     }
@@ -983,6 +986,9 @@ export function createComposerOwnerControls({ row, byId, apiFetch, saveEffortRan
     const onText = (records) => { if (records?.length && records.every(ownValue)) fitNames(); else relayout(); };
     const textObserver = row && typeof win?.MutationObserver === 'function' ? new win.MutationObserver(onText) : null;
     textObserver?.observe(row, { childList: true, characterData: true, subtree: true });
+    // On a phone the row folds away while the owner reads back through the room's history (composer_fold.js).
+    const fold = box ? createComposerFold({ feed: box.querySelector('#chat-messages, .chat-messages'),
+        wrap: row?.closest?.('.chat-input-wrap'), row, win, doc }) : null;
 
     return {
         context,
@@ -1003,6 +1009,7 @@ export function createComposerOwnerControls({ row, byId, apiFetch, saveEffortRan
             textObserver?.disconnect();
             context?.destroy();
             effort?.destroy();
+            fold?.destroy();
             if (row?.dataset) delete row.dataset.ownerCompact;
             row?.style?.setProperty?.('--capsule-value-cap', '');
         },

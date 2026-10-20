@@ -3518,18 +3518,31 @@ html[data-layout="stack"] .chat-toolbar-row > .composer-menu svg {
     width: 18px;
     height: 18px;
 }
-/* The drawer (a layer, layers.js): the same sidebar slides in from the left over a scrim; it leaves 48px of the
-   room showing for the scrim, never more than 360px. Its head row holds the one × exactly where a page header's ☰
-   is (the header's inset and leading slot), so the control the finger reached for stays under it; a room's ☰ is
-   its composer's first control, and the × stays here (owner 19.10, 2A). */
+/* The drawer on a phone (a layer, layers.js; owner 19.10, 1A): the room is a card the drawer pushes aside. The same
+   sidebar lies under the room; opening slides the room right by the drawer's width, three quarters of the screen and
+   never more than 360px (--drawer-w), as a card (the screen's corners, a soft shadow, its words faded under a veil),
+   and brings the sidebar up from under it; the quarter of the room left showing is the way back. Nothing darkens.
+   Its head row holds the one × exactly where a page header's ☰ is (the header's inset and leading slot), so the
+   control the finger reached for stays under it; a room's ☰ is its composer's first control, and the × stays here
+   (owner 19.10, 2A). */
+html[data-layout="stack"] {
+    --drawer-w: min(75vw, 360px);
+    --room-card-radius: 44px;
+    --room-card-shadow: 0 0 0 0.5px rgba(var(--neutral-rgb), 0.12), -12px 0 40px rgba(0, 0, 0, 0.5);
+}
+html[data-theme="light"][data-layout="stack"] {
+    --room-card-shadow: 0 0 0 0.5px rgba(var(--neutral-rgb), 0.1), -10px 0 40px rgba(17, 20, 32, 0.16);
+}
+/* The scrim is the way back: clear, and only over the room's visible quarter (the drawer, under the room, keeps its
+   own touches). */
 html[data-layout="stack"] .nav-drawer-backdrop {
     position: fixed;
-    inset: 0;
+    inset: 0 0 0 var(--drawer-w);
     z-index: var(--z-drawer-scrim);
     display: block;
-    background: rgba(0, 0, 0, 0.48);
-    /* It fades with the drawer: shown at once and faded in from 0 (@starting-style), faded out before app.js puts
-       it away; while it fades out it is not a target. */
+    background: transparent;
+    /* It comes with the drawer: shown at once (from 0, @starting-style) and put away by app.js after the close;
+       while it goes it is not a target. */
     opacity: 0;
     pointer-events: none;
     transition: opacity var(--drawer-settle, 280ms) ease;
@@ -3549,13 +3562,15 @@ html[data-layout="stack"] .nav-drawer-backdrop[hidden] {
 html[data-layout="stack"] #primary-sidebar {
     position: fixed;
     inset: 0 auto 0 0;
-    z-index: var(--z-drawer);
-    width: min(100vw - 48px, 360px);
-    /* Closed it sits exactly off screen, where a drag picks it up (p = 0); it closes in 280ms and opens in 340ms on
-       the iOS sheet curve, or at the finger's speed after a drag (--drawer-settle, drawer_drag.js). */
-    transform: translateX(-100%);
+    z-index: var(--z-sidebar);  /* under the room: the room is the card that moves */
+    width: var(--drawer-w);
+    /* Closed it lies under the room a little to the left and faded (p = 0), and comes up from there as the room
+       slides away; it closes in 280ms and opens in 340ms on the iOS sheet curve, or at the finger's speed after a
+       drag (--drawer-settle, drawer_drag.js). */
+    transform: translateX(-16%);
+    opacity: 0.5;
     transition: transform var(--drawer-settle, 280ms) cubic-bezier(0.32, 0.72, 0, 1),
-        box-shadow var(--drawer-settle, 280ms) ease;
+        opacity var(--drawer-settle, 280ms) ease;
     padding-bottom: calc(var(--space-3) + var(--inset-bottom));
     touch-action: pan-y;  /* a sideways finger is the drawer's (drawer_drag.js); up and down scroll the list */
 }
@@ -3581,31 +3596,82 @@ html[data-layout="stack"] .drawer-head {
     min-height: 56px;  /* the header row's height: the × lands exactly on the ☰ */
     padding: calc(var(--chrome-inset) + var(--inset-top)) 0 var(--chrome-inset);
 }
-/* The shadow belongs to the open drawer: on the closed one it leaked a grey band onto the phone's left edge. */
-/* Pulled past fully open the drawer gives a little (a rubber band, drawer_drag.js, at most DRAG.rubberMax = 48px). Its
-   surface reaches 64px past its left edge as a solid shadow, so the room never shows through the gap: a shadow paints
-   outside the box, where the drawer's own scroller would clip a child or a pseudo-element. */
+/* Pulled past fully open the room gives a little (a rubber band, drawer_drag.js, at most DRAG.rubberMax = 48px) and
+   the drawer goes with it; the drawer's surface reaches 64px past its left edge as a solid shadow, so the screen's
+   edge never shows through the gap: a shadow paints outside the box, where the drawer's own scroller would clip a
+   child or a pseudo-element. */
 html[data-layout="stack"] #primary-sidebar.open {
-    transform: translateX(0);
-    box-shadow: -64px 0 0 var(--surface-side), var(--elev-float);
+    transform: none;
+    opacity: 1;
+    box-shadow: -64px 0 0 var(--surface-side);
     transition-duration: var(--drawer-settle, 340ms);
 }
-/* Under a finger (drawer_drag.js) the layer moves by one number, --drawer-p (0 closed … 1 open), with no
-   transition; the scrim is exactly as dark as the drawer is open. Releasing drops the class, and the drawer and its
-   scrim settle the rest of the way at the finger's speed; reduced motion keeps the finger tracking and drops the
-   settle. */
+/* Under a finger (drawer_drag.js) everything that moves follows one number, --drawer-p (0 closed … 1 open), with no
+   transition: the drawer comes up from under the room, the room slides as the card, its veil fades its words.
+   Releasing drops the class, and they settle the rest of the way at the finger's speed; reduced motion keeps the
+   finger tracking and drops the settle. Past open the drawer follows the room's give (the larger of the two
+   offsets). */
 html[data-layout="stack"] #primary-sidebar.dragging {
     transition: none;
     will-change: transform;
-    transform: translate3d(calc((var(--drawer-p, 0) - 1) * 100%), 0, 0);
-    box-shadow: -64px 0 0 var(--surface-side), var(--elev-float);
+    transform: translate3d(max(calc((var(--drawer-p, 0) - 1) * 0.16 * var(--drawer-w)),
+        calc((var(--drawer-p, 0) - 1) * var(--drawer-w))), 0, 0);
+    opacity: calc(0.5 + 0.5 * min(var(--drawer-p, 0), 1));
+    box-shadow: -64px 0 0 var(--surface-side);
 }
 html[data-layout="stack"] body .nav-drawer-backdrop.dragging {
     opacity: var(--drawer-p, 0);
     transition: none;
 }
+/* The room (Main, or a Project open over it) is the card: opaque, so the drawer under it never shows through, and
+   pushed aside from its left edge. */
+html[data-layout="stack"] #content,
+html[data-layout="stack"] .project-panel.open {
+    transform-origin: 0 50%;
+}
+html[data-layout="stack"] body.nav-drawer-open :is(#content, .project-panel.open) {
+    transform: translateX(var(--drawer-w)) scale(0.96);
+    border-radius: var(--room-card-radius);
+    box-shadow: var(--room-card-shadow);
+    overflow: hidden;
+    transition-duration: var(--drawer-settle, 340ms);
+}
+/* Under a finger. `body` makes it as specific as the open card's rule above, so a finger that takes the open drawer
+   back, or pulls it past open, moves the card too; the veil's rule below likewise. */
+html[data-layout="stack"] body :is(#content, .project-panel.open).dragging {
+    transition: none;
+    will-change: transform;
+    transform: translate3d(calc(var(--drawer-p, 0) * var(--drawer-w)), 0, 0) scale(calc(1 - 0.04 * min(var(--drawer-p, 0), 1)));
+    border-radius: calc(var(--room-card-radius) * min(var(--drawer-p, 0), 1));
+    box-shadow: var(--room-card-shadow);
+    overflow: hidden;
+}
+/* The room's words fade under one veil: an element of its own, because --drawer-p is not inherited (one box per
+   frame), so a pseudo-element of the card could not follow the finger. It lies over everything in the room. */
+.room-veil {
+    display: none;
+}
+html[data-layout="stack"] .room-veil {
+    display: block;
+    position: absolute;
+    inset: 0;
+    z-index: 100;  /* the top of the room's own stack, which the room's z-index keeps under every shell layer */
+    pointer-events: none;
+    background: var(--bg-primary);
+    opacity: 0;
+    transition: opacity var(--drawer-settle, 280ms) ease;
+}
+html[data-layout="stack"] body.nav-drawer-open .room-veil {
+    opacity: 0.42;
+    transition-duration: var(--drawer-settle, 340ms);
+}
+html[data-layout="stack"] body .room-veil.dragging {
+    opacity: calc(0.42 * min(var(--drawer-p, 0), 1));
+    transition: none;
+}
 @media (prefers-reduced-motion: reduce) {
-    html[data-layout="stack"] :is(#primary-sidebar, #primary-sidebar.open, .nav-drawer-backdrop) { transition: none; }
+    html[data-layout="stack"] :is(#primary-sidebar, #primary-sidebar.open, .nav-drawer-backdrop, #content,
+        .project-panel, .room-veil) { transition: none; }
 }
 html[data-layout="stack"] .unread-badge {
     min-width: 14px;
@@ -3615,6 +3681,11 @@ html[data-layout="stack"] #content {
     grid-column: 1;
     padding-left: 0;
     padding-bottom: var(--inset-bottom);
+    z-index: var(--z-room);
+    background: var(--bg-primary);
+    transition: transform var(--drawer-settle, 280ms) cubic-bezier(0.32, 0.72, 0, 1),
+        border-radius var(--drawer-settle, 280ms) cubic-bezier(0.32, 0.72, 0, 1),
+        box-shadow var(--drawer-settle, 280ms) ease;
 }
 /* The stack layout's header is one row of at most 56px at normal scale: `☰ · title · status … Panic · ⋯`
    (owner Q4=A). Nothing wraps: the title ellipsizes, Restart and the budget are inside ⋯ (chat.js places them). */
@@ -6938,6 +7009,51 @@ html[data-layout="stack"] .chat-toolbar-row {
     padding: 0 6px;
 }
 
+/* While the owner reads back through the history the row of capsules folds away (composer_fold.js; owner 19.10, 2A):
+   its line collapses from its measured height (--fold-row-h) with the wrap's gap, the capsules fade, ☰ stays the
+   row's first control and lands beside the field's middle (--fold-menu-dy), and the field makes room for it on its
+   leading side, where ☰ leads the row in either direction (☰ and the row's 6px padding, then the row's gap).
+   data-fold holds from the fold until the row is back, so all of it runs back on the same curve. */
+html[data-layout="stack"] .chat-input-wrap[data-fold] .chat-toolbar-row {
+    max-height: var(--fold-row-h);
+    transition: max-height 300ms cubic-bezier(0.32, 0.72, 0, 1), margin-bottom 300ms cubic-bezier(0.32, 0.72, 0, 1);
+}
+html[data-layout="stack"] .chat-input-wrap[data-folded] .chat-toolbar-row {
+    max-height: 0;
+    margin-bottom: calc(-1 * var(--space-2));
+}
+html[data-layout="stack"] .chat-input-wrap[data-fold] .chat-toolbar-row > .composer-menu {
+    transition: transform 300ms cubic-bezier(0.32, 0.72, 0, 1);
+}
+html[data-layout="stack"] .chat-input-wrap[data-folded] .chat-toolbar-row > .composer-menu {
+    transform: translateY(var(--fold-menu-dy, 0px));
+}
+html[data-layout="stack"] .chat-input-wrap[data-folded] .chat-toolbar-row > :not(.composer-menu) {
+    opacity: 0;
+    visibility: hidden;
+    pointer-events: none;
+    transition: opacity 120ms ease, visibility 0s linear 120ms;
+}
+/* Coming back, the capsules show once their line has opened enough to hold them. */
+html[data-layout="stack"] .chat-input-wrap[data-fold]:not([data-folded]) .chat-toolbar-row > :not(.composer-menu) {
+    transition: opacity 160ms ease 140ms, visibility 0s;
+}
+html[data-layout="stack"] .chat-input-wrap[data-fold] .chat-text-row {
+    transition: border-color 0.2s, box-shadow 0.2s, background 0.2s, margin-inline-start 300ms cubic-bezier(0.32, 0.72, 0, 1);
+}
+html[data-layout="stack"] .chat-input-wrap[data-folded] .chat-text-row {
+    margin-inline-start: calc(var(--composer-control-height) + 6px + var(--space-2));
+}
+/* Each as specific as the motion it stops: the line and the field, ☰, the capsules going and coming back. */
+@media (prefers-reduced-motion: reduce) {
+    html[data-layout="stack"] .chat-input-wrap[data-fold] :is(.chat-toolbar-row, .chat-text-row),
+    html[data-layout="stack"] .chat-input-wrap[data-fold] .chat-toolbar-row > .composer-menu,
+    html[data-layout="stack"] .chat-input-wrap[data-folded] .chat-toolbar-row > :not(.composer-menu),
+    html[data-layout="stack"] .chat-input-wrap[data-fold]:not([data-folded]) .chat-toolbar-row > :not(.composer-menu) {
+        transition: none;
+    }
+}
+
 html[data-layout="stack"] .chat-swarm {
     padding-left: 10px;
     padding-right: 10px;
@@ -7600,7 +7716,11 @@ html[data-layout="docked"] .project-panel {
     max-width: 100%;
 }
 
-/* The stack layout: the project thread is a full-width layer over the room. */
+/* The stack layout: the project thread is a full-width layer over the room. It has no outside to tap and dims nothing:
+   its scrim would lie over the drawer, which on a phone comes up from under the room it pushes aside. */
+html[data-layout="stack"] .project-panel-backdrop {
+    display: none;
+}
 html[data-layout="stack"] .project-panel {
     position: fixed;
     inset: 0;
@@ -7610,6 +7730,10 @@ html[data-layout="stack"] .project-panel {
     /* A full-screen room must occlude Main, not show its text through glass. */
     background: var(--bg-primary);
     transform: translateY(14px);
+    /* It rises on the sheet curve, and moves as the room card with the drawer (above) on the same one. */
+    transition: transform var(--drawer-settle, 280ms) cubic-bezier(0.32, 0.72, 0, 1), opacity 180ms ease,
+        border-radius var(--drawer-settle, 280ms) cubic-bezier(0.32, 0.72, 0, 1),
+        box-shadow var(--drawer-settle, 280ms) ease;
 }
 
 html[data-layout="stack"] .project-panel.open {
