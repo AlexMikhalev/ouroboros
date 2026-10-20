@@ -1,49 +1,30 @@
-"""The dialogue in ``state/dialog.sqlite``: chat and progress rows, their rooms, the one writer seam.
+"""The dialogue in ``state/dialog.sqlite``: exact chat/progress JSON and one writer seam.
 
-Every chat and progress row of a data root lives here, in the exact JSON text its writer
-produced (``body``), with the facts a reader addresses it by in typed columns: the stream,
-its ``seq``, the stored ``chat_id``, the task lineage, the direction, the stored ``type``
-(``kind``), the client message id and the owner message it originates from (``origin``).
-``seq`` is the row's chain coordinate: the byte offset the row has (an imported row) or would
-have had (an appended row) in the rotated ``logs/<stream>.jsonl`` chain, so every coordinate
-an older body or a client holds -- a ``history_id`` ``<stream>:<offset>``, a page cursor, a
-wake boundary, an export -- names the same row here. The two streams are paged separately,
-so each has its own coordinate space (``PRIMARY KEY (stream, seq)``).
+Each row keeps typed stream/chat/task/lineage/direction/kind/client/origin facts beside
+its original JSON body. ``seq`` is its byte offset in the former rotated JSONL chain;
+streams have separate coordinate spaces, so existing history ids, cursors, wake
+boundaries and exports retain their meaning. ``length`` includes the exact physical
+newline, including imported CRLF; ``seq + length`` is the next boundary.
 
-Beside its coordinate a row keeps its exact physical ``length`` (``seq + length`` is its end:
-the CRLF or compact JSON of an imported line is not re-encoded away), its ``ordinal`` -- the
-count the chain readers kept: every stored object of the stream (task-events v1 ``line``, the
-logs tail's ``_line``) and, for chat, ``pos`` -- the stream position outside A2A rows
-(``chat_chain._stream_rows``, the consolidation cursor, chronicle ``raw_range``). Both counts
-are stored relative to the row's unit (``segment``: an archive segment, or the stream's live
-unit for every row stored after the cutover) and become absolute through the unit's bases in
-``import_ledger``, settled by the transaction that completes the archive (newest first: the
-bases of every unit are known together, so an absolute ordinal is "still importing" before,
-never a guess; ``ouroboros.dialogue_positions`` answers by them). The lines the import skipped
-are the ``skipped`` intervals; every legacy ``(gen, line)`` alias is kept and indexed both
-ways; ``subagent_task_id`` is a probe column; a room's ``revision`` continues from the
-project's ``visible_revision`` at the cutover.
+``ordinal`` counts stored objects, ``pos`` counts chat objects outside A2A. Both are
+relative to their import segment or live unit. ``import_ledger`` settles absolute
+bases after the newest-first archive import completes; earlier answers are importing,
+never guessed. Skipped intervals and every legacy (gen, line) alias remain indexed.
+Room revision continues the project's visible_revision at cutover.
 
-``append`` is the ONE writer seam: one ``BEGIN IMMEDIATE`` transaction writes the row, dedups
-a named owner message through the partial UNIQUE ``(chat_id, client_message_id)`` (a duplicate
-returns the existing row's receipt), moves the room's revision, last row and activity, and
-records the dispatch obligation when the row needs one (``dispatch='pending'``). Workers write
-through it directly; required inbound acceptance retains ``WAIT_SEC``. Best-effort writers
-try without waiting and retain failed rows in ``dialogue_retry``. The obligation is drained by ``supervisor.message_ingress``:
-``claim_dispatch`` is the durable "dispatch entered" mark (pending -> dispatched), a retry or
-the recovery after a crash takes it exactly once, and ``complete_dispatch`` records the
-handoff's return. ``dispatch`` is ``NULL`` for an imported or unnamed row, ``none`` for a named
-acceptance that owes no bus dispatch, else ``pending`` / ``dispatched`` / ``completed``.
+``append`` owns one BEGIN IMMEDIATE transaction: row, named inbound dedup, room
+revision/last row/activity and optional dispatch obligation. A partial UNIQUE index
+protects (chat_id, client_message_id). Dispatch is NULL for unnamed/imported rows,
+none for named acceptance without handoff, else pending/dispatched/completed/abandoned.
+``message_ingress`` claims pending once and records handoff completion. Required inbound
+acceptance retains WAIT_SEC; best-effort writes try zero wait and use dialogue_retry.
+Content-addressed retries dedup inside the write transaction and suppress live replay.
 
-Readers are addressed queries: a room's candidate rows are the union of one indexed probe per
-room fact (its chat, the tasks the room rule can place in it, the owner rows its bindings
-name), each bounded by the page; Main probes the chats no Project owns. No query's cost grows
-with another room's history. Coverage is a fact (``dialogue_import.coverage``): rows below a
-segment the archive import has not reached yet are "still importing", never "no rows". The
-store rides ``ouroboros.store``'s core (lock tier in the header, typed errors, lazy per-thread
-connections, PERSIST+FULL or gated WAL); it is a separate file so the dialogue never waits in
-``current.sqlite``'s import/export window or its task-body journal. The archive import, the
-cutover, the rollback export and the frozen archive live in ``ouroboros.dialogue_import``.
+Reads union bounded indexed probes for the room's chat/tasks/bound owner inputs;
+Main probes chats no Project owns. Coverage below the import boundary is explicitly
+unknown. The separate file avoids current.sqlite body/import/export waits and uses
+store's typed errors, lazy per-thread handles and header lock tier (PERSIST+FULL or
+gated WAL). ``dialogue_import`` owns cutover, frozen archive import and rollback export.
 """
 
 from __future__ import annotations
@@ -481,16 +462,13 @@ def _existing_named(conn: sqlite3.Connection, chat_id: Optional[int], client_mes
 def append(root: Any, stream: str, row: Dict[str, Any], *, dispatch: Optional[Dict[str, Any]] = None,
            feed: bool = False, wait_sec: float = WAIT_SEC, idempotent: bool = False,
            emit_live: bool = True) -> Receipt:
-    """Store one row: ONE transaction for the row, the dedup, the room and the dispatch obligation.
+    """Store exact JSON, room facts and named dispatch in one transaction.
 
-    ``row`` is stored as the exact JSON text ``append_jsonl`` would have written. An inbound row
-    with a ``client_message_id`` is a named acceptance: an existing inbound row of that id in
-    that chat answers instead (``duplicate``), the partial UNIQUE index refusing the race two
-    processes lose by a hair. ``dispatch`` (the message the bus still owes a dispatch for,
-    JSON-serializable, bytes omitted) records the obligation as ``pending``; a named acceptance
-    without one is ``none``. ``feed`` advances the room's revision (a standalone message the
-    owner has not read). ``StoreBusy``/``StoreError`` are the caller's: a best-effort writer logs
-    and goes on, a required acceptance raises.
+    Named inbound duplicates return the existing receipt (the UNIQUE index also
+    settles concurrent writers). Dispatch input is JSON without bytes; presence
+    means pending, absence means none. Feed advances the unread revision. Optional
+    idempotence compares content identity under the existing room/time index.
+    Store failures propagate; append_quietly owns best-effort retry and live fallback.
     """
     if stream not in STREAMS:
         raise ValueError(f"unknown dialogue stream: {stream!r}")

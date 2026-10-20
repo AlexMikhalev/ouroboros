@@ -42,6 +42,10 @@ BUDGET_REPORT_EVERY_MESSAGES: int = 10
 _BRIDGE: Optional["LocalChatBridge"] = None
 
 
+class MessageTransportError(RuntimeError):
+    """The physical send failed after its durable dialogue append."""
+
+
 def _chat_media_download_url(task_id: str, data: bytes, mime: str) -> Tuple[str, str]:
     """Return ``(canonical_url, compat_url)`` for stored outbound chat media.
 
@@ -1272,26 +1276,23 @@ def send_with_budget(chat_id: int, text: str, log_text: Optional[str] = None,
                      role: str = "", system_type: str = "",
                      narration: Optional[bool] = None,
                      require_write: bool = False,
-                     ensure_record_boundary: bool = False) -> None:
-    """Send one owner-visible message through the shared host seam.
+                     ensure_record_boundary: bool = False,
+                     require_receipt: bool = True) -> None:
+    """Send an owner-visible row with one voice and timestamp for history and live.
 
-    ``narration`` is the note's VOICE, the same typed fact the worker stamps on
-    every progress frame (``agent._emit_progress``): ``True`` only for the model's
-    own speech, ``False`` for the host talking about a turn. The browser reads an
-    ABSENT key as legacy narration, so every send that went through this seam
-    without one — startup, restart, evolution and command-reply notices, the
-    provider-death incident — was promoted to the card's title and collapsed
-    activity line as if Ouroboros had said it (#1011). New sends are therefore
-    normalized here to the host voice, once, into the ONE meta dict both the
-    durable record and the live bridge receive; an explicit value from the caller
-    (or one already on ``progress_meta``) is preserved, and stored rows written
-    before the fact keep their legacy reading.
-
-    ``require_write`` requires a durable row. A bound ``delivery_id`` also
-    requires a transport receipt before its caller may acknowledge delivery;
-    ordinary notices retain their existing write-only bookkeeping contract.
+    Narration True means model speech, False host speech; absent legacy rows keep
+    their old reading. Normalize new host sends once so startup/restart/evolution,
+    command replies and provider incidents do not become model card titles (#1011).
+    Explicit narration (argument or progress_meta) wins. Required writes use the
+    existing outbox; named finals also require a positive transport receipt, while
+    ordinary required notices retain their history-only acknowledgement contract.
     """
-    with acquisition_budget(0 if is_progress else ACQUISITION_SLICE_SEC):
+    if require_write and DATA_DIR and not (progress_meta or {}).get("delivery_id"):
+        from supervisor.events_chat_delivery import send_required_message
+        return send_required_message(DATA_DIR, dict(chat_id=chat_id, text=text, log_text=log_text,
+            format=fmt, is_progress=is_progress, task_id=task_id, progress_meta=progress_meta or {},
+            ts=ts or utc_now_iso(), role=role, system_type=system_type, narration=narration))
+    with acquisition_budget(0 if is_progress and not require_write else ACQUISITION_SLICE_SEC):
         st = load_state()
         owner_id = int(st.get("owner_id") or 0)
         _text = str(text or "")
@@ -1335,7 +1336,8 @@ def send_with_budget(chat_id: int, text: str, log_text: Optional[str] = None,
             }
             if progress_meta:
                 progress_record.update(dict(progress_meta))
-            if dialogue_store.append_quietly(DATA_DIR, "progress", progress_record) is not None:
+            writer = dialogue_store.append if require_write else dialogue_store.append_quietly
+            if writer(DATA_DIR, "progress", progress_record, idempotent=require_write) is not None:
                 from ouroboros.task_activity_facts import record_narration
                 record_narration(DATA_DIR, progress_record)
                 meta.update(projection_fields(progress_record))
@@ -1368,11 +1370,14 @@ def send_with_budget(chat_id: int, text: str, log_text: Optional[str] = None,
         full = _text
 
         transport = dict(ts=msg_ts, is_progress=is_progress, task_id=task_id, progress_meta=progress_meta)
-        if fmt == "markdown":
-            receipt = _send_markdown(chat_id, full, **transport, role=role, system_type=system_type)
-        else:
-            receipt = get_bridge().send_message(chat_id, full, **transport, role=role, system_type=system_type)
-        if meta.get("delivery_id"):
-            ok, err = receipt
-            if not ok:
-                raise RuntimeError(f"message transport refused: {err}")
+        try:
+            if fmt == "markdown":
+                receipt = _send_markdown(chat_id, full, **transport, role=role, system_type=system_type)
+            else:
+                receipt = get_bridge().send_message(chat_id, full, **transport, role=role, system_type=system_type)
+            if meta.get("delivery_id") and require_receipt:
+                ok, err = receipt
+                if not ok:
+                    raise MessageTransportError(f"message transport refused: {err}")
+        except Exception as exc:
+            raise MessageTransportError(str(exc)) from exc

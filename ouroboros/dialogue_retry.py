@@ -26,14 +26,22 @@ _bytes = 0
 _counts = dict(appended=0, retried_ok=0, evicted=0, lost_at_exit=0)
 _eviction_burst = False
 _wake = None
+_requested = threading.Event()
 
 
 def bind_wake(wake) -> None:
     """Bind the server's existing duty; no scheduler or thread belongs here."""
     global _wake
     _wake = wake
-    if snapshot()["rows"]:
+    if snapshot()["rows"] or _requested.is_set():
         wake()
+
+
+def request_drain() -> None:
+    """Wake the existing delivery duty, including a required outbox continuation."""
+    _requested.set()
+    if _wake is not None:
+        _wake()
 
 
 def retain(root, stream, row, *, feed=False) -> None:
@@ -62,8 +70,7 @@ def retain(root, stream, row, *, feed=False) -> None:
             _eviction_burst = True
     if announce:
         log.info("Dialogue retry capacity exceeded; oldest rows evicted (counts in dialogue_retry.snapshot)")
-    if _wake is not None:
-        _wake()
+    request_drain()
 
 
 def snapshot() -> dict:
@@ -86,10 +93,11 @@ def drain(*, wait_sec=ACQUISITION_SLICE_SEC) -> int:
     done = 0
     try:
         with _lock:
-            batch = list(_rows.items())
-        for key, payload in batch:
+            batch = list(_rows)
+        for key in batch:
             with _lock:
-                if key not in _rows:
+                payload = _rows.get(key)
+                if payload is None:
                     continue
             root, stream, row, feed = json.loads(payload)
             try:

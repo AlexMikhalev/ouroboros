@@ -20,6 +20,7 @@ def isolated_retry(monkeypatch):
     monkeypatch.setattr(retry, "_counts", dict(appended=0, retried_ok=0, evicted=0, lost_at_exit=0))
     monkeypatch.setattr(retry, "_eviction_burst", False)
     monkeypatch.setattr(retry, "_wake", None)
+    monkeypatch.setattr(retry, "_requested", threading.Event())
     monkeypatch.setattr(utils, "_log_sink", None)
 
 
@@ -193,3 +194,23 @@ def test_retry_probe_uses_room_time_index(tmp_path, monkeypatch):
     ds.append(tmp_path, "chat", {"chat_id": 1, "ts": "indexed"}, idempotent=True)
     assert any("INDEXED BY dialogue_room_ts" in sql for sql in statements)
     assert statements.index("BEGIN IMMEDIATE") < next(i for i, sql in enumerate(statements) if "INDEXED BY dialogue_room_ts" in sql)
+
+
+def test_worker_checkpoint_publishes_once_during_contention_then_drains(tmp_path, monkeypatch):
+    import queue
+    from ouroboros.loop_messages import _emit_checkpoint_event
+    from tests.test_producer_checkpoints import SYSTEM_ROW
+
+    seed(tmp_path, monkeypatch)
+    monkeypatch.setenv("OUROBOROS_IN_WORKER", "1")
+    logs = tmp_path / "logs"
+    logs.mkdir(exist_ok=True)
+    bus = queue.Queue()
+    with pinned(tmp_path):
+        started = time.monotonic()
+        _emit_checkpoint_event(bus, "worker", logs, SYSTEM_ROW)
+        assert time.monotonic() - started < .25
+    frame = bus.get_nowait()
+    assert bus.empty() and not progress_rows(tmp_path) and retry.snapshot()["rows"] == 1
+    retry.drain()
+    assert progress_rows(tmp_path) == [frame["data"]] and bus.empty()

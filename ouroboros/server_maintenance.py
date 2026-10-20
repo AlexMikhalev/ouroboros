@@ -154,8 +154,10 @@ def _run_terminal_duty(drive_root: pathlib.Path, step: str, latch: Any,
             if outcomes:
                 log.info("Cancel-intent watchdog settled: %s", outcomes)
         elif step == "terminal_delivery_replay":
-            from ouroboros.dialogue_retry import drain
+            from ouroboros.dialogue_retry import drain, _requested
             from supervisor.terminal_delivery import replay_pending_deliveries
+            _requested.clear()
+            _DELIVERY_WAKE.clear()
             drain()
             replay_pending_deliveries(drive_root)
         elif step == "question_delivery_replay":
@@ -328,7 +330,8 @@ def _periodic_supervisor_maintenance(
     from ouroboros.dialogue_retry import bind_wake
 
     bind_wake(_DELIVERY_WAKE.set)
-    if _DELIVERY_WAKE.is_set() and _DELIVERY_SWEEP_LOCK.acquire(blocking=False):
+    if (now - _LAST_CANCEL_INTENT_SWEEP[0] <= BODY_MAINTENANCE_INTERVAL_SEC
+            and _DELIVERY_WAKE.is_set() and _DELIVERY_SWEEP_LOCK.acquire(blocking=False)):
         _DELIVERY_WAKE.clear()
         _start_maintenance_thread(_DELIVERY_SWEEP_LOCK, "terminal_delivery_replay", _run_terminal_duty,
                                   (pathlib.Path(DATA_DIR), "terminal_delivery_replay", _DELIVERY_SWEEP_LOCK, stop_event))

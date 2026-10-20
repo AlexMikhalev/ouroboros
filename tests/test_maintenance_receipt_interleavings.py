@@ -112,14 +112,15 @@ def _replay_clock(monkeypatch, owed):
 
 @pytest.mark.parametrize("send_replay_first, receipt_available", [
     (False, True), (True, True), (True, False),
-], ids=["queued-copy", "delivered-copy", "delivered-with-outcome-only"])
+], ids=["queued-copy", "delivered-copy", "delivered-with-receipt-deferred"])
 def test_cancel_publication_and_replay_keep_one_episode(
     records, monkeypatch, send_replay_first, receipt_available,
 ):
     claim, stored = _cancelled(records)
+    patch_document = delivery.patch_document
     if not receipt_available:
-        # Receipt persistence is fail-soft; the real terminal outcome still
-        # retains the request_id if the separate detail write cannot land.
+        # The outcome retains the episode while the exact sent fact stays owed
+        # until the destination receipt can be recorded off the consumer.
         def unavailable(*_args, **_kwargs):
             raise OSError("cancel receipt storage unavailable")
         monkeypatch.setattr(delivery, "patch_document", unavailable)
@@ -151,9 +152,12 @@ def test_cancel_publication_and_replay_keep_one_episode(
             assert delivery.replay_pending_deliveries(records.root, event_queue=events) == [expected_id]
             observed = _drain(events, records) if send_replay_first else []
             if send_replay_first:
-                assert len(records.sent) == 1 and delivery.pending_deliveries(records.root) == []
+                assert len(records.sent) == 1
                 if receipt_available:
+                    assert delivery.pending_deliveries(records.root) == []
                     assert load_task_result(records.root, "task")["cancel_receipt"]["delivered_chat_id"] == 9
+                else:
+                    assert delivery.pending_deliveries(records.root)[0]["emitted"]["chat_id"] == 9
         finally:
             resume.set()
         future.result(timeout=10)
@@ -163,13 +167,19 @@ def test_cancel_publication_and_replay_keep_one_episode(
     assert all((event["chat_id"], event["text"]) == (owed["chat_id"], owed["text"]) for event in observed)
     assert len(records.sent) == len(_chat_rows(records.root)) == 1
     assert records.sent[0][:2] == (9, owed["text"])
+    if not receipt_available:
+        assert not delivery.already_delivered(records.root, expected_id)
+        assert load_task_result(records.root, "task").get("cancel_receipt") is None
+        monkeypatch.setattr(delivery, "patch_document", patch_document)
+        assert delivery.replay_pending_deliveries(records.root, event_queue=events) == [expected_id]
+        assert len(records.sent) == len(_chat_rows(records.root)) == 1 and events.empty()
     assert delivery.pending_deliveries(records.root) == []
     assert delivery.already_delivered(records.root, expected_id)
     receipt = load_task_result(records.root, "task").get("cancel_receipt")
     if receipt_available:
         assert receipt["delivery_id"] == expected_id and receipt["delivered_chat_id"] == 9
     else:
-        assert receipt is None  # A lost detail write does not invent delivery evidence.
+        assert receipt is None  # Recovery must not invent an absent original detail block.
 
 
 def test_replay_rechecks_owed_row_after_cancel_delivery(records, monkeypatch):
