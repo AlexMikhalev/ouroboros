@@ -411,7 +411,7 @@ def _launch_job(queue, candidate, worker, token: str, generation) -> None:
     put or was refused. A closing generation withdraws a launch that wrote no marks; one whose marks
     committed stays here, unresolved attempts included, until it is put or refused: a stop waits for
     this lane (``workspace_preparation.pause_admission``), and a launch released to a later assignment
-    pass would be outside that wait."""
+    pass would be outside that wait. A refusal or an error after the marks still ends the job."""
     from ouroboros._usage_wait import ACQUISITION_SLICE_SEC
     from supervisor import workspace_preparation
     from supervisor.schedule_occurrence import contention
@@ -426,6 +426,9 @@ def _launch_job(queue, candidate, worker, token: str, generation) -> None:
     outcome = False
     try:
         outcome = attempt()
+        if outcome is None and _unsent(candidate) is not None:
+            log.info("Worker start of %s committed but unresolved; retrying it on the admission lane",
+                     candidate.get("id"))
         while outcome is None and _unsent(candidate) is not None:
             time.sleep(ACQUISITION_SLICE_SEC)
             outcome = attempt()

@@ -185,4 +185,3 @@ def test_owner_restart_hands_a_committed_followup_over_before_its_own_restrictio
         proceed.set()
         assert env.gen.wait_idle(_WAIT_SEC)
     assert observed == {"flag_before_pause": False, "drained": True, "delivered": [row["id"]]}
-

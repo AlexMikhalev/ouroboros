@@ -68,11 +68,11 @@ def _perform_owner_restart(ctx: Any, reply=None) -> tuple[bool, str]:
                 # the restriction before consuming it. Restart still proceeds.
                 log.exception("Restart follow-up restriction awaits boot persistence")
     except Exception:
+        resume_admission()  # first: the Restart does not happen, even if the cleanup below fails too
         owner_restart_flag.unlink(missing_ok=True)
         if not panic_kept:
             stable_skip_flag.unlink(missing_ok=True)
         log.warning("Failed to write owner restart no-resume flag", exc_info=True)
-        resume_admission()
         return False, "could not write restart state."
     # Everything reversible is behind us (checkout landed, no-resume
     # intent durable): from here the restart always follows, and every
@@ -175,7 +175,7 @@ def _stop_owned_work(ctx: Any) -> list:
     from ouroboros.owned_shutdown import begin_owned_stop
 
     _OWNER_STOP_BEGAN.set()  # owner Rollback/Apply Update also restart as the owner, but never get here
-    begin_owned_stop(DATA_DIR)  # the grace starts here; every pending stop is recorded before any wait
+    begin_owned_stop(DATA_DIR)  # the grace starts here; every pending stop is recorded before its waits
     returning, owner_waits = _prepare_owner_restart_returns(ctx)
     _LAST_RETURNING.clear()
     _LAST_RETURNING.update(returning)
