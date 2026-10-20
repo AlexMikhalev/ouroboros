@@ -917,8 +917,8 @@ export function renderSettingsPage() {
                         </div>
                         <div class="settings-toolbar">
                             <button class="btn btn-primary" id="btn-local-start">Start</button>
-                            <button class="btn btn-primary" id="btn-local-stop">Stop</button>
-                            <button class="btn btn-primary" id="btn-local-test">Test Tool Calling</button>
+                            <button class="btn btn-default" id="btn-local-stop">Stop</button>
+                            <button class="btn btn-default" id="btn-local-test">Test Tool Calling</button>
                         </div>
                         <div id="local-model-status" class="settings-inline-status" role="status" aria-live="polite">Status: Offline</div>
                         <div id="local-model-action-status" class="settings-inline-status" role="status" aria-live="polite" aria-atomic="true"></div>
