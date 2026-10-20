@@ -286,8 +286,8 @@ html[data-layout="stack"] .resize-handle { display: none; }
     font-size: var(--type-meta);
 }
 
-/* The chosen place: the crimson tone, its ink and a left mark. One row at a time; the Projects header is never
-   chosen (a Project row is). */
+/* The chosen place: the crimson tone, its ink and a left mark (--place-mark: the accent on the light tint, the
+   fill's white ink on the dark solid). One row at a time; the Projects header is never chosen (a Project row is). */
 .nav-row.active::before {
     content: '';
     position: absolute;
@@ -297,7 +297,7 @@ html[data-layout="stack"] .resize-handle { display: none; }
     width: 3px;
     height: 17px;
     border-radius: 0 3px 3px 0;
-    background: var(--accent);
+    background: var(--place-mark);
 }
 
 /* Unread counts and badges are the crimson accent (a live fact for you), never red and never a glow (owner Q6=A);
@@ -5002,7 +5002,10 @@ textarea.chat-input::placeholder { color: var(--text-muted); }
     color: var(--text-secondary, rgba(var(--neutral-rgb), 0.65));
 }
 .settings-lan-hint[data-tone="ok"] { border-color: var(--status-ok-border); }
-.settings-lan-hint[data-tone="warn"] { border-color: var(--status-warn-border); }
+.settings-lan-hint[data-tone="warn"] {
+    border-color: var(--status-warn-border);
+    color: var(--status-warn-word, var(--text-secondary, rgba(var(--neutral-rgb), 0.65)));
+}
 .settings-lan-hint[data-tone="info"] { border-color: var(--status-neutral-border); }
 .settings-lan-hint a { color: inherit; text-decoration: underline; opacity: 0.9; }
 .btn-sm {
@@ -5779,7 +5782,7 @@ textarea.chat-input::placeholder { color: var(--text-muted); }
     padding: 0;
     border: 0;
     background: none;
-    color: var(--accent-light);
+    color: var(--tone-crimson-word);
     font: inherit;
     font-size: var(--type-meta);
     line-height: var(--line-meta);
@@ -5851,6 +5854,7 @@ button.skills-mark { cursor: pointer; min-height: 0; }
 .skills-card-trays:empty { display: none; }
 .skills-tray { padding: var(--space-3) var(--space-4); border-radius: var(--radius-inner); background: var(--surface-tray); }
 .skills-tray[data-tone="danger"] { background: var(--status-error-bg); }
+.skills-tray[data-tone="danger"] .skills-tray-text { color: var(--status-error-word, var(--text-primary)); }
 .skills-tray-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: var(--space-3); }
 .skills-tray-text { min-width: 0; color: var(--text-primary); font-size: var(--type-body); line-height: var(--line-body); overflow-wrap: anywhere; }
 .skills-tray-note { margin-top: 2px; color: var(--text-meta); font-size: var(--type-meta); line-height: var(--line-meta); }
@@ -7439,7 +7443,7 @@ body.keyboard-open .chat-instance-panel .chat-input-area {
     padding: 8px 10px;
     border: 1px solid var(--status-warn-border);
     border-radius: var(--radius-md, 8px);
-    color: var(--text-primary);
+    color: var(--status-warn-word, var(--text-primary));
     font-size: 12.5px;
     margin: 0 0 var(--space-2);
 }
@@ -7829,6 +7833,7 @@ body.keyboard-open .project-panel {
    rendered at secondary ink reads as disabled"). A warn tint says the same
    thing without hiding it. */
 .harness-exhausted { background: var(--status-warn-bg); }
+.harness-exhausted .harness-account-meta { color: var(--status-warn-word, var(--text-meta)); }
 /* The login card frames itself: .panel-card is an onboarding.css class the
    settings pages never load, so leaning on it rendered a bare, frameless
    card (finding #4). Same ui-card tokens as every other panel surface. */
@@ -9069,8 +9074,8 @@ body.keyboard-open .project-panel {
 .chat-message-action:hover,
 .chat-message-copy:hover,
 .chat-message-reply:hover { background: var(--surface-control); }
-/* An action that is on now (Read aloud while it speaks) has no body, so it wears the crimson word's ink. */
-.chat-message-action[aria-pressed="true"] { color: var(--accent-light); }
+/* An action that is on now (Read aloud while it speaks) has no body, so it wears the crimson tone's word. */
+.chat-message-action[aria-pressed="true"] { color: var(--tone-crimson-word); }
 .chat-message-action:focus-visible,
 .chat-message-copy:focus-visible,
 .chat-message-reply:focus-visible {
