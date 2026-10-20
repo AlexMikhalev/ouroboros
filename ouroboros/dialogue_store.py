@@ -699,13 +699,15 @@ def probe_rows(root: Any, stream: str, keys: Iterable[Tuple[str, Any]], *, befor
     """The union of one indexed probe per ``(column, value)`` key in ``[lower, before)``, newest
     first, at most ``limit`` rows: the candidate rows of a room or a task tree. Each probe reads
     at most ``limit`` coordinates through its own index; only the union's winning rows fetch
-    bodies, in this same snapshot. ``("chat_id", None)`` probes rows without a chat id."""
+    bodies in that snapshot; JSON decoding follows release. ``("chat_id", None)`` probes NULL chats."""
     with transaction(root, write=False) as conn:
-        return _probe(conn, stream, keys, before=before, lower=lower, limit=limit, newest_first=newest_first)
+        records = _probe(conn, stream, keys, before=before, lower=lower, limit=limit, newest_first=newest_first)
+    return [_row(record) for record in records]
 
 
 def _probe(conn: sqlite3.Connection, stream: str, keys: Iterable[Tuple[str, Any]], *, before: Optional[int],
-           lower: int, limit: int, newest_first: bool) -> List[Row]:
+           lower: int, limit: int, newest_first: bool) -> List[sqlite3.Row]:
+    """Capture the winning stored records; the transaction owner decodes after release."""
     found = set()
     order = "DESC" if newest_first else "ASC"
     for column, value in dict.fromkeys(tuple(keys)):
@@ -730,7 +732,7 @@ def _probe(conn: sqlite3.Connection, stream: str, keys: Iterable[Tuple[str, Any]
         marks = ",".join("?" for _ in batch)
         for record in conn.execute(f"{_SELECT} WHERE stream=? AND seq IN ({marks})", (stream, *batch)):
             records[record["seq"]] = record
-    return [_row(records[seq]) for seq in chosen]
+    return [records[seq] for seq in chosen]
 
 
 def room_candidates(root: Any, stream: str, chat_id: int, *, tasks: Iterable[str] = (), origins: Iterable[str] = (),
@@ -756,7 +758,8 @@ def main_candidates(root: Any, stream: str, *, exclude_chats: Iterable[int], pin
                  if record["chat_id"] not in excluded]
         keys: List[Tuple[str, Any]] = [("chat_id", chat) for chat in chats] + [("chat_id", None)]
         keys.extend(("kind", kind) for kind in pinned_kinds)
-        return _probe(conn, stream, keys, before=before, lower=lower, limit=limit, newest_first=True)
+        records = _probe(conn, stream, keys, before=before, lower=lower, limit=limit, newest_first=True)
+    return [_row(record) for record in records]
 
 
 def task_rows(root: Any, task_ids: Iterable[str], *, stream: str, after: int = -1, limit: int = 1000) -> List[Row]:
