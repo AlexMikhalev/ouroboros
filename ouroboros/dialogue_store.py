@@ -28,8 +28,8 @@ project's ``visible_revision`` at the cutover.
 a named owner message through the partial UNIQUE ``(chat_id, client_message_id)`` (a duplicate
 returns the existing row's receipt), moves the room's revision, last row and activity, and
 records the dispatch obligation when the row needs one (``dispatch='pending'``). Workers write
-through it directly; SQLite's busy wait (``WAIT_SEC``) is the whole retry budget, and nothing
-here admits a zero-wait write. The obligation is drained by ``supervisor.message_ingress``:
+through it directly; required inbound acceptance retains ``WAIT_SEC``. Best-effort writers
+try without waiting and retain failed rows in ``dialogue_retry``. The obligation is drained by ``supervisor.message_ingress``:
 ``claim_dispatch`` is the durable "dispatch entered" mark (pending -> dispatched), a retry or
 the recovery after a crash takes it exactly once, and ``complete_dispatch`` records the
 handoff's return. ``dispatch`` is ``NULL`` for an imported or unnamed row, ``none`` for a named
@@ -322,6 +322,11 @@ def transaction(root: Any, *, write: bool, wait_sec: float = WAIT_SEC) -> Iterat
     lock around a name-tier access, ``StoreBusy`` on contention, the cutover for a root whose
     chain files were never cut over (its own files; unknown is never answered empty), an empty
     in-memory schema for a read of a root that holds no dialogue at all."""
+    budget = store._WAIT_BUDGET.get()
+    if store._ADMISSION_NO_WAIT.get():
+        wait_sec = 0.0
+    elif budget is not None:
+        wait_sec = min(wait_sec, budget)
     root = pathlib.Path(root)
     if not present(root):
         if write or holds_dialogue_files(root):
@@ -474,7 +479,8 @@ def _existing_named(conn: sqlite3.Connection, chat_id: Optional[int], client_mes
 
 
 def append(root: Any, stream: str, row: Dict[str, Any], *, dispatch: Optional[Dict[str, Any]] = None,
-           feed: bool = False, wait_sec: float = WAIT_SEC) -> Receipt:
+           feed: bool = False, wait_sec: float = WAIT_SEC, idempotent: bool = False,
+           emit_live: bool = True) -> Receipt:
     """Store one row: ONE transaction for the row, the dedup, the room and the dispatch obligation.
 
     ``row`` is stored as the exact JSON text ``append_jsonl`` would have written. An inbound row
@@ -497,6 +503,16 @@ def append(root: Any, stream: str, row: Dict[str, Any], *, dispatch: Optional[Di
     counted = stream_row(stream, columns)
     _plan_first(root, wait_sec)
     with transaction(root, write=True, wait_sec=wait_sec) as conn:
+        if idempotent:
+            from ouroboros.chat_chain import source_row_id
+
+            digest = source_row_id(row)
+            candidates = conn.execute(
+                f"{_SELECT} INDEXED BY dialogue_room_ts WHERE stream=? AND chat_id IS ? AND ts=?",
+                (stream, columns["chat_id"], columns["ts"]))
+            for existing in candidates:
+                if source_row_id(decode(existing["body"])) == digest:
+                    return _receipt(existing)
         if named:
             existing = _existing_named(conn, columns["chat_id"], columns["client_message_id"])
             if existing is not None:
@@ -514,7 +530,7 @@ def append(root: Any, stream: str, row: Dict[str, Any], *, dispatch: Optional[Di
             return _receipt(existing)
         conn.execute("UPDATE streams SET next_seq=?, next_ordinal=next_ordinal+1, next_pos=next_pos+? WHERE stream=?",
                      (seq + length, int(counted), stream))
-    if stream == "progress":
+    if stream == "progress" and emit_live:
         _stream_live(row)
     return Receipt(stream, seq, row, False, state, length)
 
@@ -524,12 +540,21 @@ def _receipt(existing: sqlite3.Row) -> Receipt:
 
 
 def append_quietly(root: Any, stream: str, row: Dict[str, Any], **kwargs: Any) -> Optional[Receipt]:
-    """``append`` for a best-effort writer (a progress frame, a host summary): a store failure is
-    logged and answered ``None``, as ``append_jsonl`` answered ``False``; the live frame still goes out."""
+    """Try once without waiting; retain failures for content-addressed retry.
+
+    Progress reaches the live sink even under contention. Retry never emits it again.
+    Required inbound/terminal writers use ``append`` and never enter this buffer.
+    """
+    from ouroboros import dialogue_retry
+
+    dialogue_retry.before_append()
     try:
-        return append(root, stream, row, **kwargs)
+        with store.acquisition_budget(0):
+            return append(root, stream, row, **kwargs)
     except (StoreError, OSError, ValueError):
-        log.warning("dialogue row not stored in %s (%s)", path(root), stream, exc_info=True)
+        if stream == "progress":
+            _stream_live(row)
+        dialogue_retry.retain(root, stream, row, feed=kwargs.get("feed", False))
         return None
 
 

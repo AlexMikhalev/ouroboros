@@ -16,7 +16,8 @@ from ouroboros.artifacts import store_chat_media_bytes
 from ouroboros.contracts.chat_id_policy import is_a2a_chat_id
 from ouroboros.event_bus import CHAT_DOCUMENT, CHAT_LINKS, CHAT_OUTBOUND, CHAT_PHOTO, CHAT_QUIZ, CHAT_QUIZ_STATE, CHAT_TYPING, CHAT_VIDEO, publish_event
 from ouroboros import dialogue_store
-from ouroboros.store import StoreError
+from ouroboros.store import StoreError, acquisition_budget
+from ouroboros._usage_wait import ACQUISITION_SLICE_SEC
 from supervisor.state import load_state
 from supervisor.message_ingress import (  # noqa: F401 - the named ingress's public names stay importable here
     _INGRESS_LOCK, accept_chat, accept_local_message, accepted_chat_message, log_chat, record_inbound_message,
@@ -1290,87 +1291,88 @@ def send_with_budget(chat_id: int, text: str, log_text: Optional[str] = None,
     requires a transport receipt before its caller may acknowledge delivery;
     ordinary notices retain their existing write-only bookkeeping contract.
     """
-    st = load_state()
-    owner_id = int(st.get("owner_id") or 0)
-    _text = str(text or "")
-    msg_ts = ts or utc_now_iso()
-    meta = dict(progress_meta or {})
-    if narration is not None:
-        meta["narration"] = bool(narration)
-    meta.setdefault("narration", False)
-    from ouroboros.chat_references import origin_reply, projection_fields
-    if not is_progress and (reply := origin_reply(DATA_DIR, task_id, meta if meta.get("origin_message_ref") else None)):
-        meta.setdefault("reply_to", reply)
-    progress_meta = meta
-    if task_id and DATA_DIR and system_type not in ROOM_FIXED_ROW_TYPES and meta.get("_is_direct_chat") is not True:
-        # The one room rule (A4) at the one send seam: a task-addressed host row
-        # lands in its task's Project room on the durable row, the WebSocket frame
-        # and every transport alike, whichever producer addressed it. A child row
-        # that reached here without its lineage borrows it from the same cached
-        # facts (never a result read), so its card nests it live and on replay.
-        try:
-            rooms = RoomResolver(DATA_DIR)
-            chat_id = rooms(task_id, meta.get("parent_task_id"), meta.get("root_task_id")) or chat_id
-            lineage = {} if meta.get("parent_task_id") else rooms.lineage(task_id)
-            for key in ("parent_task_id", "root_task_id", "delegation_role"):
-                if lineage.get(key) and not meta.get(key):
-                    meta[key] = lineage[key]
-        except Exception:
-            log.debug("room rule failed for %s; the producer's address stands", task_id, exc_info=True)
+    with acquisition_budget(0 if is_progress else ACQUISITION_SLICE_SEC):
+        st = load_state()
+        owner_id = int(st.get("owner_id") or 0)
+        _text = str(text or "")
+        msg_ts = ts or utc_now_iso()
+        meta = dict(progress_meta or {})
+        if narration is not None:
+            meta["narration"] = bool(narration)
+        meta.setdefault("narration", False)
+        from ouroboros.chat_references import origin_reply, projection_fields
+        if not is_progress and (reply := origin_reply(DATA_DIR, task_id, meta if meta.get("origin_message_ref") else None)):
+            meta.setdefault("reply_to", reply)
+        progress_meta = meta
+        if task_id and DATA_DIR and system_type not in ROOM_FIXED_ROW_TYPES and meta.get("_is_direct_chat") is not True:
+            # The one room rule (A4) at the one send seam: a task-addressed host row
+            # lands in its task's Project room on the durable row, the WebSocket frame
+            # and every transport alike, whichever producer addressed it. A child row
+            # that reached here without its lineage borrows it from the same cached
+            # facts (never a result read), so its card nests it live and on replay.
+            try:
+                rooms = RoomResolver(DATA_DIR)
+                chat_id = rooms(task_id, meta.get("parent_task_id"), meta.get("root_task_id")) or chat_id
+                lineage = {} if meta.get("parent_task_id") else rooms.lineage(task_id)
+                for key in ("parent_task_id", "root_task_id", "delegation_role"):
+                    if lineage.get(key) and not meta.get(key):
+                        meta[key] = lineage[key]
+            except Exception:
+                log.debug("room rule failed for %s; the producer's address stands", task_id, exc_info=True)
 
-    if is_progress and DATA_DIR:
-        progress_record = {
-            "ts": msg_ts,
-            "type": "send_message",
-            "task_id": task_id,
-            "is_progress": True,
-            "direction": "out", "chat_id": chat_id, "user_id": owner_id,
-            "text": text if log_text is None else log_text,
-            "content": _text,
-            "format": fmt,
-            "role": str(role or "") or "assistant",
-            "system_type": str(system_type or ""),
-        }
-        if progress_meta:
-            progress_record.update(dict(progress_meta))
-        if dialogue_store.append_quietly(DATA_DIR, "progress", progress_record) is not None:
-            from ouroboros.task_activity_facts import record_narration
-            record_narration(DATA_DIR, progress_record)
-            meta.update(projection_fields(progress_record))
-    else:
-        feed = _text.strip() not in ("", "\u200b") and not is_task_card_message(progress_meta)
-        stored = log_chat(
-            # S3 (Q4): a typed SYSTEM row persists as direction="system", the
-            # role history replay already maps to a system rendering — so the
-            # receipt survives reload as system, never as Ouroboros's speech.
-            "system" if role == "system" else "out",
-            chat_id,
-            owner_id,
-            text if log_text is None else log_text,
-            ts=msg_ts,
-            fmt=fmt,
-            source=str(meta.get("source") or ""),
-            task_id=task_id,
-            record_type=system_type,
-            message_meta=progress_meta,
-            require_write=require_write,
-            ensure_record_boundary=ensure_record_boundary,
-            feed=feed,
-        )
+        if is_progress and DATA_DIR:
+            progress_record = {
+                "ts": msg_ts,
+                "type": "send_message",
+                "task_id": task_id,
+                "is_progress": True,
+                "direction": "out", "chat_id": chat_id, "user_id": owner_id,
+                "text": text if log_text is None else log_text,
+                "content": _text,
+                "format": fmt,
+                "role": str(role or "") or "assistant",
+                "system_type": str(system_type or ""),
+            }
+            if progress_meta:
+                progress_record.update(dict(progress_meta))
+            if dialogue_store.append_quietly(DATA_DIR, "progress", progress_record) is not None:
+                from ouroboros.task_activity_facts import record_narration
+                record_narration(DATA_DIR, progress_record)
+                meta.update(projection_fields(progress_record))
+        else:
+            feed = _text.strip() not in ("", "\u200b") and not is_task_card_message(progress_meta)
+            stored = log_chat(
+                # S3 (Q4): a typed SYSTEM row persists as direction="system", the
+                # role history replay already maps to a system rendering — so the
+                # receipt survives reload as system, never as Ouroboros's speech.
+                "system" if role == "system" else "out",
+                chat_id,
+                owner_id,
+                text if log_text is None else log_text,
+                ts=msg_ts,
+                fmt=fmt,
+                source=str(meta.get("source") or ""),
+                task_id=task_id,
+                record_type=system_type,
+                message_meta=progress_meta,
+                require_write=require_write,
+                ensure_record_boundary=ensure_record_boundary,
+                feed=feed,
+            )
 
-    if not is_progress and stored:
-        meta.update(projection_fields(stored))
-    if _text.strip() in ("", "\u200b"):
-        return
-    # Budget footers belong in dashboard/status flows, not every chat reply.
-    full = _text
+        if not is_progress and stored:
+            meta.update(projection_fields(stored))
+        if _text.strip() in ("", "\u200b"):
+            return
+        # Budget footers belong in dashboard/status flows, not every chat reply.
+        full = _text
 
-    transport = dict(ts=msg_ts, is_progress=is_progress, task_id=task_id, progress_meta=progress_meta)
-    if fmt == "markdown":
-        receipt = _send_markdown(chat_id, full, **transport, role=role, system_type=system_type)
-    else:
-        receipt = get_bridge().send_message(chat_id, full, **transport, role=role, system_type=system_type)
-    if meta.get("delivery_id"):
-        ok, err = receipt
-        if not ok:
-            raise RuntimeError(f"message transport refused: {err}")
+        transport = dict(ts=msg_ts, is_progress=is_progress, task_id=task_id, progress_meta=progress_meta)
+        if fmt == "markdown":
+            receipt = _send_markdown(chat_id, full, **transport, role=role, system_type=system_type)
+        else:
+            receipt = get_bridge().send_message(chat_id, full, **transport, role=role, system_type=system_type)
+        if meta.get("delivery_id"):
+            ok, err = receipt
+            if not ok:
+                raise RuntimeError(f"message transport refused: {err}")
