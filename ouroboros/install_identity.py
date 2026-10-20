@@ -139,7 +139,12 @@ def check_store_root(path: Any, *, write: bool) -> None:
 
 
 def require_task_roots(task: dict) -> None:
-    """Validate stored authorities before a duty follows any of a task's data roots."""
+    """Validate TASK_ROOT_FIELDS before restored-task admission or stored-root effects.
+
+    Call before file preparation, process launch, mailbox or accounting work.
+    Raises StoreForeign with reason_code and plain detail in str(error); it
+    never rewrites pointers. Own layout drives and identity-free roots remain usable.
+    """
     for key in TASK_ROOT_FIELDS:
         if task.get(key):
             require_owned_root(task[key])
