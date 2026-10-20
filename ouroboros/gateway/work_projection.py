@@ -132,9 +132,13 @@ def _member_raw(row: Mapping[str, Any], raw: Mapping[str, Any], obs: _Observatio
     pause = raw.get("_budget_pause") if isinstance(raw.get("_budget_pause"), dict) else {}
     facts: Dict[str, Any] = {"hold": hold, "paused_at": pause.get("paused_at") or pause.get("requested_at")}
     if row.get("pause_cause") == "owner" and row.get("phase") in {"budget_paused", "budget_pausing"}:
+        from ouroboros.control_actor import pause_author
+
         fence = obs.fence(root_id, raw.get("budget_drive_root"))
-        facts["fence"] = fence
-        facts["paused_at"] = fence.get("paused_at") or fence.get("requested_at") or facts["paused_at"]
+        # The Pause is dated from its press: a settling fence restamps ``paused_at``.
+        facts["paused_at"] = fence.get("requested_at") or fence.get("paused_at") or facts["paused_at"]
+        facts["pause_by"] = pause_author(fence)
+        facts["parked"] = [str(task) for task in fence.get("parked_members") or () if task]
     return facts
 
 
@@ -151,18 +155,36 @@ def _inflight_upkeep(drive_root: Any, known: set) -> List[Dict[str, Any]]:
     return rows
 
 
-def _open_runs(drive_root: Any) -> Dict[str, List[str]]:
-    """Delegated runs with a durable start and no settlement, by their tree's root: live members of that root's
-    work, which the cascade Stop of that root cancels. A settled run custody still holds (an undisposed patch)
-    runs nothing and is not a member."""
+def _open_runs(drive_root: Any) -> Dict[str, List[Any]]:
+    """Delegated runs with a durable start and no settlement, by their tree's root: members of that root's work,
+    which the cascade Stop of that root cancels. A settled run custody still holds (an undisposed patch) runs
+    nothing and is not a member; nor is a run the engine already reported finished while its settlement is owed."""
     from ouroboros.delegate_custody_reconcile import open_runs, run_tree_id
 
-    live: Dict[str, List[str]] = {}
+    held: Dict[str, List[Any]] = {}
     for entry in open_runs(drive_root):
         root_id = run_tree_id(entry)
-        if root_id:
-            live.setdefault(root_id, []).append(str(entry.run_id))
-    return live
+        if root_id and not str(getattr(entry, "terminal_state", "") or ""):
+            held.setdefault(root_id, []).append(entry)
+    return held
+
+
+# A run whose own task ended this way may outlive it unobserved: its liveness is unconfirmed, not running.
+_FAILED_OWNER = frozenset({"failed", "cancelled"})
+
+
+def _typed_run(entry: Any, obs: _Observations) -> Dict[str, Any]:
+    """One open run as a work tail: a review the Pause lets finish, a live run, or a run nobody can confirm.
+
+    Facts the projection already holds, no new probe: the run's ``source`` and its own task's stored outcome."""
+    from ouroboros.delegate_registration_policy import review_owned_source
+
+    run_id = str(entry.run_id)
+    if review_owned_source(getattr(entry, "source", "")):
+        return {"run_id": run_id, "kind": "review", "state": "live"}
+    owner = obs.result(str(entry.task_id or "")) if entry.task_id else None
+    failed = ws._outcome(owner or {}) in _FAILED_OWNER
+    return {"run_id": run_id, "kind": "run", "state": "unknown" if failed else "live"}
 
 
 def _since(row: Mapping[str, Any]) -> Optional[float]:
@@ -217,7 +239,7 @@ def _snapshot(drive_root: Any, owners: List[Mapping[str, Any]], raw: Dict[str, M
     groups: Dict[str, Dict[str, Any]] = {}
 
     def group(work_id: str) -> Dict[str, Any]:
-        return groups.setdefault(work_id, {"rows": [], "roots": set(), "delegated": 0, "name": ""})
+        return groups.setdefault(work_id, {"rows": [], "roots": set(), "runs": [], "name": ""})
 
     for task_id, row in rows.items():
         facts = raw.get(task_id) or {}
@@ -227,10 +249,10 @@ def _snapshot(drive_root: Any, owners: List[Mapping[str, Any]], raw: Dict[str, M
         entry["rows"].append((row, facts, root_id))
         entry["roots"].add(root_id)
         entry["name"] = entry["name"] or name
-    for root_id, run_ids in held.items():
+    for root_id, runs in held.items():
         work_id, name = _work_of(root_id, raw, obs, memo)
         entry = group(work_id)
-        entry["delegated"] += len(run_ids)
+        entry["runs"].extend(_typed_run(run, obs) for run in runs)
         entry["roots"].add(root_id)
         entry["name"] = entry["name"] or name
     works: List[Dict[str, Any]] = []
@@ -242,7 +264,6 @@ def _snapshot(drive_root: Any, owners: List[Mapping[str, Any]], raw: Dict[str, M
             owners_by_root.setdefault(root_id, []).append(member)
             if _episode_row(row, facts, root_id):
                 live_roots.append((row, facts, member, root_id))
-        delegated = entry["delegated"] if not any(member["activity"] == "working" for member in members) else 0
         current_row = current_state = None
         current_root = ""
         if live_roots:
@@ -257,13 +278,11 @@ def _snapshot(drive_root: Any, owners: List[Mapping[str, Any]], raw: Dict[str, M
             outcome = ws._outcome(stored)
             room_row = next((item[0] for item in entry["rows"]), stored)
             facts = raw.get(episode_id) or stored
-        if not members and not entry["delegated"]:
+        if not members and not entry["runs"]:
             continue
         name = entry["name"] or _first_name(facts)
         work = ws.roll_up_work(work_id, members, episode=episode, name=name, room=room_row.get("chat_id"),
-                               focus=(facts or {}).get("focus"), delegated=delegated, outcome=outcome)
-        # Working helpers say the reason and keep the call's word; the count of runs is still the work's fact.
-        work["members"]["delegated"] = int(entry["delegated"])
+                               focus=(facts or {}).get("focus"), runs=entry["runs"], outcome=outcome)
         current_id = str(episode["task_id"])
         # Every root grouped here owns a live queue or direct row of its tree (each member is one) or an open
         # delegated run: exactly what the Stop door reaches (queue_transitions.task_subtree_is_live), so each root

@@ -84,11 +84,31 @@ CASES = {
         [_row("h", parent_task_id="p", root_task_id="p")], {},
         {"p": {"task_id": "p", "status": "completed", "chat_id": 42}}, {},
     ),
+    # The 20.10 card: the owner's Pause settled while a review it lets finish still runs. Paused, never Working.
+    "paused_review_finishing": (
+        [_row("rv", "budget_paused", pause_cause="owner", can_resume=False, finishing_reviews=True)], {}, {},
+        {"rv": [{"run_id": "run-review", "source": "review_substrate"}]},
+    ),
+    # A run whose own task failed and that nobody can confirm: unconfirmed, listed with its Stop.
+    "unconfirmed_run": (
+        [], {}, {"x": {"task_id": "x", "status": "failed", "chat_id": 42}, "x-h": {"task_id": "x-h", "status": "failed"}},
+        {"x": [{"run_id": "run-u", "task_id": "x-h"}]},
+    ),
+    # A Pause pressed through the API with no declared author names nobody.
+    "paused_unattributed": (
+        [_row("n", "budget_paused", pause_cause="owner", can_resume=False)], {}, {}, {},
+    ),
 }
 
-# The owner fence records who paused: the owner, or Ouroboros itself (the mind's own Pause).
-FENCES = {"o": {"requested_by": "owner"}, "m": {"requested_by": "owner", "actor": "mind", "actor_task_id": "mind-1"},
-          "z": {"requested_by": "owner"}}
+# The owner fence records who declared the Pause: the owner's own press, or Ouroboros with its sentence (here a
+# fence written before ``by`` existed). An undeclared press ("n") names nobody.
+_PRESSED = "2026-10-17T15:00:00Z"
+FENCES = {"o": {"by": {"actor": "owner", "text": "", "at": _PRESSED}, "requested_at": _PRESSED},
+          "m": {"requested_by": "owner", "actor": "mind", "actor_task_id": "mind-1",
+                "reason": "pause before the update you asked for", "requested_at": _PRESSED},
+          "z": {"by": {"actor": "owner", "text": "", "at": _PRESSED}, "requested_at": _PRESSED},
+          "rv": {"by": {"actor": "owner", "text": "", "at": _PRESSED}, "requested_at": _PRESSED},
+          "n": {"requested_by": "owner", "requested_at": _PRESSED}}
 
 
 def project(name):
@@ -116,7 +136,8 @@ def test_the_web_fixture_is_the_servers_projection():
 @pytest.mark.parametrize("name, activity", [
     ("held_continue", "working"), ("direct_question", "waiting"), ("paused_by_owner", "paused"),
     ("spending_limit", "paused"), ("queued_and_pausing", "working"), ("unknown", "unknown"),
-    ("helper_after_parent", "working"),
+    ("helper_after_parent", "working"), ("paused_review_finishing", "paused"), ("unconfirmed_run", "unknown"),
+    ("paused_unattributed", "paused"),
 ])
 def test_each_fixture_room_is_the_state_its_name_says(name, activity):
     """The fixture is meaningful, not merely equal: each room is the case the web tests read it as."""

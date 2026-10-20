@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
+from ouroboros.control_actor import pause_author
 from ouroboros.gateway import work_status as ws
 from ouroboros.gateway import work_projection as wp
 
@@ -35,16 +38,35 @@ def test_writer_held_continue_waits_and_is_never_the_owners_turn():
         "activity"] == "paused"
 
 
-@pytest.mark.parametrize("fence, paused_by, release", [
-    ({"requested_by": "owner"}, "owner", "owner"),
-    ({"requested_by": "owner", "actor": "mind", "actor_task_id": "m1"}, "mind", "mind"),
-    ({"requested_by": "server_shutdown"}, "host", "owner"),
+@pytest.mark.parametrize("author, code, release, text", [
+    ({"actor": "owner", "text": "", "at": "T0"}, "paused_by_owner", "owner", "You paused it"),
+    ({"actor": "ouroboros", "text": "pause before the update you asked for", "at": "T0"}, "paused_by_mind", "mind",
+     "Ouroboros: pause before the update you asked for"),
+    ({"actor": "ouroboros", "text": "", "at": "T0"}, "paused_by_mind", "mind", "Paused by Ouroboros"),
+    ({"actor": "", "text": "", "at": "T0"}, "paused_unattributed", "owner", ""),
 ])
-def test_owner_pause_names_who_paused_from_the_recorded_actor(fence, paused_by, release):
-    state = ws.classify_member(row("t", "budget_paused", pause_cause="owner"), {"fence": fence})
-    assert (state["activity"], state["paused_by"], state["release"]) == ("paused", paused_by, release)
-    assert state["reasons"][0]["code"] == f"paused_by_{paused_by}"
-    assert state["turn"] == []
+def test_a_decided_pause_says_its_declared_author_never_the_door(author, code, release, text):
+    state = ws.classify_member(row("t", "budget_paused", pause_cause="owner"), {"pause_by": author, "paused_at": "T9"})
+    assert (state["activity"], state["release"], state["turn"]) == ("paused", release, [])
+    entry = state["reasons"][0]
+    assert (entry["code"], entry["text"], entry["since"]) == (code, text, "T0")  # dated from the press
+    assert ("by" in entry) is bool(author["actor"])
+    assert "paused_by" not in state
+
+
+def test_pause_author_reads_the_declared_record_and_never_defaults_to_the_owner():
+    assert pause_author({"by": {"actor": "owner", "text": "", "at": "A"}, "requested_at": "R"}) == {
+        "actor": "owner", "text": "", "at": "A"}
+    # Legacy fences: the mind's own record, at the top or as its first press on the same fence.
+    legacy = {"fence_id": "f1", "actor": "mind", "reason": " for the update ", "requested_at": "R", "paused_at": "P"}
+    assert pause_author(legacy) == {"actor": "ouroboros", "text": "for the update", "at": "R"}
+    pressed_later = {"fence_id": "f1", "requested_by": "owner", "requested_at": "R",
+                     "requests": {"a": {"fence_id": "f1"}, "b": {"fence_id": "f1", "actor": "mind", "reason": "x"},
+                                  "c": {"fence_id": "f0", "actor": "mind", "reason": "older fence"}}}
+    assert pause_author(pressed_later) == {"actor": "ouroboros", "text": "x", "at": "R"}
+    # A press that declared nobody, a missing or an unreadable fence name nobody: never "owner" by default.
+    for fence in ({"requested_by": "owner", "requested_at": "R"}, {}, None, {"by": {"actor": "admin"}}):
+        assert pause_author(fence)["actor"] == ""
 
 
 @pytest.mark.parametrize("cause, hold, code", [
@@ -64,9 +86,13 @@ def test_owner_required_resume_is_the_owners_turn_only_when_the_census_says_so(c
 
 
 def test_cold_sleep_waits_and_pausing_is_still_work():
-    assert ws.classify_member(row("t", "budget_paused", pause_cause="sleep"))["activity"] == "waiting"
-    pausing = ws.classify_member(row("t", "budget_pausing", pause_cause="owner"), {"fence": {"requested_by": "owner"}})
-    assert (pausing["activity"], pausing["transition"]) == ("working", "pausing")
+    sleeping = ws.classify_member(row("t", "budget_paused", pause_cause="sleep"))
+    assert (sleeping["activity"], sleeping["release"]) == ("waiting", "self")  # it wakes by itself
+    pausing = ws.classify_member(row("t", "budget_pausing", pause_cause="owner"), {"pause_by": {"actor": "owner"}})
+    assert (pausing["activity"], pausing["transition"], pausing["live"]) == ("working", "pausing", True)
+    # Parked under a Pause still settling for someone else: Pausing…, but this member executes nothing.
+    parked = ws.classify_member(row("t", "budget_pausing", pause_cause="owner"), {"parked": ["t"]})
+    assert (parked["transition"], parked["live"]) == ("pausing", False)
 
 
 def test_unread_pause_cause_stays_raw_and_releases_nothing():
@@ -120,7 +146,8 @@ def test_held_continue_with_running_helpers_is_working_and_says_why():
     assert work["activity"] == "working" and work["release"] == "self" and work["turn"] == []
     assert work["because"][0]["code"] == "earlier_attempt_finishing" and work["because"][0]["count"] == 3
     assert work["because"][0]["text"] == "Continue starts when 3 helpers of the earlier attempt finish"
-    assert work["episode"] == {"task_id": "c", "live": True} and work["members"]["working"] == 3
+    assert work["episode"] == {"task_id": "c", "live": True} and work["live"] is True
+    assert work["tails"] == []  # the sentence already names the helpers it waits for
     assert sorted(work["members"]["ids"]) == ["c", "h0", "h1", "h2"]
     one = ws.roll_up_work("p", [current, *_helpers(1)], episode={"task_id": "c", "state": current})
     assert one["because"][0]["text"] == "Continue starts when the helper of the earlier attempt finishes"
@@ -129,8 +156,10 @@ def test_held_continue_with_running_helpers_is_working_and_says_why():
 def test_held_continue_waiting_on_external_runs_or_on_nothing_visible():
     current = ws.classify_member(row("c", "budget_paused", pause_cause="unknown"),
                                  {"hold": {"reason": "continuation_writer_unsettled"}})
-    runs = ws.roll_up_work("p", [current], episode={"task_id": "c", "state": current}, delegated=2)
+    live = [{"run_id": "r1", "kind": "run", "state": "live"}, {"run_id": "r2", "kind": "run", "state": "live"}]
+    runs = ws.roll_up_work("p", [current], episode={"task_id": "c", "state": current}, runs=live)
     assert runs["activity"] == "working" and runs["because"][0]["code"] == "earlier_runs_finishing"
+    assert runs["because"][0]["count"] == 2 and runs["tails"] == []
     alone = ws.roll_up_work("p", [current], episode={"task_id": "c", "state": current})
     assert alone["activity"] == "waiting" and alone["because"][0]["code"] == "earlier_work_unconfirmed"
     assert alone["release"] == "self"
@@ -138,8 +167,11 @@ def test_held_continue_waiting_on_external_runs_or_on_nothing_visible():
 
 def test_helpers_of_an_ended_attempt_keep_the_work_working_with_its_outcome():
     work = ws.roll_up_work("p", _helpers(2), episode={"task_id": "p"}, outcome="failed")
-    assert work["activity"] == "working" and work["outcome"] == "failed"
-    assert work["because"] == [ws.reason("helpers_running", count=2, ids=["h0", "h1"])]
+    assert work["activity"] == "working" and work["outcome"] == "failed" and work["live"] is True
+    assert work["because"] == []
+    assert work["tails"] == [{**ws.reason("helpers_running", count=2, ids=["h0", "h1"]), "kind": "helper",
+                              "state": "live"}]
+    assert work["tails"][0]["text"] == "2 helpers still working" and work["mark"] == "moving"
     assert work["episode"]["live"] is False
 
 
@@ -147,9 +179,10 @@ def test_finalizing_answer_and_paused_work():
     final = ws.classify_member(row("t", "finalizing", status="done"))
     work = ws.roll_up_work("t", [final], episode={"task_id": "t", "state": final}, outcome="done")
     assert (work["activity"], work["transition"], work["outcome"]) == ("working", "finalizing", "done")
-    paused = ws.classify_member(row("t", "budget_paused", pause_cause="owner"), {"fence": {"requested_by": "owner"}})
+    paused = ws.classify_member(row("t", "budget_paused", pause_cause="owner"), {"pause_by": {"actor": "owner"}})
     work = ws.roll_up_work("t", [paused], episode={"task_id": "t", "state": paused})
-    assert (work["activity"], work["paused_by"], work["release"]) == ("paused", "owner", "owner")
+    assert (work["activity"], work["release"], work["because"][0]["code"]) == ("paused", "owner", "paused_by_owner")
+    assert (work["tails"], work["live"], work["mark"]) == ([], False, "pause") and "paused_by" not in work
 
 
 def test_any_members_turn_is_the_works_turn_and_unknown_never_erases_known_work():
@@ -195,6 +228,9 @@ def test_mark_of_names_what_the_work_does_and_never_whose_move_it_is():
     # Observed work keeps moving in an incomplete read; anything else unconfirmed is the ring.
     assert ws.mark_of("working", False) == "moving"
     assert {ws.mark_of(activity, False) for activity in ("queued", "waiting", "paused", "unknown")} == {"ring"}
+    # Something that actually runs moves any shape; a run nobody can confirm is a ring while nothing else runs.
+    assert ws.mark_of("paused", True, live=True) == "moving" and ws.mark_of("paused", True, unknown=True) == "ring"
+    assert ws.mark_of("paused", True, live=True, unknown=True) == "moving"
 
 
 def test_room_finalizing_only_says_finalizing_and_empty_rooms_are_idle_or_unknown():
@@ -292,20 +328,102 @@ def test_started_delegated_runs_of_an_ended_root_are_its_live_work(stored, monke
     snap = wp.works_snapshot(tmp_path, [], {})
     assert snap["works_complete"] is True, snap["works_gaps"]
     [work] = snap["works"]
-    assert work["work_id"] == "p" and work["activity"] == "working" and work["members"]["delegated"] == 2
-    assert work["because"][0]["code"] == "delegated_running"
+    assert work["work_id"] == "p" and work["activity"] == "working" and work["because"] == []
+    assert [(tail["kind"], tail["state"], tail["count"]) for tail in work["tails"]] == [("run", "live", 2)]
+    assert work["tails"][0]["text"] == "2 external runs still working"
     assert work["since"] == datetime(2026, 10, 17, 11, tzinfo=timezone.utc).timestamp()
     # The cascade Stop cancels a settled tree's open runs (tests/test_settled_tree_run_stop.py drives the door).
     assert work["controls"] == [{"action": "stop", "target": "p", "scope": "cascade"}]
 
 
-def test_working_helpers_say_the_reason_while_the_work_still_counts_its_runs(stored, monkeypatch, tmp_path):
+def _run(run_id, task_id, source="delegated_subagent", terminal_state=""):
+    return SimpleNamespace(run_id=run_id, task_id=task_id, root_task_id="", source=source, terminal_state=terminal_state)
+
+
+def test_working_helpers_and_runs_of_an_ended_root_are_its_tails(stored, monkeypatch, tmp_path):
     stored["p"] = {"task_id": "p", "status": "failed", "chat_id": 42}
-    monkeypatch.setattr(wp, "_open_runs", lambda drive_root: {"p": ["run-1", "run-2"]})
+    monkeypatch.setattr(wp, "_open_runs", lambda drive_root: {"p": [_run("run-1", "p-a"), _run("run-2", "p-b")]})
     snap = wp.works_snapshot(tmp_path, [row("h0", parent_task_id="p", root_task_id="p")], {})
     [work] = snap["works"]
-    assert work["because"] == [ws.reason("helpers_running", count=1, ids=["h0"])]
-    assert work["members"]["delegated"] == 2 and work["members"]["working"] == 1
+    assert work["activity"] == "working" and work["because"] == []
+    assert [(tail["kind"], tail["count"], tail["state"]) for tail in work["tails"]] == [
+        ("helper", 1, "live"), ("run", 2, "live")]
+
+
+# ---- what still runs beside a paused episode (the 20.10 card) -----------------------------------------
+
+def _paused(**raw):
+    return ws.classify_member(row("t", "budget_paused", pause_cause="owner", finishing_reviews=raw.pop("reviews", False)),
+                              {"pause_by": {"actor": "owner", "at": "T0"}, **raw})
+
+
+@pytest.mark.parametrize("tail", [
+    {"run_id": "rv", "kind": "review", "state": "live"},
+    {"run_id": "x", "kind": "run", "state": "live"},
+])
+def test_a_paused_episode_keeps_its_word_whatever_still_runs_beside_it(tail):
+    paused = _paused(reviews=tail["kind"] == "review")
+    work = ws.roll_up_work("t", [paused], episode={"task_id": "t", "state": paused}, runs=[tail])
+    # Never "Working · by you": the word and its reason are the episode's; what runs is the second fact.
+    assert (work["activity"], work["because"][0]["code"], work["live"]) == ("paused", "paused_by_owner", True)
+    assert [entry["kind"] for entry in work["tails"]] == [tail["kind"]]
+    assert work["mark"] == "pause"  # the work's own mark follows its parked episode (owner 06–08.10)
+    room = ws.roll_up_room([work])
+    assert (room["activity"], room["mark"]) == ("paused", "moving")  # the room moves while anything runs
+    controls = ws.controls_for(paused, row("t", "budget_paused"))
+    assert [entry["action"] for entry in controls] == ["resume", "stop"]
+    # Once it ends, the bars stand alone.
+    quiet = ws.roll_up_work("t", [_paused()], episode={"task_id": "t", "state": _paused()})
+    assert (quiet["tails"], quiet["live"], ws.roll_up_room([quiet])["mark"]) == ([], False, "pause")
+
+
+def test_a_review_the_pause_lets_finish_is_one_review_tail_from_either_source(stored, monkeypatch, tmp_path):
+    monkeypatch.setattr(wp, "_open_runs", lambda drive_root: {"t": [_run("run-rv", "t", source="review_substrate")]})
+    owners = [row("t", "budget_paused", pause_cause="owner", finishing_reviews=True)]
+    snap = wp.works_snapshot(tmp_path, owners, {})
+    [work] = snap["works"]
+    assert work["activity"] == "paused"
+    assert [(tail["kind"], tail["text"], tail["ids"]) for tail in work["tails"]] == [
+        ("review", "Review work finishing", ["run-rv"])]
+    assert "count" not in work["tails"][0]
+    # A native review (no custody row) is the same tail; with no review at all there is none.
+    monkeypatch.setattr(wp, "_open_runs", lambda drive_root: {})
+    [work] = wp.works_snapshot(tmp_path, owners, {})["works"]
+    assert [(tail["kind"], tail.get("ids")) for tail in work["tails"]] == [("review", None)]
+    [work] = wp.works_snapshot(tmp_path, [row("t", "budget_paused", pause_cause="owner")], {})["works"]
+    assert work["tails"] == [] and work["live"] is False
+
+
+def test_a_run_whose_own_task_failed_is_unconfirmed_and_its_work_stays_stoppable(stored, monkeypatch, tmp_path):
+    stored["p"] = {"task_id": "p", "status": "failed", "chat_id": 42}
+    stored["h"] = {"task_id": "h", "status": "failed"}
+    monkeypatch.setattr(wp, "_open_runs", lambda drive_root: {"p": [_run("run-u", "h")]})
+    [work] = wp.works_snapshot(tmp_path, [], {})["works"]
+    assert (work["activity"], work["live"], work["mark"]) == ("unknown", False, "ring")
+    assert [(tail["state"], tail["text"]) for tail in work["tails"]] == [("unknown", "1 external run unconfirmed")]
+    assert work["confirmed"] is True and work["controls"] == [{"action": "stop", "target": "p", "scope": "cascade"}]
+    # The same run of a task that answered is live work (owner 19.10: Stop reaches it).
+    stored["h"] = {"task_id": "h", "status": "completed"}
+    [work] = wp.works_snapshot(tmp_path, [], {})["works"]
+    assert (work["activity"], work["mark"], work["tails"][0]["state"]) == ("working", "moving", "live")
+
+
+def test_a_run_the_engine_already_finished_is_no_member(stored, monkeypatch, tmp_path):
+    """Through the real custody store: an engine-finished run whose settlement is still owed runs nothing."""
+    from ouroboros import delegate_custody as custody
+
+    monkeypatch.setattr(wp, "_open_runs", _REAL_OPEN_RUNS)
+    stored["p"] = {"task_id": "p", "status": "completed", "chat_id": 42}
+    assert custody.emit(tmp_path, custody.STARTED, {"run_id": "r-done", "task_id": "p", "root_task_id": "p"})
+    assert custody.emit(tmp_path, custody.STARTED, {"run_id": "r-live", "task_id": "p", "root_task_id": "p"})
+    [work] = wp.works_snapshot(tmp_path, [], {})["works"]
+    assert work["tails"][0]["ids"] == ["r-done", "r-live"]
+    assert custody.emit(tmp_path, custody.TERMINAL_OBSERVED, {
+        "run_id": "r-done", "task_id": "p", "state": "succeeded", "observation_seq": 1,
+        "source_ref": {"sha256": "0" * 64}})
+    [work] = wp.works_snapshot(tmp_path, [], {})["works"]
+    assert work["tails"][0]["ids"] == ["r-live"]
+
 
 
 # ---- controls -----------------------------------------------------------------------------------------
