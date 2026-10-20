@@ -697,3 +697,55 @@ def test_worker_death_reads_the_revokers_hold_before_reparking(tmp_path, monkeyp
     else:
         assert not workers.RUNNING and len(workers.PENDING) == 1
         assert workers.PENDING[0]["_budget_pause"]["exact_continuation"]
+
+
+def test_assignment_keeps_a_paused_roots_reason_over_the_selection_it_ran_under(tmp_path, monkeypatch):
+    """The owner's Resume releases a root from its stop hold (``saved_work_hold``) and it runs
+    carrying that selection; the owner then Pauses it. Its exact pause and the Pause's latch decide
+    the row, so assignment never repairs the selection it ran under as a stale zero-dispatch choice:
+    that re-hold rewrote ``owner_paused`` to ``saved_work_hold`` and a Restart then showed the
+    paused root as work held after a stop. A zero-dispatch row with the same stale choice is still
+    returned to an unselected hold."""
+    from ouroboros import budget_pause
+    from ouroboros.task_results import load_task_result, write_task_result
+    from supervisor.events_budget import BUDGET_HOLD_KEY, budget_resume_dispatch_allowed, install_exact_budget_pause
+    from supervisor.owner_pause_control import request_owner_pause
+    from supervisor.restart_retention import hold_stopped_queue
+    from tests._budget_pause_exact_helpers import _fast_hold, _mock_pause_observation
+    from tests.test_budget_pause_lineage import _member_ctx, _park, _sup
+
+    queue, state, workers = _install_queue(tmp_path, monkeypatch)
+    monkeypatch.setattr(state, "budget_remaining", lambda _st, **_k: 5.0)
+    _fast_hold(monkeypatch, budget_pause)
+    _mock_pause_observation(monkeypatch, budget_pause, [])
+    write_task_result(tmp_path, "alpha", "scheduled", chat_id=0, root_task_id="alpha")
+    workers.PENDING.append(hold_stopped_queue({"id": "alpha", "type": "task", "chat_id": 0, "_attempt": 1,
+                                               "root_task_id": "alpha", "admitted_dispatch": "none"},
+                                              tmp_path, "app_stop"))
+    assert queue.resume_budget_paused_task("alpha")["ok"]
+    sent = []
+    _idle_worker(workers, sent)
+    workers.assign_tasks()
+    assert [task["id"] for task in sent] == ["alpha"]
+    ran_under = dict(workers.RUNNING["alpha"]["task"][BUDGET_HOLD_KEY])
+    assert ran_under["selected"] is True and ran_under["reason"] == "saved_work_hold"
+
+    assert request_owner_pause("alpha", request_id="pause-after-resume")["ok"]
+    _ctx, limit = _member_ctx(tmp_path, "alpha", "alpha")
+    install_exact_budget_pause(_sup(tmp_path, queue, workers), "alpha",
+                               budget_pause.exact_pause_marker(_park(limit))["checkpoint"])
+    [paused] = workers.PENDING
+    assert paused["_budget_pause"]["reason"] == "owner" and paused[BUDGET_HOLD_KEY] == ran_under
+    assert budget_resume_dispatch_allowed(queue, paused) is False, "the old choice names no Pause latch"
+    assert load_task_result(tmp_path, "alpha", strict=True)["reason_code"] == "owner_paused"
+    member = {"id": "alpha-child", "type": "task", "chat_id": 0, "_attempt": 1, "root_task_id": "alpha",
+              "parent_task_id": "alpha", "admitted_dispatch": "none", BUDGET_HOLD_KEY: dict(ran_under)}
+    workers.PENDING.append(member)
+    assert budget_resume_dispatch_allowed(queue, member) is False
+
+    workers.assign_tasks()
+    assert [task["id"] for task in sent] == ["alpha"]
+    assert paused[BUDGET_HOLD_KEY] == ran_under and "_budget_pause" in paused
+    assert load_task_result(tmp_path, "alpha", strict=True)["reason_code"] == "owner_paused"
+    assert member[BUDGET_HOLD_KEY]["selected"] is False
+    assert member[BUDGET_HOLD_KEY]["detail"] == "root_resume_generation_stale"
