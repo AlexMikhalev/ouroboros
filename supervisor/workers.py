@@ -1285,11 +1285,8 @@ def kill_workers(
                 log.debug("Cannot confirm worker %s dead", w.wid, exc_info=True)
         WORKERS.clear()
         orphaned_ids, drained_ids, terminalization_retry_ids, preserved_successors = [], [], [], []
-        # #1196: an exact mid-run budget pause survives the physical epoch. Its
-        # PENDING carrier and its durable ``paused`` row are left exactly as they
-        # are — never cancelled here, never ``pending_parent_interrupted`` — so the
-        # next boot's ``restore_pending_from_snapshot`` re-validates the durable
-        # authority and parks the same task id again (or holds it, typed).
+        # Exact pauses retain their queued marker and durable row across stops;
+        # restore revalidates the same task instead of cancelling it as interrupted.
         retained_paused_ids: list = []
         cleanup_ok = True
         try:
