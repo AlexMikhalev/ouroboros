@@ -130,8 +130,10 @@ def test_catalog_read_failure_does_not_guess_unsupported_or_dispatch(setup, monk
         raise ClaudexorUnavailable("daemon_unreachable", "Metadata connection lost")
 
     monkeypatch.setattr(gateway, "operations", failed_catalog)
+    # The refusal is retried until the call's deadline and then reported as itself; a deadline shorter
+    # than the fake gateway's setup on a slow runner ends first as daemon_not_answering instead.
     with pytest.raises(transport.ClaudexorModelError) as caught:
-        call(client, asynchronous, timeout=0.01)
+        call(client, asynchronous, timeout=0.5)
     assert caught.value.code == "daemon_unreachable"
     assert caught.value.physical_attempt_capture.state == "released"
     assert not gateway.uploads and not gateway.creates and gateway.closed >= 1

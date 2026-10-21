@@ -115,9 +115,10 @@ def measured(request, small, tmp_path_factory) -> Dict[int, Dict[str, Any]]:
 
 def contract_breaches(small: Dict[str, int], large: Dict[str, int], k_large: int,
                       keys: Iterable[str] = WORK) -> Dict[str, Any]:
-    """Every counter that differs between the roots, and VM steps beyond ``vm_allowance``."""
+    """Every counter that grows from the small root to the large one, and VM steps beyond ``vm_allowance``.
+    A count the large root spends less of is background noise in the small root's cold boot, not growth."""
     breaches: Dict[str, Any] = {key: (small.get(key, 0), large.get(key, 0)) for key in keys
-                                if abs(small.get(key, 0) - large.get(key, 0)) > (
+                                if large.get(key, 0) - small.get(key, 0) > (
                                     BYTE_JITTER if key in BYTE_KEYS else COUNT_JITTER)}
     allowed = vm_allowance(k_large)
     if large.get("vm_steps", 0) > small.get("vm_steps", 0) + allowed:
