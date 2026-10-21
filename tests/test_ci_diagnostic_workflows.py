@@ -413,8 +413,8 @@ def test_release_floor_is_the_last_canary_step_and_enforces_only_on_an_official_
     assert args[6:] == ([flag] if flag else [])
 
 
-EXACT = "refs/tags/v7.7.0"
-PREDICATE = "github.ref == 'refs/tags/v7.7.0' && github.repository == 'razzant/ouroboros'"
+EXACT = "refs/tags/v7.7.1"
+PREDICATE = "github.ref == 'refs/tags/v7.7.1' && github.repository == 'razzant/ouroboros'"
 
 
 def test_release_records_every_consumed_gate_and_names_one_exact_exception():
@@ -434,8 +434,8 @@ def test_release_records_every_consumed_gate_and_names_one_exact_exception():
 
 
 @pytest.mark.parametrize("ref,repository,exact", [
-    (EXACT, OFFICIAL, True), (EXACT, FORK, False), ("refs/tags/v7.7.1", OFFICIAL, False),
-    ("refs/tags/v7.7.0-rc.1", OFFICIAL, False), (TAG, OFFICIAL, False),
+    (EXACT, OFFICIAL, True), (EXACT, FORK, False), ("refs/tags/v7.7.0", OFFICIAL, False),
+    ("refs/tags/v7.7.1-rc.1", OFFICIAL, False), (TAG, OFFICIAL, False),
 ])
 def test_only_the_exact_official_tag_passes_concluded_red_tests_and_it_stops_at_draft(ref, repository, exact):
     from tests.test_windows_signing_release import expression_value
@@ -458,14 +458,14 @@ def test_only_the_exact_official_tag_passes_concluded_red_tests_and_it_stops_at_
                                                                            "system-e2e-mock", "ui-smoke"})):
         assert not admitted({"full-test": "failure", **strict}), strict
     names = [step.get("name") for step in release["steps"]]
-    hold = release["steps"][names.index("Hold the v7.7.0 owner-exception release at its verified draft")]
+    hold = release["steps"][names.index("Hold the v7.7.1 owner-exception release at its verified draft")]
     publish = release["steps"][names.index("Publish verified GitHub Release")]
     assert names.index("Verify remote release tag before publish") < names.index(hold["name"]) < names.index(publish["name"])
     assert bool(expression_value(hold["if"], green)) is exact
     assert bool(expression_value(publish["if"], green)) is not exact
     preflight = next(step for step in jobs["release-preflight"]["steps"]
                      if step.get("name") == "Require test prerequisites for publication")
-    assert expression_value(preflight["env"]["V7_7_0_OWNER_EXCEPTION"], green) is exact
+    assert expression_value(preflight["env"]["V7_7_1_OWNER_EXCEPTION"], green) is exact
 
 
 @pytest.mark.parametrize("exception,full,integration,system,passes", [
@@ -484,12 +484,12 @@ def test_preflight_shell_admits_concluded_red_tests_only_under_the_exact_excepti
     step = next(step for step in _workflow("ci.yml")["jobs"]["release-preflight"]["steps"]
                 if step.get("name") == "Require test prerequisites for publication")
     env = {**os.environ, "FULL_TEST_RESULT": full, "INTEGRATION_RESULT": integration, "SYSTEM_E2E_RESULT": system}
-    env.pop("V7_7_0_OWNER_EXCEPTION", None)
+    env.pop("V7_7_1_OWNER_EXCEPTION", None)
     if exception is not None:
-        env["V7_7_0_OWNER_EXCEPTION"] = exception
+        env["V7_7_1_OWNER_EXCEPTION"] = exception
     done = subprocess.run([bash, "-c", step["run"]], env=env, capture_output=True, text=True, timeout=10)
     assert done.returncode == (0 if passes else 1), done.stderr
-    assert ("::warning::v7.7.0 owner exception" in done.stdout) is (passes and (full, system) != ("success", "success"))
+    assert ("::warning::v7.7.1 owner exception" in done.stdout) is (passes and (full, system) != ("success", "success"))
 
 
 @pytest.mark.parametrize("selection,target", [

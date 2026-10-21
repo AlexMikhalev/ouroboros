@@ -123,7 +123,7 @@ Anyone can check a downloaded ZIP with `scripts/verify_windows_signature.ps1 -Ex
 The artifact pipeline (per-platform archive smokes, native Linux packages, the AppImage custody chain, SBOM and attestation binding, the seven-required-desktop plus optional-Android release job, and `release-preflight`'s tag behaviour) lives in ARCHITECTURE §8 and `.github/workflows/ci.yml`. The honesty invariants a change must preserve:
 
 - A red `release-preflight` still lets the desktop build rehearse, which may consume configured macOS signing/notarization and records attestations in the repository and public transparency log; configured Windows signing and `release` need a green preflight, so that run has no signed Windows ZIP or GitHub Release, only run artifacts.
-- Proof and notes carry each consumed job's actual conclusion, never a fixed pass; the `v7.7.0` owner exception (ARCHITECTURE §8) is disclosed separately.
+- Proof and notes carry each consumed job's actual conclusion, never a fixed pass; the `v7.7.1` owner exception (ARCHITECTURE §8) is disclosed separately.
 - Publication is draft-first under a per-tag concurrency group; the remote annotated tag is revalidated against the event SHA before the draft and again before publishing, and a rerun never overwrites a published release.
 - Vendor-distribution smokes (Astra, RED OS) are reported evidence, never release authority: third-party registry reachability is outside the pipeline's control.
 - The AppImage smoke makes no native GTK/Qt claim; packaged native webview coverage is a separate Linux distribution contract.

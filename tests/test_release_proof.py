@@ -905,18 +905,18 @@ def _gate_env(jobs, results=None):
 
 
 @pytest.mark.parametrize(("repository", "version", "results", "refusal"), [
-    ("razzant/ouroboros", "7.7.0", RED, None),
-    ("razzant/ouroboros", "7.7.0", {}, None),
-    ("someone/private-copy", "7.7.0", RED, "full-test concluded failure"),
-    ("razzant/ouroboros", "7.7.1", RED, "full-test concluded failure"),
-    ("razzant/ouroboros", "7.7.0-rc.1", {"ui-smoke": "failure"}, "ui-smoke concluded failure"),
-    ("razzant/ouroboros", "7.7.0", {**RED, "integration-test": "failure"}, "integration-test concluded failure"),
-    ("razzant/ouroboros", "7.7.0", {"windows-proof": "cancelled"}, "windows-proof concluded cancelled"),
+    ("razzant/ouroboros", "7.7.1", RED, None),
+    ("razzant/ouroboros", "7.7.1", {}, None),
+    ("someone/private-copy", "7.7.1", RED, "full-test concluded failure"),
+    ("razzant/ouroboros", "7.7.0", RED, "full-test concluded failure"),
+    ("razzant/ouroboros", "7.7.1-rc.1", {"ui-smoke": "failure"}, "ui-smoke concluded failure"),
+    ("razzant/ouroboros", "7.7.1", {**RED, "integration-test": "failure"}, "integration-test concluded failure"),
+    ("razzant/ouroboros", "7.7.1", {"windows-proof": "cancelled"}, "windows-proof concluded cancelled"),
     # A skipped lane produced no result; the exception covers only a concluded red one.
-    ("razzant/ouroboros", "7.7.0", {"full-test": "skipped"}, "full-test concluded skipped"),
+    ("razzant/ouroboros", "7.7.1", {"full-test": "skipped"}, "full-test concluded skipped"),
 ])
 @pytest.mark.parametrize("android_result", ["skipped", "failure"])
-def test_only_the_exact_official_v770_may_disclose_concluded_red_test_lanes(
+def test_only_the_exact_official_v771_may_disclose_concluded_red_test_lanes(
         tmp_path, repository, version, results, refusal, android_result):
     release_dir, version_file, readme = _fixture_release(tmp_path, version=version)
     notes = tmp_path / "notes.md"
@@ -937,7 +937,7 @@ def test_only_the_exact_official_v770_may_disclose_concluded_red_test_lanes(
         {"name": name, "status": results.get(name, "success")} for name in release_proof.RELEASE_GATES]
     exception = workflow["ownerException"]
     assert (exception["repository"], exception["tag"], exception["commit"], exception["runUrl"]) == (
-        repository, "v7.7.0", "a" * 40, args.run_url)
+        repository, "v7.7.1", "a" * 40, args.run_url)
     assert exception["waivedGates"] == [{"name": name, "status": status} for name, status in results.items()]
     assert "any residual red test lanes disclosed" in exception["decision"]
     text = notes.read_text(encoding="utf-8")
@@ -972,16 +972,16 @@ def test_release_step_passes_actual_red_results_that_only_the_exact_tag_accepts(
     jobs = yaml.safe_load((REPO / ".github/workflows/ci.yml").read_text(encoding="utf-8"))["jobs"]
     step = next(step for step in jobs["release"]["steps"]
                 if step.get("name") == "Assemble release proof capsule and notes")
-    _fixture_release(tmp_path, version="7.7.0")[0].rename(tmp_path / "release-artifacts")
+    _fixture_release(tmp_path, version="7.7.1")[0].rename(tmp_path / "release-artifacts")
     script = step["run"].replace("python scripts/release_proof.py", " ".join(map(shlex.quote, [
         Path(sys.executable).as_posix(), (REPO / "scripts/release_proof.py").as_posix()])))
     env = dict(os.environ, GITHUB_OUTPUT=str(tmp_path / "output"), WINDOWS_SIGNER_THUMBPRINT="",
-               GITHUB_REF_NAME="v7.7.0", GITHUB_SHA="a" * 40, GITHUB_REPOSITORY=repository,
+               GITHUB_REF_NAME="v7.7.1", GITHUB_SHA="a" * 40, GITHUB_REPOSITORY=repository,
                GITHUB_SERVER_URL="https://example.test", GITHUB_RUN_ID="123",
                ANDROID_BUILD_RESULT="skipped", ANDROID_ATTESTATION_RESULT="not_run",
                RELEASE_GATE_RESULTS=_gate_env(jobs, RED))
     done = subprocess.run([bash, "--noprofile", "--norc", "-e", "-o", "pipefail", "-c",
-                           "git() { echo v7.6.0; }\n" + script], cwd=tmp_path, env=env,
+                           "git() { echo v7.7.0; }\n" + script], cwd=tmp_path, env=env,
                           capture_output=True, text=True)
     evidence = tmp_path / "release-artifacts" / "release-evidence.json"
     if repository != release_proof.OWNER_EXCEPTION_REPOSITORY:

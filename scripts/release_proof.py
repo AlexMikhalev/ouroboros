@@ -64,12 +64,12 @@ RELEASE_GATES = (
     "skill-smoke",
 )
 JOB_RESULTS = ("success", "failure", "cancelled", "skipped")
-# Owner decision of 2026-10-17: the official v7.7.0 tag alone may ship after
+# Owner decision of 2026-10-21: the official v7.7.1 tag alone may ship after
 # these test lanes concluded red (failed or timed out), disclosed in its proof
 # and notes, with follow-up patches. Every other gate and every other tag keeps
 # the strict bar, and ci.yml holds that tag at a verified draft.
 OWNER_EXCEPTION_REPOSITORY = "razzant/ouroboros"
-OWNER_EXCEPTION_TAG = "v7.7.0"
+OWNER_EXCEPTION_TAG = "v7.7.1"
 OWNER_WAIVABLE_GATES = ("full-test", "system-e2e-mock", "ui-smoke")
 COMMON_SMOKE_CHECKS = frozenset(
     {
@@ -609,7 +609,7 @@ def command_assemble(args: argparse.Namespace) -> None:
             ],
             # Eligibility is the exact official tag; waivedGates lists what it was used for.
             "ownerException": {
-                "decision": "Owner decision of 2026-10-17: release v7.7.0 with any residual red "
+                "decision": "Owner decision of 2026-10-21: release v7.7.1 with any residual red "
                             "test lanes disclosed; follow-up patches will address them.",
                 "repository": args.repository,
                 "tag": args.tag,
